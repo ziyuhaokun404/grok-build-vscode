@@ -58,40 +58,68 @@ grok login
 
 Then open VS Code, install the **Remote - WSL** extension, and reopen the workspace via *Remote-WSL: Reopen Folder in WSL*. Install the .vsix inside the WSL VS Code server (paths below run identically).
 
-Then pick one of three install paths:
+### Install the extension
 
-### A. Install a pre-built .vsix (recommended for daily use)
+The repo ships [scripts/install.ps1](./scripts/install.ps1) (Windows) and [scripts/install.sh](./scripts/install.sh) (macOS / Linux / WSL). Both auto-detect the VS Code CLI, build a `.vsix` if one isn't already present, and install it.
+
+#### Windows
+
+```powershell
+git clone https://github.com/phuryn/grok-build-vscode.git
+cd grok-build-vscode
+npm install
+pwsh scripts\install.ps1
+```
+
+Reload VS Code (Ctrl+Shift+P → *Developer: Reload Window*) and click the **Grok** icon in the activity bar.
+
+**Note for Windows:** the extension UI loads on Windows, but a chat session needs the `grok` binary, which is macOS/Linux/WSL only today. For a working agent, install it again from a **Remote-WSL** VS Code window (see *WSL setup* above).
+
+#### macOS / Linux / WSL Ubuntu
 
 ```bash
-cd grok-vscode
+git clone https://github.com/phuryn/grok-build-vscode.git
+cd grok-build-vscode
 npm install
-npm run package                          # → grok-vscode-0.1.0.vsix (~32 KB)
+./scripts/install.sh
+```
+
+#### Manual install (any platform)
+
+```bash
+npm install
+npm run package                          # → grok-vscode-0.1.0.vsix (~34 KB)
 code --install-extension grok-vscode-0.1.0.vsix
 ```
 
-Then reload VS Code and click the **Grok** icon in the activity bar.
+### Uninstall
 
-### B. Dev loop (F5 — best for hacking on the extension)
+```powershell
+# Windows
+pwsh scripts\uninstall.ps1
+```
 
 ```bash
-cd grok-vscode
+# macOS / Linux / WSL
+./scripts/uninstall.sh
+```
+
+```bash
+# manual
+code --uninstall-extension phuryn.grok-vscode
+```
+
+### Dev loop (F5 — best for hacking on the extension)
+
+```bash
+git clone https://github.com/phuryn/grok-build-vscode.git
+cd grok-build-vscode
 npm install
 code .                                   # open in VS Code
 # press F5 — opens an Extension Development Host with the extension live
 ```
 
 Recompile with `npm run watch` in another terminal; the Dev Host picks up changes on reload.
-
-### C. Symlink into ~/.vscode/extensions (auto-loads on every VS Code launch)
-
-```bash
-cd grok-vscode
-npm install && npm run compile
-ln -s "$(pwd)" ~/.vscode/extensions/phuryn.grok-vscode-0.1.0
-# restart VS Code
-```
-
-Useful when you want the extension always loaded but don't want to repackage on every change.
 
 ![welcome screenshot — placeholder](./docs/screenshots/02-welcome.png)
 > *Screenshot placeholder — first-launch welcome with CLI path + effort.*

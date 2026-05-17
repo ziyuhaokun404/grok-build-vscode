@@ -1,9 +1,32 @@
 import * as vscode from "vscode";
 import { GrokSidebar } from "./sidebar";
 
+const FIRST_RUN_KEY = "grok.firstRunMovedToAuxBar";
+
+async function moveToSecondarySideBarOnFirstRun(
+  context: vscode.ExtensionContext,
+  output: vscode.OutputChannel,
+): Promise<void> {
+  if (context.globalState.get<boolean>(FIRST_RUN_KEY)) return;
+  // Set the flag up front — we only attempt this once even if the move fails,
+  // so we never fight a user who deliberately drags the view back.
+  await context.globalState.update(FIRST_RUN_KEY, true);
+  try {
+    await vscode.commands.executeCommand("vscode.moveViews", {
+      viewIds: [GrokSidebar.viewId],
+      destinationId: "workbench.view.auxiliary",
+    });
+  } catch (err) {
+    output.appendLine(
+      `[first-run] could not auto-move Grok view to secondary side bar: ${String(err)}`,
+    );
+  }
+}
+
 export function activate(context: vscode.ExtensionContext): void {
   const output = vscode.window.createOutputChannel("Grok");
   const sidebar = new GrokSidebar(context, output);
+  void moveToSecondarySideBarOnFirstRun(context, output);
 
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(GrokSidebar.viewId, sidebar, {

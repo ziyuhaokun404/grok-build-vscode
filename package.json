@@ -1,0 +1,169 @@
+{
+  "name": "grok-vscode",
+  "displayName": "Grok",
+  "description": "Run xAI's Grok Build CLI inside VS Code. Chat sidebar driven by `grok agent stdio` over ACP.",
+  "version": "0.1.0",
+  "publisher": "phuryn",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/phuryn/grok-build-vscode"
+  },
+  "engines": {
+    "vscode": "^1.94.0"
+  },
+  "categories": ["AI", "Chat"],
+  "keywords": ["grok", "xai", "acp", "agent", "ai"],
+  "icon": "resources/grok-icon.png",
+  "main": "./out/extension.js",
+  "activationEvents": ["onStartupFinished"],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "grokSidebar",
+          "title": "Grok",
+          "icon": "resources/grok-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "grokSidebar": [
+        {
+          "type": "webview",
+          "id": "grok.chat",
+          "name": "Grok"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "grok.open",
+        "title": "Grok: Open"
+      },
+      {
+        "command": "grok.newSession",
+        "title": "Grok: New Session"
+      },
+      {
+        "command": "grok.compact",
+        "title": "Grok: Compact Conversation"
+      },
+      {
+        "command": "grok.pickModel",
+        "title": "Grok: Pick Model"
+      },
+      {
+        "command": "grok.pickEffort",
+        "title": "Grok: Pick Effort"
+      },
+      {
+        "command": "grok.toggleMode",
+        "title": "Grok: Toggle Plan / Agent Mode"
+      },
+      {
+        "command": "grok.sendSelection",
+        "title": "Grok: Send Selection"
+      },
+      {
+        "command": "grok.sendFile",
+        "title": "Grok: Send File"
+      },
+      {
+        "command": "grok.insertAtMention",
+        "title": "Grok: Insert @-Mention"
+      },
+      {
+        "command": "grok.showLogs",
+        "title": "Grok: Show Logs"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "grok.open",
+        "key": "ctrl+;",
+        "mac": "cmd+;"
+      },
+      {
+        "command": "grok.insertAtMention",
+        "key": "alt+g",
+        "when": "editorTextFocus"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "grok.sendSelection",
+          "when": "editorHasSelection",
+          "group": "grok@1"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "grok.sendFile",
+          "when": "resourceScheme == file",
+          "group": "grok@1"
+        }
+      ],
+      "editor/title/context": [
+        {
+          "command": "grok.sendFile",
+          "when": "resourceScheme == file",
+          "group": "grok@1"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Grok",
+      "properties": {
+        "grok.cliPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the grok binary. Empty = auto-discover (~/.grok/bin/grok, then PATH)."
+        },
+        "grok.defaultModel": {
+          "type": "string",
+          "default": "",
+          "description": "Model ID to use on new sessions. Empty = CLI default."
+        },
+        "grok.defaultEffort": {
+          "type": "string",
+          "enum": ["low", "medium", "high", "xhigh", "max"],
+          "default": "high",
+          "description": "Default effort level for new sessions."
+        },
+        "grok.defaultPermissionMode": {
+          "type": "string",
+          "enum": ["default", "acceptEdits", "auto", "dontAsk", "bypassPermissions", "plan"],
+          "default": "default",
+          "description": "Permission mode for tool execution."
+        },
+        "grok.includeActiveFileByDefault": {
+          "type": "boolean",
+          "default": true,
+          "description": "Auto-add the active editor file as a context chip."
+        },
+        "grok.useCtrlEnterToSend": {
+          "type": "boolean",
+          "default": false,
+          "description": "Use Ctrl/Cmd+Enter to send (Enter inserts newline)."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "tsc -p .",
+    "compile": "tsc -p .",
+    "watch": "tsc -p . -w",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "package": "npx @vscode/vsce package --no-dependencies",
+    "publish": "npx @vscode/vsce publish --no-dependencies"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.94.0",
+    "typescript": "^5.4.0",
+    "vitest": "^1.6.0"
+  }
+}

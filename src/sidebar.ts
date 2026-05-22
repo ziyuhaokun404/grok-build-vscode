@@ -13,6 +13,16 @@ import {
   toggleChip,
 } from "./chips";
 import { buildPrompt } from "./prompt-builder";
+import {
+  SessionListEntry,
+  SessionMetaOverrides,
+  defaultFs,
+  deleteSessionDir,
+  listSessions,
+  pickSessionTitle,
+  resolveGrokHome,
+} from "./sessions";
+import { parseFileRef } from "./file-ref";
 
 type WebviewMsg =
   | { type: "ready" }
@@ -37,7 +47,14 @@ type WebviewMsg =
   | { type: "setModel"; modelId: string }
   | { type: "runInstallCmd" }
   | { type: "runGrokLogin" }
-  | { type: "recheckConnection" };
+  | { type: "recheckConnection" }
+  | { type: "listSessions" }
+  | { type: "resumeSession"; id: string }
+  | { type: "renameSession"; id: string; name: string }
+  | { type: "deleteSession"; id: string }
+  | { type: "pickFile" };
+
+const SESSION_META_KEY = "grok.sessionMeta";
 
 export class GrokSidebar implements vscode.WebviewViewProvider {
   public static readonly viewId = "grok.chat";
@@ -53,6 +70,9 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
   private hasHistory = false;
   private suppressContent = false;
   private lastPlanText = "";
+  private activeSessionId?: string;
+  private titleGenerated = false;
+  private firstUserMessageForTitle?: string;
 
   constructor(
     private context: vscode.ExtensionContext,
@@ -147,7 +167,7 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
     return this.startSession();
   }
 
-  private async startSession(): Promise<AcpClient | undefined> {
+  private async startSession(resumeId?: string): Promise<AcpClient | undefined> {
     const gen = ++this.sessionGen;
     this.client?.dispose();
     this.client = undefined;
@@ -155,7 +175,11 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
     this.hasHistory = false;
     this.suppressContent = false;
     this.lastPlanText = "";
+    this.activeSessionId = undefined;
+    this.titleGenerated = false;
+    this.firstUserMessageForTitle = undefined;
     this.post({ type: "modeChanged", modeId: "agent" });
+    if (resumeId) this.post({ type: "clearMessages" });
 
     const cfg = vscode.workspace.getConfiguration("grok");
     const cliPath = locateGrokCli(cfg.get<string>("cliPath", ""));
@@ -216,6 +240,7 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
     });
     client.on("session", (res) => {
       if (gen !== this.sessionGen) return;
+      if (res?.sessionId) this.activeSessionId = res.sessionId;
       this.post({
         type: "session",
         sessionId: res.sessionId,
@@ -234,6 +259,10 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
     client.on("commandsUpdate", (cmds) => {
       if (gen !== this.sessionGen) return;
       this.post({ type: "commandsUpdate", commands: cmds });
+    });
+    client.on("userMessage", (text: string) => {
+      if (gen !== this.sessionGen) return;
+      this.post({ type: "userMessage", text, chips: [] });
     });
     client.on("messageChunk", (text: string) => {
       if (gen !== this.sessionGen) return;
@@ -294,7 +323,15 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
       await client.start();
       if (gen !== this.sessionGen) { client.dispose(); return undefined; }
       const defaultModel = cfg.get<string>("defaultModel", "");
-      await client.newSession(defaultModel || undefined);
+      if (resumeId) {
+        await client.loadSession(resumeId, defaultModel || undefined);
+        this.activeSessionId = resumeId;
+        this.titleGenerated = true; // existing session, name already in storage
+        this.hasHistory = true;
+      } else {
+        await client.newSession(defaultModel || undefined);
+        this.activeSessionId = client.sessionId;
+      }
       if (gen !== this.sessionGen) { client.dispose(); this.client = undefined; return undefined; }
     } catch (err) {
       if (gen !== this.sessionGen) { client.dispose(); return undefined; }
@@ -340,18 +377,16 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
         this.postChips();
         break;
       case "openFile": {
-        const m = msg.path.match(/^([^#]+?)(?:#L(\d+)(?:-L?(\d+))?)?$/i);
-        let p = m ? m[1] : msg.path;
-        const startStr = m && m[2];
-        const endStr = m && m[3];
+        const ref = parseFileRef(msg.path);
+        let p = ref.path;
         if (!path.isAbsolute(p)) {
           const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
           if (root) p = path.join(root, p);
         }
         const uri = vscode.Uri.file(p);
-        if (startStr) {
-          const startLine = Math.max(0, Number(startStr) - 1);
-          const endLine = endStr ? Math.max(startLine, Number(endStr) - 1) : startLine;
+        if (ref.startLine != null) {
+          const startLine = ref.startLine - 1;
+          const endLine = (ref.endLine ?? ref.startLine) - 1;
           try {
             const doc = await vscode.workspace.openTextDocument(uri);
             await vscode.window.showTextDocument(doc, {
@@ -494,8 +529,96 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
       case "recheckConnection":
         await this.startSession();
         break;
+      case "listSessions":
+        this.postSessionsList();
+        break;
+      case "resumeSession":
+        await this.startSession(msg.id);
+        break;
+      case "renameSession":
+        this.renameSession(msg.id, msg.name);
+        break;
+      case "deleteSession":
+        await this.deleteSession(msg.id);
+        break;
+      case "pickFile":
+        await this.pickFileFromComputer();
+        break;
     }
 
+  }
+
+  private postSessionsList(): void {
+    const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+    const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    const entries = listSessions({
+      fs: defaultFs,
+      grokHome: resolveGrokHome(process.env),
+      cwd,
+      overrides,
+      log: (m) => this.output.appendLine(m),
+    });
+    this.post({
+      type: "sessions",
+      entries,
+      activeId: this.activeSessionId,
+    });
+  }
+
+  private renameSession(id: string, name: string): void {
+    const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    const trimmed = (name || "").trim();
+    const next: SessionMetaOverrides = { ...overrides };
+    if (!trimmed) {
+      const cur = next[id];
+      if (cur) {
+        const { customName: _drop, ...rest } = cur;
+        if (Object.keys(rest).length === 0) delete next[id];
+        else next[id] = rest;
+      }
+    } else {
+      next[id] = { ...(next[id] ?? {}), customName: trimmed };
+    }
+    void this.context.globalState.update(SESSION_META_KEY, next);
+    this.postSessionsList();
+  }
+
+  private async deleteSession(id: string): Promise<void> {
+    const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+    try {
+      deleteSessionDir({
+        fs: defaultFs,
+        grokHome: resolveGrokHome(process.env),
+        cwd,
+        id,
+      });
+    } catch (e) {
+      this.output.appendLine(`[sessions] delete failed for ${id}: ${(e as Error).message}`);
+    }
+    const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    if (overrides[id]) {
+      const next = { ...overrides };
+      delete next[id];
+      void this.context.globalState.update(SESSION_META_KEY, next);
+    }
+    if (this.activeSessionId === id) {
+      await this.startSession();
+    }
+    this.postSessionsList();
+  }
+
+  private async pickFileFromComputer(): Promise<void> {
+    const picked = await vscode.window.showOpenDialog({
+      canSelectFiles: true,
+      canSelectFolders: false,
+      canSelectMany: true,
+      openLabel: "Add to chat",
+    });
+    if (!picked || picked.length === 0) return;
+    for (const uri of picked) {
+      this.addDroppedFile(uri.fsPath, false);
+    }
+    this.reveal();
   }
 
   private async openDiffEditor(filePath: string, oldText: string, newText: string): Promise<void> {
@@ -544,7 +667,9 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
     this.chips = [];
     this.postChips();
 
+    const isFirstSend = !this.hasHistory;
     this.hasHistory = true;
+    if (isFirstSend) this.firstUserMessageForTitle = text;
     const sentChips = chips.filter((c) => !c.hidden);
     this.post({ type: "userMessage", text, chips: sentChips });
     this.post({ type: "agentStart" });
@@ -552,11 +677,29 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
     try {
       const meta = await client.prompt(finalPrompt);
       this.post({ type: "agentEnd", meta });
+      this.maybeGenerateTitle();
     } catch (err) {
       const e = err as any;
       const message = e?.data?.message ?? e?.message ?? String(err);
       this.post({ type: "agentError", text: message });
     }
+  }
+
+  private maybeGenerateTitle(): void {
+    if (this.titleGenerated) return;
+    const sid = this.client?.sessionId ?? this.activeSessionId;
+    const first = this.firstUserMessageForTitle;
+    if (!sid || !first) return;
+    this.titleGenerated = true;
+    const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    if (overrides[sid]?.customName) return;
+    const title = pickSessionTitle(first);
+    if (!title) return;
+    const next: SessionMetaOverrides = {
+      ...overrides,
+      [sid]: { ...(overrides[sid] ?? {}), customName: title },
+    };
+    void this.context.globalState.update(SESSION_META_KEY, next);
   }
 
   private postInitialState(): void {
@@ -659,7 +802,9 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
 <body>
 
   <header class="top-bar">
+    <button id="history-btn" class="toolbar-btn" title="Session history"></button>
     <button id="new-btn" class="toolbar-btn" title="New session"></button>
+    <div id="history-popover" class="toolbar-popover history-popover" hidden></div>
   </header>
 
   <main id="messages" class="messages">
@@ -681,6 +826,7 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
     <textarea id="input" placeholder="Ask Grok..." rows="3"></textarea>
     <div class="composer-toolbar">
       <div class="toolbar-left">
+        <button id="add-btn" class="toolbar-btn" title="Add context"></button>
         <button id="gear-btn" class="toolbar-btn" title="Settings"></button>
         <div class="context-donut" id="donut" title="Context usage">
           <svg width="16" height="16" viewBox="0 0 16 16">
@@ -698,9 +844,11 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
     </div>
     <div id="mode-popover" class="toolbar-popover" hidden></div>
     <div id="gear-popover" class="toolbar-popover gear-popover" hidden></div>
+    <div id="add-popover" class="toolbar-popover" hidden></div>
     <div id="slash-popover" class="slash-popover" hidden></div>
   </footer>
 
+  <script nonce="${nonce}" src="${mediaUri("webview-helpers.js")}"></script>
   <script nonce="${nonce}" src="${mediaUri("chat.js")}"></script>
 </body>
 </html>`;

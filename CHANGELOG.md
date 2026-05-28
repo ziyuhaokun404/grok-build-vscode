@@ -1,5 +1,68 @@
 # Changelog
 
+## 1.2.0 — 2026-05-28
+
+### Plan mode is now enabled
+
+The headline of this release reverses 1.1.0's "Plan mode stays disabled." The `x.ai/exit_plan_mode` ACP path is still broken in `grok` 0.2.3 — it treats *any* client response (result **or** error) as approval, so a plan can't be rejected at the protocol layer. Rather than wait on the CLI, this build **enforces plan mode client-side**, mirroring how YOLO mode is implemented.
+
+- **Client-side plan gate ([src/plan-gate.ts](src/plan-gate.ts), pure + unit-tested).** While a plan is active, the extension blocks the two *mandatory* server→client choke points the agent cannot avoid:
+  - `fs/write_text_file` — refused when the path resolves **inside the workspace** (grok's own `~/.grok/sessions/<cwd>/<id>/plan.md` lands *outside* the workspace, so it's allowed — and snooped to recover the plan text, since `exit_plan_mode` arrives with `planContent: null`).
+  - `terminal/create` — refused unless the command is on a conservative **read-only allowlist**. The classifier is pipe-aware: a pipeline passes only if *every* `|`-separated stage is independently read-only, and shell metacharacters that chain, redirect, or smuggle code (`>`, `;`, `&&`, `` ` ``, `$(`, `{ }`) block it outright. The allowlist covers **read-only PowerShell pipelines** (`Get-ChildItem | Select-Object …`, `Get-Content`, `Test-Path`, etc.) for native Windows, while excluding anything that writes or executes (`Out-File`, `Set-Content`, `Invoke-Expression`/`iex`, `ForEach-Object`, `Where-Object`).
+- **Asymmetric mode sync.** Entering plan mode *any* way (including an agent-initiated `current_mode_update: plan`) raises the gate; it's lowered only by explicit user action, never by the CLI's mode flapping (the false-approve emits `current_mode_update: default`, which is deliberately ignored).
+- **Mode picker copy updated.** Plan mode is no longer marked disabled; its description now reads "Grok explores and proposes a plan; file writes and commands are blocked until you approve it." Matched in the README modes table and command list.
+
+### Three-verdict plan review (Approve / Reject / Cancel)
+
+The plan-review card now offers three distinct outcomes, each mapped to a different ACP verdict and different downstream behavior. (Earlier in the iteration this was a two-button Approve / Keep planning UI; user testing surfaced that "I want to stop planning but not implement" had no clean exit, so we split it.)
+
+- **Approve & implement** → verdict `approved`. Drops the gate, returns the CLI to act mode, sends "Implement it now" as the next prompt.
+- **Reject** (with optional comment) → verdict `rejected`. Keeps the gate up — you're still in Plan mode. If you wrote a comment, it's sent to Grok as a plain user message (not "revise the plan"); Grok decides whether to re-plan or answer. The chosen button highlights, a **Rejected** label appears.
+- **Cancel** → verdict `abandoned`. Drops the gate, switches the CLI back to act mode, sends nothing. Use this to back out of planning entirely. **Cancelled** label appears.
+
+### Suppressing the CLI's false-approval response
+
+Because grok 0.2.3 treats any `exit_plan_mode` response as approval, rejecting a plan would otherwise let the agent keep streaming "OK, the plan is approved, here's what I'll do…" before our follow-up prompt landed. On Reject / Cancel we now:
+
+1. Send the verdict to the CLI (it still mis-interprets it, but that's fine — the gate is authoritative).
+2. Immediately send `session/cancel` to interrupt the in-flight prompt.
+3. Set a content-only suppression flag (`suppressPlanReject`) that drops `messageChunk` / `thoughtChunk` / `toolCall` events for the rest of the turn — but **not** `promptComplete` / `agentEnd`, so the webview's `busy` state still clears and the send button re-enables when the cancelled turn ends.
+4. Post `agentReset` to the webview, which removes the in-flight agent bubble from the DOM so the false-approval text never reaches the screen.
+
+A `finally` in `handleSend` clears the suppression as a safety net so it can't get stuck.
+
+### Plan markdown rendering
+
+Plan bodies render through the same Markdown pipeline as agent messages now (headings, lists, code fences) instead of monospace `<pre>` blocks. Applies to both the live review card and the restored history cards. A bug along the way: the `.code-block` `position: relative` rule was scoped under `.msg.agent .body`, so when plan cards contained fenced code their absolutely-positioned copy buttons escaped to the viewport and overlapped the Session-history / New-session header buttons. The scoping was loosened so any `.code-block` is its own positioning context.
+
+### Per-session plan history (restored inline, not at the bottom)
+
+grok overwrites `~/.grok/sessions/<…>/plan.md` every time the agent proposes a new plan, so older plans in a session are physically gone from disk. We now persist each resolved plan to VS Code's `globalState` keyed by session id (`SessionMetaOverride.plans`), capturing **text + verdict + `afterUserMessage`** (the count of user messages already sent at the moment of resolution).
+
+On session resume:
+
+- The host posts a `planHistoryQueue` to the webview *before* `session/load` starts.
+- The webview drains the queue inline as the replay streams: each plan card lands at its saved user-message boundary (right where the plan actually happened), not in a clump at the bottom. Legacy entries without a saved position fall back to the end of replay.
+- The plan-gate state is restored from the *last* verdict via a pure helper ([src/plan-restore.ts](src/plan-restore.ts)): `rejected` → re-raise the gate (you were mid-planning); `approved` / `abandoned` / no log → leave the gate down (Cancel-then-restore no longer comes back stuck in Plan mode). Without this, the CLI's replayed `current_mode_update` events would raise the gate even when the user had cancelled.
+- A separate `pendingPlanText` field holds the displayed plan from render → verdict-click, since `lastPlanText` is cleared the moment the card renders. (Regression: without this, restored plans showed `"(empty plan)"` despite content being persisted.)
+
+### Native-Windows webview fixes (carried forward + locked in)
+
+The history-popover, whole-row-click, and reasoning-trace-expand fixes from 1.1.0 are now covered by DOM tests so they can't silently regress again (see Testing).
+
+### Testing — 178 tests, all grok-free
+
+- **Two clearly separated tiers.** `npm test` (and CI) runs **only grok-free tests** — pure-logic unit tests plus DOM tests that drive the real `media/chat.js` in a headless `happy-dom` window. The **grok-dependent probes** live in `research/*.cjs`, require the `grok` binary, are run manually, and are never collected by Vitest or CI.
+- **New pure module + tests** for the persist / restore decision: [src/plan-restore.ts](src/plan-restore.ts) extracts `appendPlanEntry` and `decideRestoreState`. 15 tests cover chronological append, immutability, text preservation (the wiped-`lastPlanText` regression), and the verdict-driven restore decision for every verdict including the "rejects then cancels → Agent mode" case that previously came back in Plan mode.
+- **New DOM tests** in `test/plan-history-restore.dom.test.ts` (12 tests) lock in the restore-flow rendering: positioned plans interleave at the right boundary, legacy plans flush at end of replay, multiple plans at the same position drain together, live user message drains queued plans, `clearMessages` resets queue + counter, all three verdict buttons produce matching status labels, `agentReset` removes the in-flight agent bubble and a subsequent `messageChunk` creates a fresh one.
+- **New ACP integration tests** in `test/acp-integration.test.ts` (6 tests) drive the real `AcpClient` over JSON-RPC stdio against a ~150-line fake `grok agent stdio` fixture (`test/fixtures/fake-grok-acp.cjs`). Covers the wire layer + plan-mode gate end-to-end: plan-snoop, workspace-write gate (on and off), terminal-create gate for mutating vs read-only commands. Encodes only what ACP requires, not grok's version-specific quirks, so it stays stable across CLI bumps.
+- **178 tests, ~1.4s**, no network, no spawned `grok`. The whole suite runs on a clean Ubuntu CI runner via `.github/workflows/ci.yml`.
+
+### Bug fixes (this iteration)
+
+- **Effort-picker dots are now visually balanced.** The "filled / empty" dots used the `●` / `○` Unicode glyphs, which render at different sizes in most fonts (the empty one is visibly larger). Replaced with CSS-shaped spans so active and inactive states are the same diameter.
+- **Spawning `.cmd` / `.bat` CLI paths now works on Windows.** Node 18+ refuses to spawn those without `shell: true` (CVE-2024-27980). `AcpClient.start()` now detects them and sets `shell: true` automatically, so installs that resolve grok to a `.cmd` shim (or the test fake-CLI) start correctly.
+
 ## 1.1.0 — 2026-05-27
 
 ### Windows support

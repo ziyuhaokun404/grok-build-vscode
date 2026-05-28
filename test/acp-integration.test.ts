@@ -1,0 +1,192 @@
+// Integration tests for the ACP wire layer + plan-mode gate.
+//
+// Spawns the fake `grok agent stdio` from test/fixtures/fake-grok-acp.cjs
+// (~150 lines, encodes only what the protocol requires — not grok version
+// quirks) and drives src/acp.ts AcpClient against it over real JSON-RPC stdio.
+// This catches the bugs the pure tests + DOM tests can't:
+//
+//   - Plan-snoop: when grok writes plan.md (outside workspace), the host's
+//     fs/write_text_file handler must (a) allow the write and (b) emit a
+//     `planFileContent` event so the review card has content.
+//   - Workspace-write gate: when planActive is true, fs/write_text_file for a
+//     path *inside* the workspace must be refused with PLAN_BLOCKED, and the
+//     client must emit a `mutationBlocked` event so the UI can show a notice.
+//   - Terminal-create gate: when planActive is true, mutating commands (rm,
+//     npm install, etc.) must be refused at terminal/create; read-only ones
+//     (ls, grep, head, etc.) must be allowed and reach the terminal handler.
+//   - exit_plan_mode round-trip: the host receives an `exitPlanRequest` event
+//     whose `plan` field is populated from the snooped plan.md content.
+//
+// Cross-platform: uses fake-grok-acp.cmd on Windows, fake-grok-acp.sh elsewhere
+// (both wrap the .cjs script via node). Subprocess startup adds ~50–100ms per
+// test — same order as the existing terminal-manager suite.
+import { describe, it, expect, beforeEach, afterEach, beforeAll } from "vitest";
+import * as path from "node:path";
+import * as os from "node:os";
+import * as fs from "node:fs";
+import { AcpClient } from "../src/acp";
+
+function fixtureCli(): string {
+  const dir = path.join(__dirname, "fixtures");
+  return process.platform === "win32"
+    ? path.join(dir, "fake-grok-acp.cmd")
+    : path.join(dir, "fake-grok-acp.sh");
+}
+
+beforeAll(() => {
+  // git from a Windows checkout may strip the +x bit on the .sh wrapper. Make
+  // sure it's executable so spawn() can run it directly on Linux/macOS CI.
+  if (process.platform !== "win32") {
+    const sh = path.join(__dirname, "fixtures", "fake-grok-acp.sh");
+    try { fs.chmodSync(sh, 0o755); } catch { /* best-effort */ }
+  }
+});
+
+/** Collect `mutationBlocked` events so tests can assert on the gate. */
+function collect<T>(client: AcpClient, event: string): T[] {
+  const out: T[] = [];
+  client.on(event, (v) => out.push(v));
+  return out;
+}
+
+/** Wait for a single event, with a small timeout so a hung subprocess fails the
+ *  test instead of hanging vitest. */
+function waitFor<T>(client: AcpClient, event: string, timeoutMs = 2000): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error(`timed out waiting for "${event}"`)), timeoutMs);
+    client.once(event, (v) => { clearTimeout(t); resolve(v); });
+  });
+}
+
+describe("ACP integration (real subprocess, fake CLI)", () => {
+  let client: AcpClient;
+  let workspace: string;
+  let planHome: string;
+  let stderr: string[];
+
+  beforeEach(async () => {
+    // Fresh temp dirs so the gate's workspace-vs-outside calculations are
+    // deterministic per test, independent of where vitest was launched.
+    workspace = fs.mkdtempSync(path.join(os.tmpdir(), "grok-int-ws-"));
+    planHome = fs.mkdtempSync(path.join(os.tmpdir(), "grok-int-plan-"));
+    const planPath = path.join(planHome, ".grok", "sessions", "cwd-x", "sess-y", "plan.md");
+    stderr = [];
+
+    client = new AcpClient({
+      cliPath: fixtureCli(),
+      cwd: workspace,
+      env: {
+        ...process.env,
+        FAKE_WORKSPACE_ROOT: workspace,
+        FAKE_PLAN_PATH: planPath,
+      },
+      log: () => {},
+    });
+    client.on("stderr", (t: string) => stderr.push(t));
+
+    // Wire up minimal fs/terminal handlers. Real fs writes for plan.md so we
+    // can verify content lands on disk; in-memory terminal handler so we can
+    // detect "was it called or blocked".
+    client.fsRead = async (p) => fs.readFileSync(p, "utf8");
+    client.fsWrite = async (p, content) => {
+      fs.mkdirSync(path.dirname(p), { recursive: true });
+      fs.writeFileSync(p, content, "utf8");
+    };
+    let terminalCalls = 0;
+    (client as any).terminal = {
+      create: (params: { command: string }) => { terminalCalls += 1; return { terminalId: `t-${terminalCalls}` }; },
+      output: () => ({ output: "", exitStatus: { exitCode: 0 }, truncated: false }),
+      waitForExit: async () => ({ exitCode: 0 }),
+      kill: () => {},
+      release: () => {},
+    };
+    (client as any).__terminalCalls = () => terminalCalls;
+
+    await client.start();
+    await client.newSession();
+  });
+
+  afterEach(() => {
+    try { (client as any).proc?.kill(); } catch { /* best-effort */ }
+    try { fs.rmSync(workspace, { recursive: true, force: true }); } catch { /* */ }
+    try { fs.rmSync(planHome, { recursive: true, force: true }); } catch { /* */ }
+  });
+
+  it("lifecycle: spawn → initialize → session/new succeeds and a basic prompt round-trips", async () => {
+    expect(client.sessionId).toBe("fake-session-1");
+    const meta = await client.prompt("hello");
+    expect(meta).toMatchObject({ totalTokens: 10 });
+  });
+
+  it("plan-snoop: grok's plan.md write is allowed AND emits planFileContent with the text", async () => {
+    client.planActive = true; // gate is up, but plan.md (outside workspace) must still be allowed
+    const planFireP = waitFor<string>(client, "planFileContent");
+    const exitFireP = waitFor<any>(client, "exitPlanRequest");
+
+    const promptP = client.prompt("SCENARIO_PROPOSE_PLAN");
+    const planText = await planFireP;
+    expect(planText).toContain("TEST PLAN");
+
+    const exitReq = await exitFireP;
+    expect(exitReq.sessionId).toBe("fake-session-1");
+    // The host responds via respondExitPlan; the fake CLI doesn't care which
+    // verdict — just complete the round-trip so the prompt resolves.
+    client.respondExitPlan(exitReq.id, "rejected");
+
+    await promptP;
+    // plan.md actually landed on disk (the fsWrite handler ran, so the gate
+    // allowed it despite planActive=true).
+    const planPathFromEnv = (client as any).opts.env.FAKE_PLAN_PATH;
+    expect(fs.existsSync(planPathFromEnv)).toBe(true);
+    expect(fs.readFileSync(planPathFromEnv, "utf8")).toContain("TEST PLAN");
+  });
+
+  it("gate: planActive=true blocks fs/write_text_file inside the workspace", async () => {
+    client.planActive = true;
+    const blocked = collect<{ kind: string; target: string }>(client, "mutationBlocked");
+
+    await client.prompt("SCENARIO_WORKSPACE_WRITE");
+
+    expect(blocked).toHaveLength(1);
+    expect(blocked[0].kind).toBe("write");
+    // Normalize slashes — the fake CLI uses `+ "/"` on its end, so the path
+    // arrives as forward-slash; the host's gate works either way.
+    expect(blocked[0].target.replace(/\\/g, "/")).toBe(workspace.replace(/\\/g, "/") + "/file.ts");
+    // The fake CLI got an error reply (visible on its stderr).
+    expect(stderr.join("")).toMatch(/WRITE_RESPONSE.*"error"/);
+    // And no file landed on disk.
+    expect(fs.existsSync(path.join(workspace, "file.ts"))).toBe(false);
+  });
+
+  it("gate: planActive=false allows fs/write_text_file inside the workspace", async () => {
+    client.planActive = false;
+    const blocked = collect<unknown>(client, "mutationBlocked");
+
+    await client.prompt("SCENARIO_WORKSPACE_WRITE");
+
+    expect(blocked).toHaveLength(0);
+    expect(fs.readFileSync(path.join(workspace, "file.ts"), "utf8")).toBe("// new file");
+  });
+
+  it("gate: planActive=true blocks terminal/create with a mutating command", async () => {
+    client.planActive = true;
+    const blocked = collect<{ kind: string; target: string }>(client, "mutationBlocked");
+
+    await client.prompt("SCENARIO_MUTATING_TERMINAL");
+
+    expect(blocked).toHaveLength(1);
+    expect(blocked[0].kind).toBe("terminal");
+    expect(blocked[0].target).toContain("rm");
+    expect((client as any).__terminalCalls()).toBe(0); // handler was never reached
+  });
+
+  it("gate: planActive=true allows terminal/create with a read-only command (ls)", async () => {
+    client.planActive = true;
+    const blocked = collect<unknown>(client, "mutationBlocked");
+
+    await client.prompt("SCENARIO_READONLY_TERMINAL");
+
+    expect(blocked).toHaveLength(0);
+    expect((client as any).__terminalCalls()).toBe(1); // handler was called → command allowed
+  });
+});

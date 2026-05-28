@@ -51,6 +51,7 @@
     slashFiltered: [],
     slashActive: 0,
     pendingDiffByToolCallId: new Map(),
+    toolItemsByToolCallId: new Map(),
     agentRenderScheduled: false,
     thoughtBuffer: "",
     thoughtRenderScheduled: false,
@@ -59,7 +60,34 @@
     sessionSearch: "",
     renamingSessionId: null,
     replaying: false,
+    // Saved plan cards waiting to be rendered inline as the conversation replays.
+    // Each entry has { text, verdict, afterUserMessage? }. We drain entries whose
+    // afterUserMessage matches the current userMsgCount as user messages stream
+    // in, and dump anything left (legacy plans w/o position, or plans after the
+    // last replayed user msg) at the end of replay.
+    planHistoryQueue: [],
+    userMsgCount: 0,
+    // Element rendered below a resolved plan card while the host is waiting on
+    // grok's response to the verdict (or its comment). Visible only between
+    // the verdict click and the first incoming agent chunk; cleared by any
+    // arriving content or by reset.
+    planProcessingEl: null,
+    // When true, the busy state is "locked" (e.g. session-start priming): the
+    // send button shows a spinner and is disabled. When false, busy is
+    // "stoppable" (regular prompts, verdict afterTurn) and the send button
+    // shows a stop icon that the user can click to cancel grok mid-stream.
+    busyLocked: false,
+    // While replaying, suppress everything from the start of the current user
+    // message (a primer turn) through the end of grok's response to it — until
+    // the next user message starts. Keeps the chat clean of our session-start
+    // priming when the user resumes a session.
+    suppressReplayTurn: false,
   };
+
+  // Matches any version of the extension's primer (v1, v2, …). Used during
+  // session replay to detect and hide the primer + grok's ack from the
+  // restored conversation.
+  const PRIMER_PATTERN = /^\s*\[grok-build-vscode primer v\d+\]/;
 
   // ---------- icons ----------
 
@@ -70,6 +98,8 @@
     cpu: `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M15 2v2"/><path d="M15 20v2"/><path d="M2 15h2"/><path d="M2 9h2"/><path d="M20 15h2"/><path d="M20 9h2"/><path d="M9 2v2"/><path d="M9 20v2"/></svg>`,
     squarePen: `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z"/></svg>`,
     arrowUp: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg>`,
+    square: `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="1.5"/></svg>`,
+    spinner: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>`,
     gear: `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>`,
     sparkle: `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/></svg>`,
     shield: `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/></svg>`,
@@ -94,9 +124,7 @@
     plan: {
       icon: ICON.listTree,
       label: "Plan mode",
-      desc: "Grok will explore the task and present a plan before acting",
-      disabled: true,
-      disabledNote: "Reject / Abandon not yet supported by the CLI via ACP — any response is treated as approval.",
+      desc: "Grok explores and proposes a plan; file writes and commands are blocked until you approve it",
     },
     yolo: {
       icon: ICON.zap,
@@ -446,7 +474,8 @@
     EFFORT_LEVELS.forEach((id, i) => {
       const dot = document.createElement("span");
       dot.className = "effort-dot" + (i <= currentIdx ? " active" : "");
-      dot.textContent = i <= currentIdx ? "●" : "○";
+      // Render the dot as a CSS-shaped span (see chat.css). Avoids the classic
+      // ● vs ○ Unicode size mismatch where the empty glyph is visibly larger.
       dot.title = EFFORT_TOOLTIPS[id] || capitalize(id);
       dot.onclick = (e) => {
         e.stopPropagation();
@@ -728,6 +757,7 @@
     }
     state.welcomeVisible = true;
     state.pendingDiffByToolCallId.clear();
+    state.toolItemsByToolCallId.clear();
     state.activeAgentEl = null;
     state.activeAgentRaw = "";
     state.activeUserEl = null;
@@ -737,6 +767,10 @@
     state.thoughtBuffer = "";
     state.activeToolGroupEl = null;
     state.replaying = false;
+    state.planHistoryQueue = [];
+    state.userMsgCount = 0;
+    state.suppressReplayTurn = false;
+    hidePlanProcessing();
   }
 
   function showOnboarding(mode, info) {
@@ -1006,6 +1040,7 @@
     item.className = "tool-item";
     item.textContent = toolLabel(call);
     body.appendChild(item);
+    if (call.toolCallId) state.toolItemsByToolCallId.set(call.toolCallId, item);
 
     hdr.innerHTML =
       `<span class="tool-group-label">${escapeHtml(inProgressLabel(call))}</span>` +
@@ -1016,6 +1051,31 @@
       body.hidden = expanded;
       el.classList.toggle("expanded", !expanded);
     };
+    scrollToBottom();
+  }
+
+  function attachDiffPreviewToToolItem(toolCallId, diff) {
+    const item = state.toolItemsByToolCallId.get(toolCallId);
+    if (!item || item.querySelector(".preview-link")) return; // already attached
+    const oldLines = (diff.oldText || "").split("\n").length;
+    const newLines = (diff.newText || "").split("\n").length;
+    const sub = document.createElement("div");
+    sub.className = "tool-item-subtitle";
+    sub.textContent = `${oldLines} → ${newLines} lines`;
+    item.appendChild(sub);
+    const preview = document.createElement("button");
+    preview.className = "preview-link";
+    preview.textContent = "open diff preview →";
+    preview.onclick = (e) => {
+      e.stopPropagation(); // don't toggle the tool-group expand/collapse
+      vscode.postMessage({
+        type: "openDiff",
+        path: diff.path,
+        oldText: diff.oldText,
+        newText: diff.newText,
+      });
+    };
+    item.appendChild(preview);
     scrollToBottom();
   }
 
@@ -1039,7 +1099,18 @@
     scrollToBottom();
   }
 
+  function addPlanNotice(text) {
+    clearWelcome();
+    const el = document.createElement("div");
+    el.className = "plan-notice";
+    el.innerHTML = `${ICON.listTree}<span>${escapeHtml(text)}</span>`;
+    messagesEl.appendChild(el);
+    scrollToBottom();
+  }
+
   function appendThought(text) {
+    if (state.suppressReplayTurn) return; // thinking inside the primer turn
+    hidePlanProcessing(); // thought streaming → indicator obsolete
     state.activeUserEl = null;
     clearWelcome();
     if (!state.activeThoughtEl) {
@@ -1079,6 +1150,8 @@
   }
 
   function appendAgent(text) {
+    if (state.suppressReplayTurn) return; // grok's response to the primer
+    hidePlanProcessing(); // agent output started — clear the indicator
     state.activeUserEl = null;
     closeToolGroup();
     clearWelcome();
@@ -1132,12 +1205,65 @@
     }
     clearWelcome();
     if (!state.activeUserEl) {
+      // A new user message is starting. If we're replaying and this message is
+      // the extension's primer, suppress it AND grok's response to it — both
+      // are extension plumbing the user never typed, and we don't want them
+      // surfacing as fake user bubbles on every session restore.
+      if (state.replaying && PRIMER_PATTERN.test(text)) {
+        state.suppressReplayTurn = true;
+        return;
+      }
+      state.suppressReplayTurn = false;
+      // Drain saved plan cards that should appear BEFORE this user message
+      // (i.e. they were resolved after the previous user msg in the live session).
+      drainPlanHistory(state.userMsgCount);
+      state.userMsgCount += 1;
       state.activeUserEl = addMessage("user", "");
       state.activeUserRaw = "";
     }
+    if (state.suppressReplayTurn) return; // still inside the primer's user message
     state.activeUserRaw += text;
     state.activeUserEl.innerHTML = renderMarkdown(state.activeUserRaw);
     scrollToBottom();
+  }
+
+  // Render and dequeue every saved plan whose `afterUserMessage` <= cutoff.
+  // Plans without a saved position never drain here — they fall out at the end
+  // of replay when we flush the rest of the queue.
+  function drainPlanHistory(cutoff) {
+    if (!state.planHistoryQueue.length) return;
+    state.planHistoryQueue = state.planHistoryQueue.filter((p) => {
+      if (typeof p.afterUserMessage === "number" && p.afterUserMessage <= cutoff) {
+        addPlanHistoryCard(p.text, p.verdict);
+        return false;
+      }
+      return true;
+    });
+  }
+
+  function flushPlanHistory() {
+    if (!state.planHistoryQueue.length) return;
+    for (const p of state.planHistoryQueue) addPlanHistoryCard(p.text, p.verdict);
+    state.planHistoryQueue = [];
+  }
+
+  function showPlanProcessing() {
+    hidePlanProcessing(); // dedupe
+    clearWelcome();
+    const el = document.createElement("div");
+    el.className = "plan-processing";
+    el.innerHTML = '<span class="plan-processing-dots"><span></span><span></span><span></span></span>';
+    el.setAttribute("aria-label", "Grok is processing");
+    messagesEl.appendChild(el);
+    state.planProcessingEl = el;
+    scrollToBottom();
+  }
+
+  function hidePlanProcessing() {
+    if (state.planProcessingEl && state.planProcessingEl.parentElement) {
+      state.planProcessingEl.parentElement.removeChild(state.planProcessingEl);
+    }
+    state.planProcessingEl = null;
   }
 
   function scrollToBottom() {
@@ -1206,8 +1332,18 @@
 
   // ---------- plan card ----------
 
+  const VERDICT_LABEL = {
+    approved: "Approved",
+    rejected: "Rejected",
+    abandoned: "Cancelled",
+  };
+
   function addPlanCard(req) {
     clearWelcome();
+    // Finalize any in-flight Thinking / agent / tool group so it doesn't sit
+    // above the plan card showing "Thinking..." forever. Stamps "Thought for Ns"
+    // on the header and closes the tool group.
+    commitAgentTurn();
     const el = document.createElement("div");
     el.className = "card plan";
     const title = document.createElement("div");
@@ -1215,28 +1351,92 @@
     title.textContent = "Plan ready for review";
     el.appendChild(title);
 
-    const body = document.createElement("pre");
+    const sub = document.createElement("div");
+    sub.className = "card-subtitle";
+    sub.textContent = "Nothing has been written yet. Approve, reject with feedback, or cancel to leave plan mode.";
+    el.appendChild(sub);
+
+    const body = document.createElement("div");
     body.className = "plan-body";
-    body.textContent = req.plan || "(empty plan)";
+    body.innerHTML = req.plan ? renderMarkdown(req.plan) : "(empty plan)";
     el.appendChild(body);
+
+    const feedback = document.createElement("textarea");
+    feedback.className = "plan-feedback";
+    feedback.rows = 2;
+    feedback.placeholder = "Optional comment — Grok decides what to do with it";
+    el.appendChild(feedback);
 
     const actions = document.createElement("div");
     actions.className = "card-actions";
-    const mk = (label, cls, verdict) => {
+    const mk = (label, cls, verdict, withComment) => {
       const b = document.createElement("button");
       b.textContent = label;
       if (cls) b.classList.add(cls);
+      b.dataset.verdict = verdict;
       b.onclick = () => {
-        vscode.postMessage({ type: "exitPlanAnswer", requestId: req.id, verdict });
+        const comment = withComment ? feedback.value.trim() : "";
+        vscode.postMessage({
+          type: "exitPlanAnswer",
+          requestId: req.id,
+          verdict,
+          ...(comment ? { comment } : {}),
+        });
         el.classList.add("resolved");
+        b.classList.add("chosen");
+        feedback.disabled = true;
         for (const x of actions.querySelectorAll("button")) x.disabled = true;
+        // Append a small status line so the verdict stays visible after the
+        // buttons are disabled (matters more for the history view, but useful
+        // here too while scrolling back through a session).
+        const status = document.createElement("div");
+        status.className = "plan-verdict-label";
+        status.textContent = VERDICT_LABEL[verdict] ?? "Resolved";
+        el.appendChild(status);
       };
       return b;
     };
-    actions.appendChild(mk("Approve", "primary", "approved"));
-    actions.appendChild(mk("Abandon", "danger", "abandoned"));
-    actions.appendChild(mk("Reject", "", "rejected"));
+    actions.appendChild(mk("Approve & implement", "primary", "approved", true));
+    actions.appendChild(mk("Reject", "", "rejected", true));
+    actions.appendChild(mk("Cancel", "secondary", "abandoned", true));
     el.appendChild(actions);
+    messagesEl.appendChild(el);
+    scrollToBottom();
+  }
+
+  // Read-only plan card for resumed sessions. The original exit_plan_mode request
+  // is long gone, so there's nothing to respond to — we just show the plan text
+  // grok wrote during that session, recovered from ~/.grok/sessions/.../plan.md,
+  // and the verdict the user gave it (persisted in globalState).
+  function addPlanHistoryCard(text, verdict) {
+    clearWelcome();
+    const el = document.createElement("div");
+    el.className = "card plan plan-history";
+    const title = document.createElement("div");
+    title.className = "card-title";
+    title.textContent = "Plan from this session";
+    el.appendChild(title);
+
+    const sub = document.createElement("div");
+    sub.className = "card-subtitle";
+    const verdictLabel = VERDICT_LABEL[verdict];
+    sub.textContent = verdictLabel
+      ? `Restored from the previous session — you ${verdictLabel.toLowerCase()} this plan.`
+      : "Restored from the previous session.";
+    el.appendChild(sub);
+
+    const body = document.createElement("div");
+    body.className = "plan-body";
+    body.innerHTML = text ? renderMarkdown(text) : "(empty plan)";
+    el.appendChild(body);
+
+    if (verdictLabel) {
+      const status = document.createElement("div");
+      status.className = "plan-verdict-label plan-verdict-" + verdict;
+      status.textContent = verdictLabel;
+      el.appendChild(status);
+    }
+
     messagesEl.appendChild(el);
     scrollToBottom();
   }
@@ -1319,12 +1519,44 @@
 
   // ---------- send ----------
 
-  function send() {
-    if (state.busy) return;
+  function updateSendButton() {
+    // Three states:
+    //  - idle (!busy): send icon, enabled, click → send the typed message.
+    //  - busy + locked: spinner icon, disabled, no click action. Used for
+    //    session-start priming and other flows the user shouldn't interrupt.
+    //  - busy + stoppable: stop icon, enabled, click → cancel grok mid-stream.
+    //    Used for regular prompts and the verdict afterTurn flow.
+    sendBtn.classList.remove("stop", "initializing");
+    if (!state.busy) {
+      sendBtn.innerHTML = ICON.arrowUp;
+      sendBtn.title = "Send";
+      sendBtn.disabled = false;
+    } else if (state.busyLocked) {
+      sendBtn.innerHTML = ICON.spinner;
+      sendBtn.title = "Initializing…";
+      sendBtn.classList.add("initializing");
+      sendBtn.disabled = true;
+    } else {
+      sendBtn.innerHTML = ICON.square;
+      sendBtn.title = "Stop";
+      sendBtn.classList.add("stop");
+      sendBtn.disabled = false;
+    }
+  }
+
+  function sendOrStop() {
+    if (state.busy) {
+      // Stop mode: ask the host to cancel grok's in-flight turn. We do NOT
+      // clear state.busy here — that happens when the cancelled turn actually
+      // ends (agentEnd / agentError), so the button stays as "Stop" until the
+      // CLI confirms.
+      vscode.postMessage({ type: "cancel" });
+      return;
+    }
     const text = input.value.trim();
     if (!text && state.chips.every((c) => c.hidden)) return;
-    sendBtn.disabled = true;
     state.busy = true;
+    updateSendButton();
     state.activeAgentEl = null;
     state.activeAgentRaw = "";
     state.activeThoughtEl = null;
@@ -1380,7 +1612,16 @@
         state.commands = msg.commands || [];
         break;
       case "userMessage":
+        // Live send (or immediate verdict-feedback bubble): render and bump the
+        // counter so any plan history queued for this position drains first.
+        drainPlanHistory(state.userMsgCount);
+        state.userMsgCount += 1;
         addMessage("user", msg.text, msg.chips || []);
+        // If the indicator is showing and a NEW (live-send) user message comes
+        // in, hide it. (When the host posts a userMessage as part of the verdict
+        // flow, it then immediately posts planProcessing, which re-shows it
+        // after we hide here — the net effect is correct: indicator below.)
+        hidePlanProcessing();
         break;
       case "agentStart":
         break;
@@ -1396,24 +1637,43 @@
       case "historyReplay":
         if (msg.active) {
           state.replaying = true;
+          state.suppressReplayTurn = false; // fresh replay starts unsuppressed
         } else {
           commitAgentTurn(); // finalize the last turn while still flagged as replay
           state.replaying = false;
+          state.suppressReplayTurn = false; // replay over → no longer suppressing
+          // Anything left in the queue is either legacy (no afterUserMessage)
+          // or was resolved after the final user message of the session. Render
+          // it now at the bottom so we don't silently drop those plans.
+          flushPlanHistory();
         }
         break;
+      case "planHistoryQueue":
+        // Sent by the host right before replay starts. Drives inline placement
+        // of historical plan cards from appendUserChunk / live userMessage.
+        state.planHistoryQueue = (msg.plans || []).slice();
+        state.userMsgCount = 0;
+        break;
+      case "planProcessing":
+        showPlanProcessing();
+        break;
       case "toolCall":
+        if (state.suppressReplayTurn) break; // tool calls inside the primer turn (unlikely but defensive)
         addToToolGroup(msg.call);
         break;
       case "toolCallUpdate": {
+        if (state.suppressReplayTurn) break;
         const c = msg.call?.content;
         if (Array.isArray(c)) {
           for (const item of c) {
             if (item?.type === "diff") {
-              state.pendingDiffByToolCallId.set(msg.call.toolCallId, {
+              const diff = {
                 path: item.path,
                 oldText: item.oldText ?? "",
                 newText: item.newText ?? "",
-              });
+              };
+              state.pendingDiffByToolCallId.set(msg.call.toolCallId, diff);
+              attachDiffPreviewToToolItem(msg.call.toolCallId, diff);
             }
           }
         }
@@ -1425,25 +1685,72 @@
       case "exitPlanRequest":
         addPlanCard(msg.req);
         break;
+      case "planHistory":
+        addPlanHistoryCard(msg.text, msg.verdict);
+        break;
+      case "planNotice":
+        addPlanNotice(msg.text);
+        break;
+      case "planBlocked":
+        addPlanNotice(
+          msg.kind === "terminal"
+            ? `Plan mode blocked a command: ${msg.target}`
+            : `Plan mode blocked a write to ${msg.target}`,
+        );
+        break;
       case "promptComplete":
+        // Finalize the Thinking block and update the token donut — but DO NOT
+        // clear busy here. agentEnd is now the single authoritative "user can
+        // send again" signal, so that the verdict → afterTurn flow can keep
+        // busy=true across two consecutive client.prompt() calls (the original
+        // turn ends emitting promptComplete; afterTurn's follow-up turn then
+        // runs and emits its own agentEnd at the end, which clears busy).
         commitAgentTurn();
         if (msg.meta?.totalTokens) updateDonut(msg.meta.totalTokens);
-        state.busy = false;
-        sendBtn.disabled = false;
         break;
+      case "agentReset": {
+        hidePlanProcessing(); // turn is being reset, indicator no longer applies
+        // Drop the in-flight agent bubble entirely. Used when the host wants to
+        // suppress the rest of the current turn (e.g. after Reject, where
+        // grok's false "approved" response would otherwise leak through).
+        if (state.activeAgentEl) {
+          const wrapper = state.activeAgentEl.closest(".msg-wrapper") ?? state.activeAgentEl.parentElement;
+          (wrapper ?? state.activeAgentEl).remove();
+        }
+        state.activeAgentEl = null;
+        state.activeAgentRaw = "";
+        state.activeThoughtEl = null;
+        state.activeThoughtHdrEl = null;
+        state.thoughtStartTime = null;
+        // Also clear the rAF-scheduled flag so the next messageChunk arms its
+        // own rAF instead of relying on the stale one that might fire on a
+        // detached element.
+        state.agentRenderScheduled = false;
+        break;
+      }
       case "agentError":
         addError(msg.text);
         state.busy = false;
-        sendBtn.disabled = false;
+        updateSendButton();
         break;
       case "agentEnd":
         state.busy = false;
-        sendBtn.disabled = false;
+        updateSendButton();
         break;
       case "exit":
         addError(`Grok exited (code ${msg.code}). Click the new session button to restart.`);
         state.busy = false;
-        sendBtn.disabled = false;
+        updateSendButton();
+        break;
+      case "setBusy":
+        // Host-driven busy state for flows where there's no natural agentEnd
+        // (e.g. session-start priming). When `locked` is true the button shows
+        // a spinner and is disabled (no interrupt option); when false (or
+        // omitted) the button shows a stop icon and clicks cancel the in-flight
+        // CLI work.
+        state.busy = !!msg.value;
+        state.busyLocked = !!msg.locked;
+        updateSendButton();
         break;
       case "summarizing": {
         clearWelcome();
@@ -1479,7 +1786,8 @@
 
   // ---------- wire ----------
 
-  sendBtn.onclick = send;
+  sendBtn.onclick = sendOrStop;
+  updateSendButton();
   newBtn.onclick = () => {
     resetForNewSession();
     vscode.postMessage({ type: "newSession" });
@@ -1595,7 +1903,7 @@
     const sendKey = state.useCtrlEnter
       ? e.key === "Enter" && (e.metaKey || e.ctrlKey)
       : e.key === "Enter" && !e.shiftKey;
-    if (sendKey) { e.preventDefault(); send(); }
+    if (sendKey) { e.preventDefault(); sendOrStop(); }
   });
 
   document.addEventListener("dragenter", (e) => { e.preventDefault(); document.body.classList.add("dragging"); });

@@ -1,0 +1,164 @@
+// DOM-level test of the plan-review card — drives the REAL shipped media/chat.js
+// inside a happy-dom window, dispatches the same messages sidebar.ts posts
+// (exitPlanRequest / planNotice / planBlocked), clicks the rendered buttons, and
+// asserts on the postMessage payload that goes back to the extension host.
+//
+// This covers the regression-prone webview logic that a pure unit test can't:
+//   - "Keep planning" sends verdict:"rejected", and includes `comment` ONLY when
+//     the feedback textarea is non-empty (the `...(comment ? {comment} : {})` spread)
+//   - "Approve & implement" sends verdict:"approved" and never a comment
+//   - after a click the card resolves and both buttons + textarea disable
+//   - planNotice / planBlocked render a .plan-notice with the right text
+//
+// What it deliberately does NOT cover: real VS Code rendering, CSS, the actual
+// acquireVsCodeApi bridge, and the round-trip to client.setMode/client.prompt.
+// Those need a human or the @vscode/test-electron suite (roadmap item #1).
+import { describe, it, expect } from "vitest";
+import { bootWebview, dispatch, click } from "./webview-harness";
+
+describe("plan card (real chat.js in a DOM)", () => {
+  it("renders a plan card with body, feedback textarea, and three action buttons", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, { type: "exitPlanRequest", req: { id: 7, plan: "1. add subtract()\n2. add test" } });
+
+    const card = doc.querySelector(".card.plan");
+    expect(card).not.toBeNull();
+    expect(card!.querySelector(".plan-body")!.textContent).toContain("add subtract()");
+    expect(card!.querySelector("textarea.plan-feedback")).not.toBeNull();
+    const labels = [...card!.querySelectorAll(".card-actions button")].map((b) => b.textContent);
+    expect(labels).toEqual(["Approve & implement", "Reject", "Cancel"]);
+  });
+
+  it("'Reject' with empty feedback sends verdict:rejected and NO comment key", () => {
+    const { window, posted, doc } = bootWebview();
+    dispatch(window, { type: "exitPlanRequest", req: { id: 11, plan: "p" } });
+
+    const reject = [...doc.querySelectorAll(".card.plan .card-actions button")]
+      .find((b) => b.textContent === "Reject") as HTMLButtonElement;
+    click(window, reject);
+
+    expect(posted).toHaveLength(1);
+    expect(posted[0]).toMatchObject({ type: "exitPlanAnswer", requestId: 11, verdict: "rejected" });
+    expect("comment" in posted[0]).toBe(false);
+  });
+
+  it("'Reject' with feedback text includes the trimmed comment", () => {
+    const { window, posted, doc } = bootWebview();
+    dispatch(window, { type: "exitPlanRequest", req: { id: 12, plan: "p" } });
+
+    const card = doc.querySelector(".card.plan")!;
+    (card.querySelector("textarea.plan-feedback") as HTMLTextAreaElement).value = "  use a __tests__ folder  ";
+    const reject = [...card.querySelectorAll(".card-actions button")]
+      .find((b) => b.textContent === "Reject") as HTMLButtonElement;
+    click(window, reject);
+
+    expect(posted[0]).toEqual({
+      type: "exitPlanAnswer",
+      requestId: 12,
+      verdict: "rejected",
+      comment: "use a __tests__ folder",
+    });
+  });
+
+  it("'Approve & implement' sends verdict:approved without a comment when textarea is empty", () => {
+    const { window, posted, doc } = bootWebview();
+    dispatch(window, { type: "exitPlanRequest", req: { id: 13, plan: "p" } });
+
+    const approve = [...doc.querySelectorAll(".card.plan .card-actions button")]
+      .find((b) => b.textContent === "Approve & implement") as HTMLButtonElement;
+    click(window, approve);
+
+    expect(posted[0]).toMatchObject({ type: "exitPlanAnswer", requestId: 13, verdict: "approved" });
+    expect("comment" in posted[0]).toBe(false);
+  });
+
+  it("'Approve & implement' includes the trimmed comment when the user types one (so nuance like 'skip tests' reaches grok)", () => {
+    const { window, posted, doc } = bootWebview();
+    dispatch(window, { type: "exitPlanRequest", req: { id: 14, plan: "p" } });
+
+    const card = doc.querySelector(".card.plan")!;
+    (card.querySelector("textarea.plan-feedback") as HTMLTextAreaElement).value = "  use sqlite instead of postgres  ";
+    const approve = [...card.querySelectorAll(".card-actions button")]
+      .find((b) => b.textContent === "Approve & implement") as HTMLButtonElement;
+    click(window, approve);
+
+    expect(posted[0]).toEqual({
+      type: "exitPlanAnswer",
+      requestId: 14,
+      verdict: "approved",
+      comment: "use sqlite instead of postgres",
+    });
+  });
+
+  it("'Cancel' with empty feedback sends verdict:abandoned and NO comment key", () => {
+    const { window, posted, doc } = bootWebview();
+    dispatch(window, { type: "exitPlanRequest", req: { id: 15, plan: "p" } });
+
+    const cancel = [...doc.querySelectorAll(".card.plan .card-actions button")]
+      .find((b) => b.textContent === "Cancel") as HTMLButtonElement;
+    click(window, cancel);
+
+    expect(posted[0]).toMatchObject({ type: "exitPlanAnswer", requestId: 15, verdict: "abandoned" });
+    expect("comment" in posted[0]).toBe(false);
+  });
+
+  it("'Cancel' with feedback includes the trimmed comment (so the user's reason reaches grok)", () => {
+    const { window, posted, doc } = bootWebview();
+    dispatch(window, { type: "exitPlanRequest", req: { id: 16, plan: "p" } });
+
+    const card = doc.querySelector(".card.plan")!;
+    (card.querySelector("textarea.plan-feedback") as HTMLTextAreaElement).value = "  too ambitious for v1  ";
+    const cancel = [...card.querySelectorAll(".card-actions button")]
+      .find((b) => b.textContent === "Cancel") as HTMLButtonElement;
+    click(window, cancel);
+
+    expect(posted[0]).toEqual({
+      type: "exitPlanAnswer",
+      requestId: 16,
+      verdict: "abandoned",
+      comment: "too ambitious for v1",
+    });
+  });
+
+  it("resolves the card, highlights the chosen button, shows verdict label, disables inputs", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, { type: "exitPlanRequest", req: { id: 14, plan: "p" } });
+
+    const card = doc.querySelector(".card.plan")!;
+    const buttons = [...card.querySelectorAll(".card-actions button")] as HTMLButtonElement[];
+    const rejectBtn = buttons.find((b) => b.textContent === "Reject")!;
+    click(window, rejectBtn);
+
+    expect(card.classList.contains("resolved")).toBe(true);
+    expect(rejectBtn.classList.contains("chosen")).toBe(true);
+    expect((card.querySelector("textarea.plan-feedback") as HTMLTextAreaElement).disabled).toBe(true);
+    expect(buttons.every((b) => b.disabled)).toBe(true);
+    expect(card.querySelector(".plan-verdict-label")!.textContent).toBe("Rejected");
+  });
+
+  it("renders a read-only plan-history card with the persisted verdict label", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, { type: "planHistory", text: "# Restored plan\n- step 1", verdict: "rejected" });
+
+    const cards = doc.querySelectorAll(".card.plan.plan-history");
+    expect(cards).toHaveLength(1);
+    const card = cards[0];
+    expect(card.querySelector(".plan-body")!.textContent).toContain("step 1");
+    expect(card.querySelector(".plan-verdict-label")!.textContent).toBe("Rejected");
+    expect(card.querySelector(".card-actions")).toBeNull();
+    expect(card.querySelector("textarea")).toBeNull();
+  });
+
+  it("renders a plan-notice for planNotice and the blocked-command/-write variants", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, { type: "planNotice", text: "Staying in Plan mode — nothing was written." });
+    dispatch(window, { type: "planBlocked", kind: "terminal", target: "npm install" });
+    dispatch(window, { type: "planBlocked", kind: "write", target: "src/app.ts" });
+
+    const notices = [...doc.querySelectorAll(".plan-notice")].map((n) => n.textContent);
+    expect(notices).toHaveLength(3);
+    expect(notices[0]).toContain("Staying in Plan mode");
+    expect(notices[1]).toContain("Plan mode blocked a command: npm install");
+    expect(notices[2]).toContain("Plan mode blocked a write to src/app.ts");
+  });
+});

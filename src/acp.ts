@@ -10,6 +10,14 @@ import {
   parseAcpLine,
   routeSessionUpdate,
 } from "./acp-dispatch";
+import {
+  PLAN_BLOCKED_CODE,
+  PLAN_BLOCKED_TERMINAL_MSG,
+  PLAN_BLOCKED_WRITE_MSG,
+  isPlanFileWrite,
+  shouldBlockTerminal,
+  shouldBlockWrite,
+} from "./plan-gate";
 
 export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -96,6 +104,13 @@ export class AcpClient extends EventEmitter {
   availableCommands: SlashCommand[] = [];
   lastMeta?: PromptResultMeta;
 
+  /**
+   * Client-enforced plan gate. While true, workspace file writes and mutating
+   * shell commands are refused at the (mandatory) fs/terminal handlers — see
+   * `plan-gate.ts`. The host toggles this; the CLI's own plan mode is advisory.
+   */
+  planActive = false;
+
   /** Set by the host to satisfy server→client fs requests. */
   fsRead?: FsReadHandler;
   fsWrite?: FsWriteHandler;
@@ -114,9 +129,14 @@ export class AcpClient extends EventEmitter {
     args.push("stdio");
 
     this.opts.log(`spawning ${this.opts.cliPath} ${args.join(" ")} (cwd=${this.opts.cwd})`);
+    // Node 18+ refuses to spawn .cmd/.bat without `shell: true` on Windows
+    // (CVE-2024-27980). Enable shell mode for those so installs that resolve to
+    // a .cmd shim (e.g. some package managers, our test fake-CLI) still work.
+    const needsShell = process.platform === "win32" && /\.(cmd|bat)$/i.test(this.opts.cliPath);
     this.proc = spawn(this.opts.cliPath, args, {
       cwd: this.opts.cwd,
       env: this.opts.env ?? process.env,
+      shell: needsShell,
     });
 
     this.rl = createInterface({ input: this.proc.stdout });
@@ -208,7 +228,7 @@ export class AcpClient extends EventEmitter {
     }
   }
 
-  async setMode(modeId: "plan" | "agent"): Promise<void> {
+  async setMode(modeId: string): Promise<void> {
     if (!this.sessionId) throw new Error("no session");
     await this.request("session/set_mode", {
       sessionId: this.sessionId,
@@ -230,12 +250,12 @@ export class AcpClient extends EventEmitter {
   }
 
   async cancel(): Promise<void> {
-    if (!this.sessionId) return;
-    try {
-      await this.request("session/cancel", { sessionId: this.sessionId });
-    } catch {
-      /* best-effort */
-    }
+    if (!this.sessionId || !this.proc) return;
+    // ACP defines session/cancel as a notification (no id) — sending it as a
+    // request causes grok-cli to ignore it. Write directly to stdin without an
+    // id and don't await a response.
+    const notif = { jsonrpc: "2.0", method: "session/cancel", params: { sessionId: this.sessionId } };
+    try { this.proc.stdin.write(JSON.stringify(notif) + "\n"); } catch { /* best-effort */ }
   }
 
   /** Respond to a pending permission request (from the agent) with the chosen option id. */
@@ -336,12 +356,27 @@ export class AcpClient extends EventEmitter {
       }
       if (method === "fs/write_text_file") {
         if (!this.fsWrite) throw new Error("fsWrite handler not registered");
+        // Snoop grok's own plan file so the review card can show the plan
+        // (exit_plan_mode itself arrives with planContent: null).
+        if (isPlanFileWrite(params.path)) {
+          this.emit("planFileContent", params.content ?? "");
+        }
+        if (shouldBlockWrite(params.path, { active: this.planActive, workspaceRoot: this.opts.cwd })) {
+          this.emit("mutationBlocked", { kind: "write", target: params.path });
+          this.respondError(id, PLAN_BLOCKED_CODE, PLAN_BLOCKED_WRITE_MSG);
+          return;
+        }
         await this.fsWrite(params.path, params.content);
         this.respondOk(id, {});
         return;
       }
       if (method === "terminal/create") {
         if (!this.terminal) throw new Error("terminal handler not registered");
+        if (shouldBlockTerminal(params.command, { active: this.planActive, workspaceRoot: this.opts.cwd })) {
+          this.emit("mutationBlocked", { kind: "terminal", target: params.command });
+          this.respondError(id, PLAN_BLOCKED_CODE, PLAN_BLOCKED_TERMINAL_MSG);
+          return;
+        }
         this.respondOk(id, this.terminal.create(params));
         return;
       }

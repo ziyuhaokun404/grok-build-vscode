@@ -13,6 +13,9 @@ import {
   toggleChip,
 } from "./chips";
 import { buildPrompt } from "./prompt-builder";
+import { pickRejectOption, shouldRejectPermission } from "./plan-gate";
+import { appendPlanEntry, decideRestoreState } from "./plan-restore";
+import { GROK_PRIMER } from "./grok-primer";
 import {
   SessionListEntry,
   SessionMetaOverrides,
@@ -20,6 +23,7 @@ import {
   deleteSessionDir,
   listSessions,
   resolveGrokHome,
+  sessionsDirFor,
 } from "./sessions";
 
 type WebviewMsg =
@@ -41,7 +45,7 @@ type WebviewMsg =
   | { type: "showLogs" }
   | { type: "dropFile"; path: string; shift: boolean }
   | { type: "permissionAnswer"; requestId: number | string; optionId: string }
-  | { type: "exitPlanAnswer"; requestId: number | string; verdict: "approved" | "abandoned" | "rejected" }
+  | { type: "exitPlanAnswer"; requestId: number | string; verdict: "approved" | "abandoned" | "rejected"; comment?: string }
   | { type: "setModel"; modelId: string }
   | { type: "runInstallCmd" }
   | { type: "runGrokLogin" }
@@ -54,6 +58,12 @@ type WebviewMsg =
 
 const SESSION_META_KEY = "grok.sessionMeta";
 
+// grok's non-plan ("act") mode id on the wire. The CLI reports this via
+// current_mode_update after leaving plan mode (verified against grok 0.2.3 —
+// see research/plan-mode.md). The UI labels it "Agent"; the wire calls it
+// "default".
+const ACT_MODE_ID = "default";
+
 export class GrokSidebar implements vscode.WebviewViewProvider {
   public static readonly viewId = "grok.chat";
   private view?: vscode.WebviewView;
@@ -63,11 +73,33 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
   private editorWatcher?: vscode.Disposable;
   private terminalManager = new TerminalManager();
   private autoApprove = false;
+  private planActive = false;
+  // Deferred post-turn action. The CLI's exit_plan_mode arrives *during* an
+  // in-flight session/prompt, so we can't send a new prompt/set_mode from the
+  // approval handler — we'd collide with the running turn. We stash the action
+  // here and run it once the current prompt resolves (see handleSend).
+  private afterTurn?: () => Promise<void>;
   private cliPath?: string;
   private sessionGen = 0;
   private hasHistory = false;
   private suppressContent = false;
+  // Plan-reject specific suppression: drop streaming output (the false-approval
+  // ramble) but let lifecycle events through so the webview clears `busy` and
+  // re-enables the send button when the cancelled turn finally ends.
+  private suppressPlanReject = false;
   private lastPlanText = "";
+  // Plan text currently shown in the live exit_plan_mode card. Set when we post
+  // the card to the webview, read by persistPlanVerdict when the user picks a
+  // verdict, then cleared. Decoupled from lastPlanText (which gets nuked the
+  // moment we render the card) so the saved history actually has content.
+  private pendingPlanText = "";
+  // Count of user messages that have entered this session (replayed + live).
+  // Persisted on each resolved plan as `afterUserMessage` so the resume view
+  // can render plan cards inline with the conversation rather than at the end.
+  private userMessageCount = 0;
+  // True while a sequence of user_message_chunk events is mid-flight, so we
+  // only increment userMessageCount once per user message during replay.
+  private inUserMessage = false;
   private activeSessionId?: string;
   private titleGenerated = false;
   private firstUserMessageForTitle?: string;
@@ -137,19 +169,297 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
     this.post({ type: "openModePopover" });
   }
 
+  /**
+   * Development / testing helper. Posts a realistic dummy `exitPlanRequest` so
+   * the plan-review card (Approve / Reject / Cancel) appears in the webview.
+   * Lets you exercise the three options, the feedback textarea, the resolved
+   * state, and the downstream notice/mode logic without a live grok process.
+   * The "Reject" button is the one labeled "Keep planning" in the real flow.
+   */
+  debugShowDummyPlan(): void {
+    const dummyPlan = `# Refactor authentication helper
+
+## Summary
+Introduce a small \`auth.ts\` module and migrate the two call sites in the API layer. No behavior change for end users.
+
+## Detailed steps
+1. Create \`src/lib/auth.ts\` exporting \`getSessionToken()\` and \`isTokenExpired()\`.
+2. Update \`src/api/client.ts\` (two call sites) to delegate to the new helper.
+3. Add unit tests in \`tests/auth.test.ts\` covering expiry + refresh paths.
+4. Run the integration suite to confirm nothing regressed.
+
+## Risk / notes
+- Token format is unchanged.
+- One new (already-transitive) dependency on \`jsonwebtoken\`.
+
+\`\`\`ts
+// proposed addition to src/lib/auth.ts
+export async function getSessionToken(): Promise<string> {
+  const cached = getFromCache();
+  if (cached && !isTokenExpired(cached)) return cached;
+  return refresh();
+}
+\`\`\`
+
+See design doc for the full state machine diagram.`;
+
+    this.post({
+      type: "exitPlanRequest",
+      req: {
+        id: "dummy-plan-" + Date.now(),
+        sessionId: this.activeSessionId || "dummy-session",
+        plan: dummyPlan,
+      },
+    });
+
+    // Make the bottom mode button reflect Plan during the manual test.
+    this.post({ type: "modeChanged", modeId: "plan" });
+  }
+
+  /**
+   * The mode the UI should show. Plan and YOLO are *client* states that the CLI
+   * doesn't model (the CLI only knows agent/plan), so we derive the button label
+   * here rather than echoing the CLI's raw mode id.
+   */
+  private displayMode(): "agent" | "plan" | "yolo" {
+    if (this.planActive) return "plan";
+    if (this.autoApprove) return "yolo";
+    return "agent";
+  }
+
+  private postMode(): void {
+    this.post({ type: "modeChanged", modeId: this.displayMode() });
+  }
+
+  /** Toggle the client-enforced plan gate and keep the live client in sync. */
+  private setPlanActive(v: boolean): void {
+    this.planActive = v;
+    if (this.client) this.client.planActive = v;
+    this.postMode();
+  }
+
   async setMode(modeId: "agent" | "plan" | "yolo"): Promise<void> {
+    // Agent/plan/yolo are mutually exclusive. Plan = client write/exec gate;
+    // YOLO = auto-approve. Both ride on top of the CLI's agent mode, except
+    // Plan which also tells the CLI to plan instead of act.
     if (modeId === "yolo") {
       this.autoApprove = true;
-      this.post({ type: "modeChanged", modeId: "yolo" });
+      this.setPlanActive(false); // posts displayMode → "yolo"
+      if (this.client) {
+        try { await this.client.setMode(ACT_MODE_ID); } catch { /* CLI stays put; gate is what matters */ }
+      }
       return;
     }
     this.autoApprove = false;
-    if (!this.client) return;
-    try {
-      await this.client.setMode(modeId);
-    } catch (e) {
-      vscode.window.showErrorMessage(`Couldn't switch mode: ${(e as Error).message}`);
+    if (modeId === "plan") {
+      this.setPlanActive(true); // posts displayMode → "plan"
+      if (this.client) {
+        try { await this.client.setMode("plan"); }
+        catch (e) { vscode.window.showErrorMessage(`Couldn't switch mode: ${(e as Error).message}`); }
+      }
+      return;
     }
+    // agent
+    this.setPlanActive(false); // posts displayMode → "agent"
+    if (this.client) {
+      try { await this.client.setMode(ACT_MODE_ID); }
+      catch (e) { vscode.window.showErrorMessage(`Couldn't switch mode: ${(e as Error).message}`); }
+    }
+  }
+
+  /**
+   * Resolve a plan-review card. The CLI's `exit_plan_mode` treats *any* response
+   * as approval, so the protocol verdict is cosmetic — our gate is the real
+   * decision. Crucially, this fires *during* the planning prompt's turn, so we
+   * only respond here and defer any new prompt/set_mode to `afterTurn`, which
+   * runs once that turn completes (handleSend).
+   *
+   * Three verdicts:
+   *  - `approved`: drop gate, return CLI to act mode, send "implement now".
+   *  - `rejected`: keep gate up. If the user left a comment, send it as a plain
+   *    user message after the turn ends and let grok decide what to do next
+   *    (re-plan, ask clarifying questions, etc.) — we don't force a specific
+   *    "revise the plan" framing.
+   *  - `abandoned`: drop gate (exit plan mode entirely), no follow-up prompt.
+   *    The user wants to back out and continue freely.
+   *
+   * `rejected`/`abandoned` cut off the CLI's false-approval continuation via
+   * `cancel()` + a content-only suppression flag. Lifecycle events
+   * (`promptComplete`, `agentEnd`) still reach the webview so `busy` clears and
+   * the send button re-enables when the cancelled turn finally ends.
+   */
+  private handleExitPlan(
+    requestId: number | string,
+    verdict: "approved" | "abandoned" | "rejected",
+    comment?: string,
+  ): void {
+    const client = this.client;
+    if (!client) return;
+    const gen = this.sessionGen;
+    client.respondExitPlan(requestId, verdict);
+    this.persistPlanVerdict(verdict);
+
+    const feedback = comment?.trim();
+
+    if (verdict === "approved") {
+      // Drop the gate now, then once the planning turn ends, return the CLI to
+      // act mode and have it implement. The wire-level prompt uses the same
+      // [Plan approved] marker the primer trained grok to recognize, so all
+      // three verdicts speak a consistent protocol. If the user attached a
+      // comment, post it as their user bubble immediately and append it to the
+      // wire-level prompt — same pattern as reject/cancel.
+      this.setPlanActive(false);
+      if (feedback) {
+        this.userMessageCount += 1;
+        this.post({ type: "userMessage", text: feedback, chips: [] });
+      }
+      this.post({ type: "planProcessing" }); // indicator while we wait for grok
+      const promptToGrok = feedback ? `[Plan approved] ${feedback}` : "[Plan approved]";
+      this.afterTurn = async () => {
+        try { await client.setMode(ACT_MODE_ID); } catch { /* CLI usually auto-exits already */ }
+        this.post({ type: "agentStart" });
+        try {
+          const meta = await client.prompt(promptToGrok);
+          if (gen !== this.sessionGen) return;
+          this.post({ type: "agentEnd", meta });
+        } catch (err) {
+          if (gen !== this.sessionGen) return;
+          const e = err as any;
+          this.post({ type: "agentError", text: e?.data?.message ?? e?.message ?? String(err) });
+        }
+      };
+      return;
+    }
+
+    // rejected / abandoned: cancel the in-flight turn and suppress its content
+    // so the false-approval response doesn't reach the screen.
+    void client.cancel();
+    this.post({ type: "agentReset" });
+    this.suppressPlanReject = true;
+
+    // If the user attached a comment, post it as their user bubble IMMEDIATELY
+    // (not deferred to afterTurn) so it lands in the conversation right after
+    // the verdict click. Same text gets sent to grok later, verbatim — what the
+    // user sees IS what grok receives, no wire-level boilerplate prefix.
+    if (feedback) {
+      this.userMessageCount += 1;
+      this.post({ type: "userMessage", text: feedback, chips: [] });
+      this.post({ type: "planProcessing" }); // grok will process this comment
+    }
+
+    if (verdict === "rejected") {
+      // Stay in plan mode. The wire-level prompt is always prefixed with the
+      // [Plan rejected] marker the primer trained grok to recognize — even when
+      // the user typed a comment, grok needs the unambiguous verdict tag in
+      // front of it to distinguish "Reject + free-form note" from a regular
+      // user message. The webview's user bubble (posted earlier in this
+      // function) still shows just the user's words.
+      this.setPlanActive(true);
+      if (!feedback) {
+        this.post({
+          type: "planNotice",
+          text: "Plan rejected — staying in Plan mode. Grok is processing the rejection…",
+        });
+        this.post({ type: "planProcessing" });
+      }
+      const promptToGrok = feedback ? `[Plan rejected] ${feedback}` : "[Plan rejected]";
+      this.afterTurn = async () => {
+        this.suppressPlanReject = false;
+        try { await client.setMode("plan"); } catch { /* gate still enforces */ }
+        this.post({ type: "agentStart" });
+        try {
+          const meta = await client.prompt(promptToGrok);
+          if (gen !== this.sessionGen) return;
+          this.post({ type: "agentEnd", meta });
+        } catch (err) {
+          if (gen !== this.sessionGen) return;
+          const e = err as any;
+          this.post({ type: "agentError", text: e?.data?.message ?? e?.message ?? String(err) });
+        }
+      };
+      return;
+    }
+
+    // abandoned: drop the gate, return to agent mode. The wire-level prompt is
+    // always prefixed with the [Plan cancelled] marker (per the primer
+    // contract). With a comment, the marker precedes the user's words; without
+    // one, the marker stands alone.
+    this.setPlanActive(false);
+    if (!feedback) {
+      this.post({
+        type: "planNotice",
+        text: "Plan abandoned — switched to Agent mode. Grok is processing the cancellation…",
+      });
+      this.post({ type: "planProcessing" });
+    }
+    const promptToGrok = feedback ? `[Plan cancelled] ${feedback}` : "[Plan cancelled]";
+    this.afterTurn = async () => {
+      this.suppressPlanReject = false;
+      try { await client.setMode(ACT_MODE_ID); } catch { /* best-effort */ }
+      this.post({ type: "agentStart" });
+      try {
+        const meta = await client.prompt(promptToGrok);
+        if (gen !== this.sessionGen) return;
+        this.post({ type: "agentEnd", meta });
+      } catch (err) {
+        if (gen !== this.sessionGen) return;
+        const e = err as any;
+        this.post({ type: "agentError", text: e?.data?.message ?? e?.message ?? String(err) });
+      }
+    };
+  }
+
+  /** Send the extension's standing instructions to grok at session start.
+   *  Suppresses both the user-side bubble and grok's acknowledgment in the live
+   *  chat so the conversation reads clean. Posts setBusy true/false so the
+   *  user can't fire a concurrent prompt during the primer's brief turn —
+   *  while busy, the send button reverts to a stop icon. */
+  private async primeGrok(client: AcpClient, gen: number): Promise<void> {
+    // Locked busy: the send button shows a spinner and is disabled. The user
+    // can't cancel the primer mid-flight — leaving grok un-primed would
+    // silently break the verdict protocol the primer establishes.
+    this.post({ type: "setBusy", value: true, locked: true });
+    this.suppressContent = true;
+    try {
+      await client.prompt(GROK_PRIMER);
+    } catch (e) {
+      // Best-effort: a failed primer doesn't block the session, the gate is
+      // still the real defense. Log it for debugging.
+      this.output.appendLine(`[primer] failed: ${(e as Error).message}`);
+    } finally {
+      this.suppressContent = false;
+      if (gen === this.sessionGen) this.post({ type: "setBusy", value: false });
+    }
+  }
+
+  /** Persist this plan (text + verdict) so the resume view can replay every plan
+   *  the user resolved in this session — grok's on-disk plan.md only retains the
+   *  latest, so we'd otherwise lose plans the agent overwrote later. */
+  private persistPlanVerdict(verdict: "approved" | "abandoned" | "rejected"): void {
+    const sid = this.activeSessionId ?? this.client?.sessionId;
+    if (!sid) return;
+    const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    const cur = overrides[sid] ?? {};
+    const planText = this.pendingPlanText || "";
+    this.pendingPlanText = "";
+    const plans = appendPlanEntry(cur.plans, {
+      text: planText,
+      verdict,
+      afterUserMessage: this.userMessageCount,
+    });
+    const next: SessionMetaOverrides = {
+      ...overrides,
+      [sid]: { ...cur, lastPlanVerdict: verdict, plans },
+    };
+    void this.context.globalState.update(SESSION_META_KEY, next);
+  }
+
+  /** Run and clear any deferred post-turn action set by `handleExitPlan`. */
+  private async runAfterTurn(): Promise<void> {
+    const fn = this.afterTurn;
+    if (!fn) return;
+    this.afterTurn = undefined;
+    await fn();
   }
 
   dispose(): void {
@@ -170,9 +480,15 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
     this.client?.dispose();
     this.client = undefined;
     this.autoApprove = false;
+    this.planActive = false;
+    this.afterTurn = undefined;
     this.hasHistory = false;
     this.suppressContent = false;
+    this.suppressPlanReject = false;
     this.lastPlanText = "";
+    this.pendingPlanText = "";
+    this.userMessageCount = 0;
+    this.inUserMessage = false;
     this.activeSessionId = undefined;
     this.titleGenerated = false;
     this.firstUserMessageForTitle = undefined;
@@ -252,7 +568,18 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
     });
     client.on("modeChanged", (id) => {
       if (gen !== this.sessionGen) return;
-      this.post({ type: "modeChanged", modeId: id });
+      if (id === "plan") {
+        // CLI entered plan mode (covers the agent self-initiating it from a
+        // natural-language request). Raise our gate so the exit is enforced.
+        this.autoApprove = false;
+        this.setPlanActive(true);
+      } else {
+        // CLI reports a non-plan mode. Do NOT auto-drop the gate here: the buggy
+        // exit_plan_mode emits "default" even when the user chose to keep
+        // planning. The gate is lowered only by explicit user action (approve,
+        // or pick Agent/YOLO). Just refresh the button label.
+        this.postMode();
+      }
     });
     client.on("commandsUpdate", (cmds) => {
       if (gen !== this.sessionGen) return;
@@ -260,24 +587,34 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
     });
     client.on("messageChunk", (text: string) => {
       if (gen !== this.sessionGen) return;
+      this.inUserMessage = false;
       this.post({ type: "messageChunk", text });
     });
     client.on("userMessageChunk", (text: string) => {
       if (gen !== this.sessionGen) return;
       // Only the CLI replays these (during session/load). Live prompts render
-      // their user bubble from send(); the agent never echoes them back.
+      // their user bubble from send(); the agent never echoes them back. The
+      // first chunk after a non-user chunk marks the start of a new user
+      // message — count it so the next persisted plan knows where it lives.
+      if (!this.inUserMessage) {
+        this.userMessageCount += 1;
+        this.inUserMessage = true;
+      }
       this.post({ type: "userMessageChunk", text });
     });
     client.on("thoughtChunk", (text: string) => {
       if (gen !== this.sessionGen) return;
+      this.inUserMessage = false;
       this.post({ type: "thoughtChunk", text });
     });
     client.on("toolCall", (u) => {
       if (gen !== this.sessionGen) return;
+      this.inUserMessage = false;
       this.post({ type: "toolCall", call: u });
     });
     client.on("toolCallUpdate", (u) => {
       if (gen !== this.sessionGen) return;
+      this.inUserMessage = false;
       this.post({ type: "toolCallUpdate", call: u });
     });
     client.on("plan", (u) => {
@@ -300,6 +637,25 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
     });
     client.on("permissionRequest", (req: PermissionRequest) => {
       if (gen !== this.sessionGen) return;
+      // While planning, decline any mutating permission outright. Agent mode
+      // skips this prompt for edits it deems safe — the fs/terminal gate is the
+      // real backstop — but if the CLI *does* ask, we say no without bothering
+      // the user.
+      if (this.planActive && shouldRejectPermission(req.toolCall?.kind, {
+        active: true,
+        workspaceRoot: cwd,
+      })) {
+        const rejectId = pickRejectOption(req.options);
+        if (rejectId) {
+          client.respondPermission(req.id, rejectId);
+          this.post({
+            type: "planNotice",
+            text: `Plan mode declined a ${req.toolCall?.kind ?? "tool"} request — approve the plan first.`,
+          });
+          return;
+        }
+        // No decline option offered — fall through and let the user decide.
+      }
       if (this.autoApprove) {
         const opt = req.options.find((o) => o.kind === "allow_always") ??
                     req.options.find((o) => o.kind === "allow_once");
@@ -307,9 +663,20 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
       }
       this.post({ type: "permissionRequest", req });
     });
+    client.on("mutationBlocked", (info: { kind: string; target: string }) => {
+      if (gen !== this.sessionGen) return;
+      this.post({ type: "planBlocked", kind: info.kind, target: info.target });
+    });
+    client.on("planFileContent", (content: string) => {
+      if (gen !== this.sessionGen) return;
+      if (typeof content === "string" && content.trim()) this.lastPlanText = content;
+    });
     client.on("exitPlanRequest", (req: ExitPlanRequest) => {
       if (gen !== this.sessionGen) return;
       const plan = req.plan || this.lastPlanText;
+      // Hold onto the plan text until the user picks a verdict so persistPlanVerdict
+      // can save it. Cleared (via resolved/pending) so the next plan starts fresh.
+      this.pendingPlanText = plan;
       this.lastPlanText = "";
       this.post({ type: "exitPlanRequest", req: { ...req, plan } });
     });
@@ -324,6 +691,29 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
       if (gen !== this.sessionGen) { client.dispose(); return undefined; }
       const defaultModel = cfg.get<string>("defaultModel", "");
       if (resumeId) {
+        // Queue any saved plans BEFORE replay starts so the webview can interleave
+        // them inline with user messages as they replay (instead of dumping all
+        // cards at the bottom).
+        const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+        const saved = overrides[resumeId]?.plans ?? [];
+        if (saved.length > 0) {
+          this.post({ type: "planHistoryQueue", plans: saved });
+          this.lastPlanText = saved[saved.length - 1].text;
+        } else {
+          // Legacy session (no per-plan persistence): fall back to the on-disk
+          // latest plan, which we'll render at the bottom after replay.
+          const planPath = path.join(sessionsDirFor(resolveGrokHome(process.env), cwd), resumeId, "plan.md");
+          if (fs.existsSync(planPath)) {
+            try {
+              const planText = fs.readFileSync(planPath, "utf8");
+              this.post({ type: "planHistoryQueue", plans: [{ text: planText, verdict: undefined as any }] });
+              this.lastPlanText = planText;
+            } catch (e) {
+              this.output.appendLine(`[plan-restore] ${(e as Error).message}`);
+            }
+          }
+        }
+
         // Bracket the replay so the webview can render finalized "Thought"
         // headers (no elapsed time — the original timing isn't in the stream).
         this.post({ type: "historyReplay", active: true });
@@ -335,10 +725,27 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
         this.activeSessionId = resumeId;
         this.titleGenerated = true; // existing session, name already in storage
         this.hasHistory = true;
+
+        // Plan-gate restoration: the CLI replays its own current_mode_update
+        // events during loadSession, which our modeChanged handler honors by
+        // raising the gate. Override that here with the actual verdict-driven
+        // decision (see plan-restore.ts) so a Cancelled or Approved session
+        // doesn't come back stuck in Plan mode.
+        const decision = decideRestoreState(saved);
+        this.setPlanActive(decision.planActive);
+        const targetMode = decision.cliMode === "plan" ? "plan" : ACT_MODE_ID;
+        try { await client.setMode(targetMode); } catch { /* best-effort */ }
       } else {
         await client.newSession(defaultModel || undefined);
         this.activeSessionId = client.sessionId;
       }
+      if (gen !== this.sessionGen) { client.dispose(); this.client = undefined; return undefined; }
+
+      // Send our "system prompt" to grok — once per session start (new AND
+      // restored). The CLI's exit_plan_mode bug can't be patched at the wire
+      // layer, so we tell grok in plain English to ignore the wire verdict
+      // and read it from the follow-up message. See src/grok-primer.ts.
+      await this.primeGrok(client, gen);
       if (gen !== this.sessionGen) { client.dispose(); this.client = undefined; return undefined; }
     } catch (err) {
       if (gen !== this.sessionGen) { client.dispose(); return undefined; }
@@ -422,7 +829,7 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
         this.client?.respondPermission(msg.requestId, msg.optionId);
         break;
       case "exitPlanAnswer":
-        this.client?.respondExitPlan(msg.requestId, msg.verdict);
+        this.handleExitPlan(msg.requestId, msg.verdict, msg.comment);
         break;
       case "setModel":
         if (this.client) {
@@ -679,6 +1086,7 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
   private async handleSend(text: string, chips: FileChip[]): Promise<void> {
     const client = await this.ensureClient();
     if (!client) return;
+    const gen = this.sessionGen;
 
     const finalPrompt = buildPrompt(text, chips, {
       readFile: (p) => fs.readFileSync(p, "utf8"),
@@ -692,17 +1100,32 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
     this.hasHistory = true;
     if (isFirstSend) this.firstUserMessageForTitle = text;
     const sentChips = chips.filter((c) => !c.hidden);
+    this.userMessageCount += 1;
+    this.inUserMessage = false; // live send isn't part of the streamed-chunk count path
     this.post({ type: "userMessage", text, chips: sentChips });
     this.post({ type: "agentStart" });
 
     try {
       const meta = await client.prompt(finalPrompt);
-      this.post({ type: "agentEnd", meta });
+      if (gen !== this.sessionGen) return; // session was switched mid-turn
+      // Skip agentEnd if a verdict was clicked mid-turn (afterTurn is queued).
+      // Otherwise busy clears here, then the user could send during the brief
+      // gap before afterTurn's own client.prompt starts. afterTurn emits its
+      // own agentEnd at the end of its prompt, so busy stays true throughout.
+      if (!this.afterTurn) {
+        this.post({ type: "agentEnd", meta });
+      }
       this.maybeGenerateTitle();
     } catch (err) {
+      if (gen !== this.sessionGen) return; // prompt rejected because we disposed the old client — don't leak the error into the new session
       const e = err as any;
       const message = e?.data?.message ?? e?.message ?? String(err);
       this.post({ type: "agentError", text: message });
+    } finally {
+      // If the user approved/declined a plan mid-turn, the follow-up action was
+      // deferred until now (a new prompt can't overlap the one above).
+      try { await this.runAfterTurn(); }
+      finally { this.suppressPlanReject = false; } // safety net for plan-reject suppression
     }
   }
 
@@ -747,9 +1170,15 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
     "messageChunk", "userMessageChunk", "thoughtChunk", "toolCall", "toolCallUpdate",
     "promptComplete", "xaiNotification", "userMessage", "agentStart", "agentEnd",
   ]);
+  // Subset: content only, not lifecycle. Lets promptComplete/agentEnd through so
+  // the webview's `busy` state clears when the false-approval turn ends.
+  private static readonly PLAN_REJECT_SUPPRESS = new Set([
+    "messageChunk", "userMessageChunk", "thoughtChunk", "toolCall", "toolCallUpdate", "xaiNotification",
+  ]);
 
   private post(message: any): void {
     if (this.suppressContent && GrokSidebar.SUPPRESS_TYPES.has(message.type)) return;
+    if (this.suppressPlanReject && GrokSidebar.PLAN_REJECT_SUPPRESS.has(message.type)) return;
     this.view?.webview.postMessage(message);
   }
 

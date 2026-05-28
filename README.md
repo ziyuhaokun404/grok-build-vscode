@@ -7,7 +7,9 @@ A thin VS Code sidebar client for xAI's Grok Build CLI. It spawns `grok agent st
 Works with SuperGrok Heavy subscription or xAI API key (standard Grok). 
 **Not affiliated with xAI.**
 
-![Grok Build in the VS Code sidebar](docs/screenshots/v1.1.0_intro.png)
+![Grok Build in the VS Code sidebar](docs/screenshots/v1.2.0.png)
+
+![Grok Build alongside VS Code](docs/screenshots/v1.2.0_vscode.png)
 
 ---
 
@@ -92,8 +94,8 @@ The extension speaks JSON-RPC over `grok agent stdio`'s stdin/stdout. It impleme
 |---|---|
 | Conversation history, memory, `~/.grok/` | Chips list (active editor + drag-added files) |
 | MCP servers, subagents, plugins | YOLO flag (auto-approval) |
-| Plan-mode bookkeeping | Webview UI state, popovers, slash filter |
-| Tool execution, model state | Pending diff content per `toolCallId` |
+| Tool execution, model state | Plan-mode gate (mirror of YOLO — workspace-write block + read-only command allowlist), per-plan verdict log |
+| Plan text on disk (`~/.grok/sessions/<…>/plan.md`) | Webview UI state, popovers, slash filter, pending diff per `toolCallId` |
 
 Restarting the session (the **+** button) kills the CLI child and spawns a fresh one. Memory persisted by the CLI in `~/.grok/` survives.
 
@@ -103,7 +105,7 @@ Restarting the session (the **+** button) kills the CLI child and spawns a fresh
 |---|---|
 | **Agent** (default) | CLI acts directly and **may** ask for permission on a write or shell action it judges sensitive — when it does, a card appears in chat |
 | **YOLO** | Extension auto-responds "allow always" to any `session/request_permission` the CLI raises. The CLI process and its session are untouched, no restart |
-| **Plan** | ⚠️ Currently disabled — see [Known limits](#known-limits) |
+| **Plan** | The agent drafts a plan first and *cannot* write to the workspace or run anything outside a read-only allowlist until you approve. Approve / Reject / Cancel from the chat card, each with an optional free-form comment forwarded to grok |
 
 ### File chips
 
@@ -239,7 +241,7 @@ VS Code commands (not Grok slash commands). Open with **Ctrl+Shift+P** / **Cmd+S
 | `Grok: Open` | Open the Grok sidebar |
 | `Grok: New Session` | Start a fresh session |
 | `Grok: Pick Model` | Open the model picker |
-| `Grok: Toggle Plan / Agent Mode` | Open the mode picker (Agent / Plan / YOLO). Plan is currently disabled — see Known limits. |
+| `Grok: Toggle Plan / Agent Mode` | Open the mode picker (Agent / Plan / YOLO) |
 | `Grok: Send File` | Add the selected file to context |
 | `Grok: Send Selection` | Send the current text selection to Grok |
 | `Grok: Insert @-Mention` | Insert an `@`-mention for the active file into the composer |
@@ -288,7 +290,6 @@ See [TESTS.md](TESTS.md) for the full breakdown of what's covered vs deferred to
 
 ## Known limits
 
-- **Plan mode disabled.** The `x.ai/exit_plan_mode` ACP response path treats any client response — result or error — as approval. Enabling the UI without working Reject/Abandon would silently approve every plan. Will be re-enabled once the CLI wires up the rejection code path. *Re-verified against `grok` 0.2.3 (2026-05-27): rejecting the plan with a JSON-RPC error still let the agent exit plan mode and execute the full plan.*
 - **Diff preview semantics.** The diff editor compares the proposed old and new text against each other, not against the file on disk at the moment of preview. The actual write happens via `fs/write_text_file` after approval. This is an ACP design constraint — `tool_call_update` carries the diff before the file is touched.
 - **No subagent inspector.** Subagent messages render inline as tool cards rather than in a dedicated panel.
 - **No worktree UI.** `Grok: New Worktree Session` is planned but not yet implemented.

@@ -2,7 +2,7 @@
   "name": "grok-vscode-phuryn",
   "displayName": "Grok Build",
   "description": "Thin VS Code sidebar client for the Grok Build CLI over Agent Client Protocol (ACP). Streams responses with thinking traces, tool calls, file chips, and permission cards with diff preview. All session state stays in the CLI. Not affiliated with xAI.",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "publisher": "PawelHuryn",
   "author": {
     "name": "Paweł Huryn",
@@ -17,8 +17,25 @@
   "engines": {
     "vscode": "^1.94.0"
   },
-  "categories": ["AI", "Chat"],
-  "keywords": ["grok", "grok-build", "xai", "xai-grok", "acp", "acp-client", "agent-client-protocol", "agent", "ai", "chat", "thinking", "tool-calls", "sidebar"],
+  "categories": [
+    "AI",
+    "Chat"
+  ],
+  "keywords": [
+    "grok",
+    "grok-build",
+    "xai",
+    "xai-grok",
+    "acp",
+    "acp-client",
+    "agent-client-protocol",
+    "agent",
+    "ai",
+    "chat",
+    "thinking",
+    "tool-calls",
+    "sidebar"
+  ],
   "icon": "resources/grok-icon.png",
   "main": "./out/extension.js",
   "contributes": {
@@ -83,6 +100,10 @@
       {
         "command": "grok.showLogs",
         "title": "Grok: Show Logs"
+      },
+      {
+        "command": "grok._debugDummyPlan",
+        "title": "Grok: Debug — Show dummy plan card (for testing Approve/Reject/Cancel)"
       }
     ],
     "keybindings": [
@@ -140,7 +161,14 @@
         },
         "grok.defaultEffort": {
           "type": "string",
-          "enum": ["", "low", "medium", "high", "xhigh", "max"],
+          "enum": [
+            "",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
           "enumDescriptions": [
             "CLI default (no flag passed to grok agent stdio)",
             "Low — faster, lighter reasoning",
@@ -172,6 +200,7 @@
   "devDependencies": {
     "@types/node": "^20.0.0",
     "@types/vscode": "^1.94.0",
+    "happy-dom": "^20.9.0",
     "typescript": "^5.4.0",
     "vitest": "^1.6.0"
   }

@@ -16,6 +16,15 @@ export interface SessionListEntry {
 export interface SessionMetaOverride {
   customName?: string;
   pinnedAt?: number;
+  /** Last verdict the user gave to an exit_plan_mode card in this session, for the restore-card label. */
+  lastPlanVerdict?: "approved" | "rejected" | "abandoned";
+  /** Every plan the user resolved in this session, in chronological order. grok's plan.md only
+   *  retains the latest plan content on disk; saving each one here lets the resume view replay
+   *  rejected/cancelled plans that grok overwrote later in the conversation. `afterUserMessage`
+   *  is the count of user messages that had been sent at the moment the plan was resolved, so
+   *  the resume view can render each card right after that message instead of dumping all the
+   *  plan cards at the bottom of the restored conversation. */
+  plans?: { text: string; verdict: "approved" | "rejected" | "abandoned"; afterUserMessage?: number }[];
 }
 export type SessionMetaOverrides = Record<string, SessionMetaOverride>;
 

@@ -2,6 +2,8 @@
 .gitignore
 .env
 .claude/**
+research/**
+test/**
 src/**
 tsconfig.json
 node_modules/**

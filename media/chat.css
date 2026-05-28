@@ -398,10 +398,28 @@ code {
 }
 .tool-item {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
   padding: 3px 10px;
   font-family: var(--vscode-editor-font-family);
+}
+.tool-item-subtitle {
+  font-size: 10px;
+  color: var(--vscode-descriptionForeground);
+  flex-basis: 100%;
+  margin-left: 0;
+}
+.tool-item .preview-link {
+  background: none;
+  border: none;
+  color: var(--vscode-textLink-foreground);
+  cursor: pointer;
+  padding: 0;
+  font-size: 11px;
+  text-decoration: underline;
+  text-align: left;
+  flex-basis: 100%;
 }
 .tool-kind {
   font-size: 10px;
@@ -445,7 +463,7 @@ code {
 .msg.agent .body li { margin: 3px 0; }
 .msg.agent .body li > ul { margin: 3px 0; list-style-type: circle; }
 .msg.agent .body li > ul ul { list-style-type: square; }
-.msg.agent .body .code-block {
+.code-block {
   position: relative;
   margin: 8px 0;
 }
@@ -486,7 +504,7 @@ code {
   display: inline-flex;
   align-items: center;
 }
-.msg.agent .body .code-block:hover .code-copy-btn { opacity: 1; }
+.code-block:hover .code-copy-btn { opacity: 1; }
 .code-copy-btn:hover,
 .code-copy-btn:focus-visible {
   opacity: 1;
@@ -647,17 +665,36 @@ textarea#input:focus {
   flex-shrink: 0;
 }
 .effort-dot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   cursor: pointer;
-  font-size: 14px;
-  color: var(--vscode-descriptionForeground);
   user-select: none;
-  padding: 2px 3px;
-  border-radius: 2px;
-  line-height: 1;
-  opacity: 0.45;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border-radius: 50%;
+  opacity: 0.6;
+  box-sizing: border-box;
+}
+/* Inner CSS-shaped dot — identical size for active + inactive. Avoids the
+   Unicode ●/○ glyph-pair mismatch where the empty circle renders larger. */
+.effort-dot::before {
+  content: "";
+  display: block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  box-sizing: border-box;
+  border: 1.5px solid var(--vscode-descriptionForeground);
+  background: transparent;
+}
+.effort-dot.active::before {
+  background: var(--vscode-button-background);
+  border-color: var(--vscode-button-background);
 }
 .effort-dot:hover { opacity: 1; background: var(--vscode-toolbar-hoverBackground); }
-.effort-dot.active { color: var(--vscode-button-background); opacity: 1; }
+.effort-dot.active { opacity: 1; }
 
 /* ---- mode / section popover extras ---- */
 
@@ -754,6 +791,24 @@ textarea#input:focus {
 }
 .send:hover { background: var(--vscode-button-hoverBackground); }
 .send:disabled { opacity: 0.4; cursor: default; }
+/* Stop mode: same button position, different look. Subtle so it doesn't shout. */
+.send.stop {
+  background: var(--vscode-button-secondaryBackground, var(--vscode-button-background));
+  color: var(--vscode-button-secondaryForeground, var(--vscode-button-foreground));
+}
+.send.stop:hover { background: var(--vscode-button-secondaryHoverBackground, var(--vscode-button-hoverBackground)); }
+/* Initialization spinner: locked busy state (e.g. session-start priming).
+   Button is disabled; the spinner SVG inside rotates. */
+.send.initializing {
+  cursor: progress;
+  opacity: 0.65;
+}
+.send.initializing svg {
+  animation: send-spinner-rotate 0.9s linear infinite;
+}
+@keyframes send-spinner-rotate {
+  to { transform: rotate(360deg); }
+}
 
 /* ---- context donut ---- */
 
@@ -923,6 +978,19 @@ body.dragging { outline: 2px dashed var(--vscode-focusBorder); outline-offset: -
   opacity: 0.8;
 }
 
+.plan-notice {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground);
+  padding: 5px 10px;
+  margin: 4px 0;
+  border-left: 2px solid var(--vscode-charts-blue, #569cd6);
+  background: var(--vscode-textBlockQuote-background, rgba(86, 156, 214, 0.08));
+}
+.plan-notice svg { flex-shrink: 0; opacity: 0.8; }
+
 .card .preview-link {
   background: none;
   border: none;
@@ -933,16 +1001,90 @@ body.dragging { outline: 2px dashed var(--vscode-focusBorder); outline-offset: -
   text-decoration: underline;
   text-align: left;
 }
-.card pre.plan-body {
+.card .plan-body {
   margin: 0;
-  white-space: pre-wrap;
-  font-family: var(--vscode-editor-font-family);
   font-size: 12px;
   max-height: 240px;
   overflow-y: auto;
   background: var(--vscode-textCodeBlock-background);
-  padding: 6px 8px;
+  padding: 6px 10px;
   border-radius: 4px;
+  line-height: 1.5;
+}
+.card .plan-body > :first-child { margin-top: 0; }
+.card .plan-body > :last-child { margin-bottom: 0; }
+.card .plan-body p { margin: 4px 0; }
+.card .plan-body ul,
+.card .plan-body ol { margin: 4px 0; padding-left: 20px; }
+.card .plan-body li { margin: 2px 0; }
+.card .plan-body h1,
+.card .plan-body h2,
+.card .plan-body h3,
+.card .plan-body h4 { margin: 8px 0 4px; font-size: 1em; font-weight: 600; }
+.card .plan-body code { font-family: var(--vscode-editor-font-family); font-size: 11px; }
+.card .plan-body pre { margin: 4px 0; }
+.card textarea.plan-feedback {
+  width: 100%;
+  margin-top: 6px;
+  box-sizing: border-box;
+  resize: vertical;
+  font-family: var(--vscode-font-family);
+  font-size: 11px;
+  color: var(--vscode-input-foreground);
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-input-border, var(--vscode-editorWidget-border));
+  border-radius: 4px;
+  padding: 4px 6px;
+}
+.card textarea.plan-feedback:focus {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+.card textarea.plan-feedback:disabled { opacity: 0.5; }
+.card-actions button.chosen {
+  outline: 2px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+  opacity: 1 !important;
+}
+.plan-verdict-label {
+  margin-top: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--vscode-descriptionForeground);
+}
+.plan-verdict-label.plan-verdict-approved { color: var(--vscode-charts-green, #4ec9b0); }
+.plan-verdict-label.plan-verdict-rejected { color: var(--vscode-charts-orange, #ce9178); }
+.plan-verdict-label.plan-verdict-abandoned { color: var(--vscode-descriptionForeground); }
+
+/* Indicator shown below a resolved plan card while grok processes the verdict.
+   Cleared when the next agent chunk arrives. Three pulsing dots. */
+.plan-processing {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  margin: 4px 0 8px 12px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 12px;
+}
+.plan-processing-dots {
+  display: inline-flex;
+  gap: 4px;
+}
+.plan-processing-dots span {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--vscode-descriptionForeground);
+  animation: plan-processing-pulse 1.2s ease-in-out infinite;
+}
+.plan-processing-dots span:nth-child(2) { animation-delay: 0.2s; }
+.plan-processing-dots span:nth-child(3) { animation-delay: 0.4s; }
+@keyframes plan-processing-pulse {
+  0%, 80%, 100% { opacity: 0.25; }
+  40% { opacity: 1; }
 }
 
 /* ---- history popover ---- */

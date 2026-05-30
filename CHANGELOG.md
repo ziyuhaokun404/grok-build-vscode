@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.3 — 2026-05-30
+
+### Plan mode
+
+- **Grok's own `plan.md` write no longer blocked when the home directory is the workspace.** The plan-mode write gate exempts grok's CLI-owned `~/.grok/sessions/.../plan.md` so it can be written and snooped during planning, but the exemption previously relied on that file living *outside* the workspace — true for project workspaces, false when the user opens their home directory as the workspace root. There the plan file resolved inside the containment root and the workspace block won, so planning stalled (repeated `fs/read_text_file`/`fs/write_text_file` errors, then `session/prompt` timeout). `shouldBlockWrite` now exempts a plan-file write only when it also resolves under the resolved grok home (`~/.grok`), so home-as-workspace plan writes are allowed while real workspace writes — and an arbitrary project-local `.grok/sessions/.../plan.md` that isn't grok's own — stay blocked. (#10, #11, thanks @shugav)
+
 ## 1.2.2 — 2026-05-29
 
 ### Plan mode

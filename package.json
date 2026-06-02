@@ -2,7 +2,7 @@
   "name": "grok-vscode-phuryn",
   "displayName": "Grok Build",
   "description": "Thin VS Code sidebar client for the Grok Build CLI over Agent Client Protocol (ACP). Streams responses with thinking traces, tool calls, file chips, and permission cards with diff preview. All session state stays in the CLI. Not affiliated with xAI.",
-  "version": "1.2.4",
+  "version": "1.3.0",
   "publisher": "PawelHuryn",
   "author": {
     "name": "Paweł Huryn",
@@ -186,6 +186,31 @@
           "type": "boolean",
           "default": false,
           "description": "Use Ctrl/Cmd+Enter to send (Enter inserts newline)."
+        },
+        "grok.voiceApiKey": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "xAI API key for voice input (Speech-to-Text via `api.x.ai/v1/stt`). This is a **separate** developer key from [console.x.ai](https://console.x.ai) — it is billed pay-as-you-go and is unrelated to the Grok CLI login. Leave empty to fall back to `GROK_VOICE_API_KEY` or `XAI_API_KEY` in your workspace `.env`."
+        },
+        "grok.ffmpegPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the ffmpeg binary used to record the microphone for voice input. Empty = use 'ffmpeg' from PATH. Install ffmpeg from https://ffmpeg.org if voice input reports it as missing."
+        },
+        "grok.voiceInputDevice": {
+          "type": "string",
+          "default": "",
+          "description": "Microphone device for voice input. Empty = system default (on Windows, the first DirectShow audio device is auto-detected). Set this to a specific device name (Windows/dshow) or index (macOS/avfoundation) to override."
+        },
+        "grok.voiceSendPhrase": {
+          "type": "string",
+          "default": "grok send",
+          "description": "Spoken phrase that auto-submits the message when it ends a voice transcription (e.g. say \"…fix the bug, grok send\"). The phrase is stripped before sending. Leave empty to disable hands-free sending."
+        },
+        "grok.voiceStreaming": {
+          "type": "boolean",
+          "default": true,
+          "description": "Stream voice transcription live as you speak (words appear in the composer in real time, and \"grok send\" can submit without a second click). Disable to use one-shot batch mode (click to start, click to stop, then transcribe). Streaming costs $0.20/hr of audio vs $0.10/hr batch."
         }
       }
     }
@@ -196,14 +221,18 @@
     "watch": "tsc -p . -w",
     "test": "vitest run",
     "test:watch": "vitest",
-    "package": "npx @vscode/vsce package --no-dependencies",
-    "publish": "npx @vscode/vsce publish --no-dependencies"
+    "package": "npx @vscode/vsce package",
+    "publish": "npx @vscode/vsce publish"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
     "@types/vscode": "^1.94.0",
+    "@types/ws": "^8.18.1",
     "happy-dom": "^20.9.0",
     "typescript": "^5.4.0",
     "vitest": "^1.6.0"
+  },
+  "dependencies": {
+    "ws": "^8.21.0"
   }
 }

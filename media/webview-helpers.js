@@ -41,7 +41,56 @@
     return (m && m.name) || modelId;
   }
 
-  const api = { FILE_EXTS, looksLikeFileRef, formatRelativeTime, modelDisplayName };
+  // Mic button state machine for voice input:
+  //   idle → (start) → connecting → [host ready] → listening → (stop) → transcribing → (transcript) → idle
+  // "connecting" covers the ~½–1s while the stream (ws + ffmpeg) spins up, so the
+  // blue "listening" waves only appear once it's actually ready to capture — the
+  // host moves connecting→listening by posting voiceState "listening". Any failure
+  // resolves back to idle ("error"/"reset"). Pure + here so it's unit-testable.
+  const MIC_STATES = ["idle", "connecting", "listening", "transcribing"];
+  function nextMicState(current, event) {
+    switch (event) {
+      case "start":
+        // Begin connecting (not yet capturing). Don't interrupt a transcription.
+        return current === "idle" ? "connecting" : current;
+      case "stop":
+        // Stoppable while connecting or listening.
+        return current === "listening" || current === "connecting" ? "transcribing" : current;
+      case "transcript":
+      case "error":
+      case "reset":
+        return "idle";
+      default:
+        return current;
+    }
+  }
+
+  // Locate a TRAILING send-phrase (e.g. "grok send", any capitalization) in the
+  // composer text — the occurrence that actually acts as the submit command — so
+  // the webview can highlight it. Tolerates a comma/whitespace between words and
+  // trailing punctuation, mirroring the host's parseVoiceCommand. Returns the
+  // {index, length} of the match, or null. An empty phrase disables it.
+  // One phrase word, tolerating the "send" ⇄ "sent" STT confusion (kept in sync
+  // with phraseWordPattern in src/voice.ts).
+  function phraseWordPattern(word) {
+    const lower = word.toLowerCase();
+    if (lower === "send" || lower === "sent") return "sen[dt]";
+    return word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+  function trailingSendPhrase(text, phrase) {
+    const t = text == null ? "" : String(text);
+    const p = (phrase || "").trim();
+    if (!p) return null;
+    const words = p.split(/\s+/).map(phraseWordPattern);
+    // Lookahead for trailing punctuation so the highlight covers only the phrase
+    // words — the trailing "?"/"." stays part of the message and unhighlighted.
+    const re = new RegExp("\\b" + words.join("[,\\s]+") + "\\b(?=[\\s.!?…]*$)", "i");
+    const m = re.exec(t);
+    if (!m) return null;
+    return { index: m.index, length: m[0].length };
+  }
+
+  const api = { FILE_EXTS, looksLikeFileRef, formatRelativeTime, modelDisplayName, MIC_STATES, nextMicState, trailingSendPhrase };
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;
   } else {

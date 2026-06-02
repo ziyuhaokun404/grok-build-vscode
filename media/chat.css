@@ -569,21 +569,139 @@ code {
   position: relative;
 }
 
-textarea#input {
-  width: 100%;
-  resize: none;
+/* The input is a textarea layered over a "backdrop" that highlights recognized
+   voice commands (e.g. "grok send"). Textareas can't style their own text, so
+   the backdrop renders a mirrored copy with the command wrapped in an accent
+   pill; the textarea sits on top with a transparent background so the pill shows
+   through behind the matching words. The wrap owns the border + fill. */
+.composer-input-wrap {
+  position: relative;
   background: var(--vscode-input-background);
-  color: var(--vscode-input-foreground);
   border: 1px solid var(--vscode-input-border, var(--vscode-editorWidget-border));
   border-radius: var(--radius);
-  padding: 6px 8px;
+}
+.composer-input-wrap:focus-within {
+  border-color: var(--vscode-focusBorder);
+}
+/* Shared text-box metrics — MUST match between the textarea and the backdrop so
+   the highlight aligns exactly. */
+textarea#input,
+.input-highlight {
+  margin: 0;
+  /* extra right padding leaves room for the mic button in the top-right corner */
+  padding: 6px 34px 6px 8px;
+  border: 0;
   font-family: var(--vscode-editor-font-family);
   font-size: 12px;
   line-height: 1.5;
-  outline: none;
+  letter-spacing: normal;
+  tab-size: 4;
 }
-textarea#input:focus {
-  border-color: var(--vscode-focusBorder);
+textarea#input {
+  display: block;
+  width: 100%;
+  resize: none;
+  background: transparent;
+  color: var(--vscode-input-foreground);
+  border-radius: var(--radius);
+  outline: none;
+  position: relative;
+  z-index: 1;
+}
+.input-highlight {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  color: transparent;
+  pointer-events: none;
+  overflow: hidden;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+/* The recognized command, shown as a subtle accent pill behind the live text. */
+.input-highlight .cmd-token {
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--vscode-charts-blue, #3794ff) 26%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--vscode-charts-blue, #3794ff) 50%, transparent);
+}
+
+/* ---- mic / voice-input button (top-right corner of the textbox) ---- */
+
+.mic-btn {
+  position: absolute;
+  top: calc(var(--pad) + 5px);
+  right: calc(var(--pad) + 6px);
+  /* Above the textarea (z-index:1) so its top-right padding doesn't swallow the
+     hover/click — the textarea was lifted for the highlight overlay. */
+  z-index: 2;
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--vscode-descriptionForeground, var(--vscode-foreground));
+  cursor: pointer;
+  opacity: 0.75;
+  transition: background 0.12s, color 0.12s, opacity 0.12s;
+}
+.mic-btn:hover { opacity: 1; background: var(--vscode-toolbar-hoverBackground); }
+.mic-btn:disabled { cursor: default; }
+/* Subtle "needs setup" dot when no voice API key is configured. */
+.mic-btn.needs-setup::after {
+  content: "";
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--vscode-charts-blue, #3794ff);
+  border: 1px solid var(--vscode-editor-background, #1e1e1e);
+}
+/* Listening: blue, with an expanding "wave" ring pulsing outward. */
+.mic-btn.listening {
+  opacity: 1;
+  color: #fff;
+  background: var(--vscode-charts-blue, #3794ff);
+  animation: mic-pulse 1.5s ease-out infinite;
+}
+@keyframes mic-pulse {
+  0%   { box-shadow: 0 0 0 0 var(--vscode-charts-blue, rgba(55, 148, 255, 0.5)); }
+  70%  { box-shadow: 0 0 0 9px rgba(55, 148, 255, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(55, 148, 255, 0); }
+}
+.mic-btn.transcribing,
+.mic-btn.connecting {
+  opacity: 1;
+  color: var(--vscode-charts-blue, #3794ff);
+}
+.mic-btn.transcribing svg,
+.mic-btn.connecting svg { animation: send-spinner-rotate 0.9s linear infinite; }
+/* Animated equalizer bars shown while listening. */
+.mic-waves {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 14px;
+}
+.mic-waves i {
+  width: 2px;
+  height: 4px;
+  background: currentColor;
+  border-radius: 1px;
+  animation: mic-bar 0.9s ease-in-out infinite;
+}
+.mic-waves i:nth-child(2) { animation-delay: 0.15s; }
+.mic-waves i:nth-child(3) { animation-delay: 0.3s; }
+.mic-waves i:nth-child(4) { animation-delay: 0.45s; }
+@keyframes mic-bar {
+  0%, 100% { height: 4px; }
+  50%      { height: 14px; }
 }
 
 /* ---- bottom toolbar ---- */

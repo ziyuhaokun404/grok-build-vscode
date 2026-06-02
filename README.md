@@ -175,6 +175,38 @@ When the panel opens (or you click **+** for a new session):
 
 Type in the composer and press **Enter** (or **Ctrl/Cmd+Enter** if `grok.useCtrlEnterToSend` is on). The agent streams its response; while it reasons, a "Thinking..." line shows, which resolves to "Thought for *N*s" on completion. Click the line to expand or collapse the full reasoning trace (collapsed by default).
 
+### Voice input (dictation)
+
+The **microphone button** in the top-right corner of the composer dictates speech into the input box, transcribed by [xAI's Speech-to-Text API](https://docs.x.ai/developers/model-capabilities/audio/voice). Click it to start (the button turns blue and shows animated waves) and speak.
+
+By default transcription is **live/streaming** — words appear in the composer in real time as you talk (over the STT WebSocket), and the recognized **"grok send"** command is highlighted with an accent pill as you say it. On click the mic shows a brief **"connecting…" spinner**; wait for the **blue listening waves** before speaking (that's when capture is live). Then:
+- Say **"grok send"** — the message submits automatically and **the mic keeps listening**, so you can dictate the next message hands-free. You can even keep talking while Grok is responding; messages dictated mid-response are queued and sent as soon as Grok finishes. **Once you click the mic, you never need the mouse or keyboard again** until you're done.
+- **Click the mic** to stop listening and keep any in-progress text (edit before sending).
+
+The two-word send phrase is deliberate — it won't fire on a message that merely ends in "send", and it tolerates the common "send"→"sent" mishearing — and it's passed to the STT model as a bias term so it's recognized reliably. Trailing punctuation is kept on your message (and never doubled): "…today grok send?" → "…today?". Configure or disable the phrase with `grok.voiceSendPhrase`. Prefer one-shot transcription? Set `grok.voiceStreaming: false` for batch mode (click to start, click to stop, then transcribe).
+
+Listening is scoped to the session it started in: **switching, resuming, or restarting a session stops the mic**, and after ~2 minutes of silence it auto-stops too — click to resume.
+
+Two one-time setup steps:
+
+1. **ffmpeg** — recording happens in the extension host (VS Code webviews can't access the microphone), via [`ffmpeg`](https://ffmpeg.org). Install it and ensure it's on `PATH`, or point `grok.ffmpegPath` at it.
+2. **An xAI API key** — Speech-to-Text is a *separate* xAI product from the Grok CLI login, billed pay-as-you-go (~$0.10/hr) on its own [console.x.ai](https://console.x.ai) developer key. Set `grok.voiceApiKey`, or add `GROK_VOICE_API_KEY` (or `XAI_API_KEY`) to your workspace `.env`. Your Grok CLI login is **not** used here and a SuperGrok subscription does not grant API credit.
+
+> Why not route audio through the Grok CLI? The CLI advertises `promptCapabilities.audio: false` and rejects audio — it's a text/code agent. So voice deliberately bypasses ACP and calls the STT API directly. See [research/voice-input.md](research/voice-input.md) for the full feasibility write-up.
+
+#### How it works & what it costs
+
+Recording happens in the **extension host** (an `ffmpeg` child process — the webview can't reach the mic). In streaming mode the host pipes raw PCM to xAI's STT **WebSocket** and relays the live transcript back to the composer; in batch mode it uploads the finished clip to the STT REST endpoint. STT is billed by **audio duration, not word count**: **$0.10/hour** for batch and **$0.20/hour** for streaming.
+
+That's tiny in practice. We measured it end-to-end: a **510-word** passage taken from this project's own design discussion ([research/cost-sample.txt](research/cost-sample.txt)), synthesized to speech and transcribed, was **3.06 minutes of audio**, costing:
+
+| Mode | Cost for ~500 words | Per 1,000 words |
+|---|---|---|
+| Batch ($0.10/hr) | **$0.0051** (~½¢) | ~$0.010 |
+| Streaming ($0.20/hr) | **$0.0102** (~1¢) | ~$0.020 |
+
+**How we measured it:** `research/cost-sample.txt` (510 real words) → Windows SAPI text-to-speech → `POST api.x.ai/v1/stt`; cost = the API's returned `duration` ÷ 3600 × rate. Reproduce with [research/voice-cost-probe.cjs](research/voice-cost-probe.cjs). So a heavy day of dictation — say 10,000 words — runs about **10¢**.
+
 ### Slash commands
 
 Type `/` to open autocomplete. Commands are sourced live from the CLI — the list reflects your installed `grok` version. See [docs/SLASH-COMMANDS.md](docs/SLASH-COMMANDS.md) for a reference snapshot.
@@ -229,6 +261,11 @@ Or edit the config files directly via gear → *Open global config* / *Open proj
 | `grok.defaultEffort` | `""` | Reasoning effort forwarded as `--reasoning-effort` to `grok agent stdio` (`none` / `minimal` / `low` / `medium` / `high` / `xhigh`). Empty = CLI default. Changing it restarts the session. |
 | `grok.includeActiveFileByDefault` | `true` | Auto-add the active editor as a context chip. |
 | `grok.useCtrlEnterToSend` | `false` | When true, Enter inserts a newline and Ctrl/Cmd+Enter sends. |
+| `grok.voiceApiKey` | `""` | xAI API key for voice input (Speech-to-Text). A separate [console.x.ai](https://console.x.ai) developer key, billed pay-as-you-go — not the CLI login. Empty = fall back to `GROK_VOICE_API_KEY` / `XAI_API_KEY` in the workspace `.env`. |
+| `grok.ffmpegPath` | `""` | Path to `ffmpeg` for microphone recording. Empty = use `ffmpeg` from `PATH`. |
+| `grok.voiceInputDevice` | `""` | Microphone device override. Empty = system default (Windows auto-detects the first DirectShow audio device). |
+| `grok.voiceSendPhrase` | `"grok send"` | Spoken phrase that auto-submits the message when it ends a transcription. Empty = disable hands-free sending. |
+| `grok.voiceStreaming` | `true` | Stream transcription live as you speak (words appear in real time; "grok send" submits without a second click). `false` = one-shot batch mode. Streaming costs $0.20/hr vs $0.10/hr batch. |
 
 ---
 

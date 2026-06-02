@@ -5,6 +5,8 @@
   const messagesEl = $("messages");
   const input = $("input");
   const sendBtn = $("send-btn");
+  const micBtn = $("mic-btn");
+  const inputHighlight = $("input-highlight");
   const newBtn = $("new-btn");
   const historyBtn = $("history-btn");
   const modeBtn = $("mode-btn");
@@ -43,6 +45,19 @@
     commands: [],
     chips: [],
     busy: false,
+    // Voice-input button: "idle" | "listening" | "transcribing" (see nextMicState).
+    mic: "idle",
+    // Whether the host found a voice API key. Optimistic until the host says
+    // otherwise; drives the mic button's "needs setup" hint.
+    voiceConfigured: true,
+    // Streaming dictation: text typed before the mic started ("base"), and
+    // whether live partials have begun replacing the tail.
+    voiceBase: "",
+    voiceLive: false,
+    // The configured send phrase (for highlighting it in the composer).
+    voiceSendPhrase: "grok send",
+    // Messages dictated while Grok was busy, flushed when the turn ends.
+    voiceQueue: [],
     activeAgentEl: null,
     activeAgentRaw: "",
     activeUserEl: null,
@@ -131,6 +146,9 @@
     upload: `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m17 8-5-5-5 5"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/></svg>`,
     trash: `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg>`,
     pencil: `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/></svg>`,
+    mic: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg>`,
+    // Animated equalizer bars shown while listening (CSS drives the bounce).
+    micWaves: `<span class="mic-waves" aria-hidden="true"><i></i><i></i><i></i><i></i></span>`,
   };
 
   const MODE_META = {
@@ -199,7 +217,7 @@
 
   // ---------- markdown ----------
 
-  const { looksLikeFileRef, formatRelativeTime, modelDisplayName } = globalThis.GrokWebviewHelpers;
+  const { looksLikeFileRef, formatRelativeTime, modelDisplayName, nextMicState, trailingSendPhrase } = globalThis.GrokWebviewHelpers;
 
   function renderDiffCode(code) {
     const lines = code.replace(/\n+$/, "").split("\n");
@@ -1641,7 +1659,129 @@
     state.activeToolGroupEl = null;
     vscode.postMessage({ type: "send", text, chips: state.chips });
     input.value = "";
+    renderInputHighlight();
     slashPopover.hidden = true;
+  }
+
+  // ---------- voice input ----------
+
+  // The mic button records in the extension host (webviews can't reach the mic)
+  // and transcribes via xAI Speech-to-Text. We optimistically flip to
+  // "listening" on click for instant feedback; the host confirms or, on any
+  // setup failure (no API key, ffmpeg missing), sends "voiceError" to reset us.
+  function renderMic() {
+    if (!micBtn) return;
+    micBtn.classList.toggle("listening", state.mic === "listening");
+    micBtn.classList.toggle("transcribing", state.mic === "transcribing");
+    micBtn.classList.toggle("connecting", state.mic === "connecting");
+    if (state.mic === "listening") {
+      micBtn.innerHTML = ICON.micWaves;
+      micBtn.title = "Listening — say 'grok send' to submit, or click to stop";
+      micBtn.disabled = false;
+    } else if (state.mic === "connecting") {
+      micBtn.innerHTML = ICON.spinner;
+      micBtn.title = "Starting mic… wait for the waves before speaking";
+      micBtn.disabled = false; // clickable to cancel
+    } else if (state.mic === "transcribing") {
+      micBtn.innerHTML = ICON.spinner;
+      micBtn.title = "Transcribing…";
+      micBtn.disabled = true;
+    } else {
+      micBtn.innerHTML = ICON.mic;
+      micBtn.title = state.voiceConfigured
+        ? "Voice input"
+        : "Voice input — click to set up (needs an xAI API key)";
+      micBtn.disabled = false;
+    }
+    // "needs setup" dot only when idle and no key is configured.
+    micBtn.classList.toggle("needs-setup", state.mic === "idle" && !state.voiceConfigured);
+  }
+
+  function setMic(event) {
+    state.mic = nextMicState(state.mic, event);
+    renderMic();
+  }
+
+  function toggleMic() {
+    if (state.mic === "idle") {
+      // Skip the optimistic "listening" flash when we know no key is set — the
+      // host will pop the setup guidance instead of recording. Still send
+      // voiceStart so the host (the authority on the key) makes the call.
+      if (state.voiceConfigured) {
+        // Remember what's already typed; live partials replace only the tail.
+        state.voiceBase = input.value;
+        state.voiceLive = false;
+        state.voiceQueue = [];
+        setMic("start");
+      }
+      vscode.postMessage({ type: "voiceStart" });
+    } else if (state.mic === "listening" || state.mic === "connecting") {
+      setMic("stop");
+      vscode.postMessage({ type: "voiceStop" });
+    }
+    // "transcribing": ignore clicks until the transcript or an error arrives.
+  }
+
+  // Append a transcript to whatever's typed (batch mode — one-shot result).
+  function insertTranscript(text) {
+    const t = (text || "").trim();
+    if (!t) return;
+    const cur = input.value;
+    const sep = cur && !/\s$/.test(cur) ? " " : "";
+    input.value = cur + sep + t;
+    input.focus();
+    updateSlash();
+    renderInputHighlight();
+  }
+
+  // base + live transcript, with a separating space unless base already ends in
+  // whitespace (or the tail is empty). Used for streaming partials/final.
+  function composeVoiceTail(base, text) {
+    const t = text || "";
+    if (!base) return t;
+    if (!t || /\s$/.test(base)) return base + t;
+    return base + " " + t;
+  }
+
+  // Mirror the composer text onto the backdrop, wrapping a trailing send command
+  // ("grok send") in an accent pill. Call whenever the input value changes.
+  function renderInputHighlight() {
+    if (!inputHighlight) return;
+    const text = input.value;
+    const range = trailingSendPhrase(text, state.voiceSendPhrase);
+    if (!range) {
+      inputHighlight.textContent = "";
+    } else {
+      const before = text.slice(0, range.index);
+      const cmd = text.slice(range.index, range.index + range.length);
+      inputHighlight.innerHTML = escapeHtml(before) + '<span class="cmd-token">' + escapeHtml(cmd) + "</span>";
+    }
+    inputHighlight.scrollTop = input.scrollTop;
+    inputHighlight.scrollLeft = input.scrollLeft;
+  }
+
+  // Submit a voice-dictated message (continuous "grok send"). Mirrors sendOrStop's
+  // send path but takes explicit text (the composer is cleared separately so the
+  // mic can keep listening for the next utterance).
+  function submitVoiceMessage(text) {
+    const t = (text || "").trim();
+    if (!t) return;
+    state.busy = true;
+    updateSendButton();
+    state.activeAgentEl = null;
+    state.activeAgentRaw = "";
+    state.activeThoughtEl = null;
+    state.activeThoughtHdrEl = null;
+    state.thoughtStartTime = null;
+    state.activeToolGroupEl = null;
+    vscode.postMessage({ type: "send", text: t, chips: state.chips });
+  }
+
+  // Send the next message dictated while Grok was busy (so you can keep talking
+  // through Grok's responses without waiting).
+  function flushVoiceQueue() {
+    if (state.busy || !state.voiceQueue.length) return;
+    submitVoiceMessage(state.voiceQueue.shift());
   }
 
   // ---------- inbound ----------
@@ -1679,6 +1819,68 @@
         break;
       case "openModePopover":
         openModePopover();
+        break;
+      case "voiceState":
+        // Host confirms a transition (e.g. recording actually started). Only
+        // accept the known states; ignore anything unexpected.
+        if (msg.status === "listening" || msg.status === "transcribing") {
+          state.mic = msg.status;
+          renderMic();
+        } else if (msg.status === "idle") {
+          // Hard reset — the host stopped voice (e.g. session switch). Clear the
+          // live flag and any queued messages too, not just the button.
+          state.mic = "idle";
+          state.voiceLive = false;
+          state.voiceQueue = [];
+          renderMic();
+        }
+        break;
+      case "voiceConfigured":
+        state.voiceConfigured = !!msg.value;
+        if (typeof msg.sendPhrase === "string") state.voiceSendPhrase = msg.sendPhrase;
+        renderMic();
+        renderInputHighlight();
+        break;
+      case "voicePartial":
+        // Live streaming update: replace the tail after the pre-dictation base.
+        state.voiceLive = true;
+        input.value = composeVoiceTail(state.voiceBase, msg.text || "");
+        renderInputHighlight();
+        break;
+      case "voiceSubmit": {
+        // Continuous "grok send": submit now (or queue if Grok is mid-response),
+        // clear the composer, and keep the mic listening for the next utterance.
+        const t = (msg.text || "").trim();
+        state.voiceBase = "";
+        state.voiceLive = false;
+        input.value = "";
+        renderInputHighlight();
+        if (t) {
+          if (state.busy) state.voiceQueue.push(t);
+          else submitVoiceMessage(t);
+        }
+        break;
+      }
+      case "voiceTranscript":
+        // Final result. Streaming replaces the live tail; batch appends.
+        if (state.voiceLive) {
+          input.value = composeVoiceTail(state.voiceBase, (msg.text || "").trim());
+          input.focus();
+          updateSlash();
+          renderInputHighlight();
+        } else {
+          insertTranscript(msg.text);
+        }
+        state.voiceLive = false;
+        setMic("transcript");
+        // "grok send" detected: submit hands-free — but only when idle, so it
+        // never doubles as a "stop" on an in-flight turn.
+        if (msg.send && !state.busy) sendOrStop();
+        break;
+      case "voiceError":
+        // Setup/record/transcribe failed (the host already showed the reason).
+        state.voiceLive = false;
+        setMic("error");
         break;
       case "chips":
         state.chips = msg.chips;
@@ -1808,14 +2010,17 @@
         addError(msg.text);
         state.busy = false;
         updateSendButton();
+        flushVoiceQueue(); // don't strand messages dictated during this turn
         break;
       case "agentEnd":
         state.busy = false;
         updateSendButton();
+        flushVoiceQueue(); // send anything dictated while Grok was responding
         break;
       case "exit":
         addError(`Grok exited (code ${msg.code}). Click the new session button to restart.`);
         state.busy = false;
+        state.voiceQueue = []; // session is dead — drop anything queued for it
         updateSendButton();
         break;
       case "setBusy":
@@ -1827,6 +2032,9 @@
         state.busy = !!msg.value;
         state.busyLocked = !!msg.locked;
         updateSendButton();
+        // When a non-turn busy window clears (e.g. session-start priming), send
+        // anything dictated during it — priming has no agentEnd to flush on.
+        if (!state.busy) flushVoiceQueue();
         // Refresh the gear popover's model/effort lock state if it's open.
         if (!gearPopover.hidden) renderGearMain();
         break;
@@ -1866,6 +2074,10 @@
 
   sendBtn.onclick = sendOrStop;
   updateSendButton();
+  if (micBtn) {
+    micBtn.onclick = (e) => { e.stopPropagation(); toggleMic(); };
+    renderMic();
+  }
   newBtn.onclick = () => {
     resetForNewSession();
     vscode.postMessage({ type: "newSession" });
@@ -1959,7 +2171,13 @@
     }
   });
 
-  input.addEventListener("input", updateSlash);
+  input.addEventListener("input", () => { updateSlash(); renderInputHighlight(); });
+  input.addEventListener("scroll", () => {
+    if (!inputHighlight) return;
+    inputHighlight.scrollTop = input.scrollTop;
+    inputHighlight.scrollLeft = input.scrollLeft;
+  });
+  renderInputHighlight();
   input.addEventListener("keydown", (e) => {
     if (!slashPopover.hidden && state.slashFiltered.length) {
       if (e.key === "ArrowDown") {

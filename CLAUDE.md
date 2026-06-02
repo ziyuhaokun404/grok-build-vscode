@@ -4,7 +4,7 @@ VS Code sidebar extension for **xAI's Grok Build CLI**, driven by `grok agent st
 
 ## Status
 
-v1.2.4 (1.2.3 is the current published Marketplace release). 234 tests passing, all grok-free (CI never spawns the binary; grok-dependent probes live separately in `research/*.cjs`). Smoke-tested end-to-end against `grok` v0.1.211 on Linux and Windows-via-WSL, and against the **native Windows build** `grok` 0.2.3 (`irm https://x.ai/cli/install.ps1 | iex`) — `cli-locator` resolves `grok.cmd`/`grok.exe` and `terminal-manager` uses `shell:true`. The native-Windows smoke test surfaced a handful of webview regressions (history popover that never closed, session rows only clickable on the label, reasoning traces no longer expandable, a cluttered welcome screen), all fixed in this build. Plan mode is now **enabled** and enforced client-side (see `research/plan-mode.md` § Resolution).
+v1.3.0 (1.2.3 is the current published Marketplace release). 319 tests passing, all grok-free (CI never spawns the binary; grok-dependent probes live separately in `research/*.cjs`). Smoke-tested end-to-end against `grok` v0.1.211 on Linux and Windows-via-WSL, and against the **native Windows build** `grok` 0.2.3 (`irm https://x.ai/cli/install.ps1 | iex`) — `cli-locator` resolves `grok.cmd`/`grok.exe` and `terminal-manager` uses `shell:true`. The native-Windows smoke test surfaced a handful of webview regressions (history popover that never closed, session rows only clickable on the label, reasoning traces no longer expandable, a cluttered welcome screen), all fixed in earlier builds. Plan mode is **enabled** and enforced client-side (see `research/plan-mode.md` § Resolution). **Voice input** (v1.3.0) adds a composer mic button that records via an `ffmpeg` child process in the extension host and transcribes through xAI's *separate* Speech-to-Text API — deliberately outside ACP, because the CLI advertises `promptCapabilities.audio:false` and webviews can't reach the mic (see `research/voice-input.md`). Transcription is **live/streaming by default** (PCM → `wss://api.x.ai/v1/stt`, partial events accumulated by `start`; `grok.voiceStreaming:false` falls back to the batch REST endpoint). Listening is **continuous + hands-free**: saying **"grok send"** submits and restarts a fresh stream so the mic keeps listening (each message = one clean utterance), and messages dictated while Grok is responding are queued and flushed on `agentEnd`. The phrase is sent as a `keyterm` bias so STT spells it right, and the trailing phrase is highlighted in the composer via a backdrop overlay (pure `trailingSendPhrase` in `webview-helpers.js`). This adds the extension's first runtime dep, `ws` (bundled into the vsix — `package`/`publish` no longer pass `--no-dependencies`, and `.vscodeignore` un-ignores `node_modules/ws`).
 
 ## Module map
 
@@ -24,19 +24,22 @@ v1.2.4 (1.2.3 is the current published Marketplace release). 234 tests passing, 
 | `src/sessions.ts` | Disk-driven session listing/delete + customName overrides (pure) |
 | `src/file-ref.ts` | Open-file `path#L<n>` ref parsing + large-file inline-read guard (pure) |
 | `src/plan-review.ts` | Plan-snapshot Markdown filename generation for the "open plan as editor tab" action (pure) |
+| `src/voice.ts` | Voice-input pure helpers — STT request/response/error, per-platform ffmpeg args, DirectShow device parsing, API-key resolution |
+| `src/voice-recorder.ts` | Batch capture: `VoiceRecorder` (spawns `ffmpeg` → WAV, graceful `q`-stop) + `transcribeAudio` (POST to `api.x.ai/v1/stt`) + `resolveWindowsAudioDevice` |
+| `src/voice-streamer.ts` | Live capture: `VoiceStreamer` (ffmpeg PCM → `ws` → `wss://api.x.ai/v1/stt`, emits partial/final transcript events) |
 | `media/chat.{js,css}` | Webview UI |
-| `media/webview-helpers.js` | Pure webview helpers (file-ref detection, relative-time format); shared between webview and tests |
+| `media/webview-helpers.js` | Pure webview helpers (file-ref detection, relative-time format, mic-button state machine, trailing send-phrase highlight); shared between webview and tests |
 | `scripts/install.{ps1,sh}` | Auto-detect VS Code CLI, build .vsix, install |
 | `scripts/uninstall.{ps1,sh}` | Uninstall `PawelHuryn.grok-vscode-phuryn` |
 
-Pure modules (`acp-dispatch`, `chips`, `prompt-builder`, `slash-filter`, `cli-locator`, `sessions`, `plan-gate`, `plan-restore`, `file-ref`, `plan-review`, `webview-helpers`) were split out specifically so protocol behavior can be unit-tested without spawning processes.
+Pure modules (`acp-dispatch`, `chips`, `prompt-builder`, `slash-filter`, `cli-locator`, `sessions`, `plan-gate`, `plan-restore`, `file-ref`, `plan-review`, `voice`, `webview-helpers`) were split out specifically so protocol behavior can be unit-tested without spawning processes. The impure `voice-recorder`/`voice-streamer` (ffmpeg spawn + STT fetch/WebSocket) are smoke-tested manually via the `research/voice-*.cjs` probes (`voice-stt-probe`, `voice-e2e-verify`, `voice-stream-probe`, `voice-stream-verify`, `voice-cost-probe`).
 
 ## Build + test
 
 ```bash
 npm install
-npm test         # 234 tests, ~1.4s, vitest — all grok-free (incl. happy-dom DOM tests + fake-CLI ACP integration tests)
-npm run package  # → grok-vscode-phuryn-1.2.4.vsix
+npm test         # 319 tests, ~1.4s, vitest — all grok-free (incl. happy-dom DOM tests + fake-CLI ACP integration tests)
+npm run package  # → grok-vscode-phuryn-1.3.0.vsix
 ```
 
 ## Install
@@ -93,5 +96,5 @@ Per-release: bump version in `package.json`, `npm test`, `npm run publish`. The 
 - Commits explain the *why*, not the *what*
 - Don't introduce abstractions speculatively
 - Don't add comments that explain what well-named code already says
-- 234 tests is the floor — every PR should keep that green. All tests are grok-free (no binary spawn); grok-dependent probes live in `research/*.cjs` and are run manually, never by `npm test` or CI
+- 319 tests is the floor — every PR should keep that green. All tests are grok-free (no binary spawn); grok-dependent probes live in `research/*.cjs` and are run manually, never by `npm test` or CI
 - **Version bumps are user-initiated.** Iterate at the current version (rebuild the same vsix and reinstall locally) until the user says to bump and publish. Don't bump `package.json` on your own.

@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 // @ts-expect-error — plain JS module, no types
-import { looksLikeFileRef, formatRelativeTime, FILE_EXTS, modelDisplayName } from "../media/webview-helpers.js";
+import { looksLikeFileRef, formatRelativeTime, FILE_EXTS, modelDisplayName, nextMicState, trailingSendPhrase } from "../media/webview-helpers.js";
 
 describe("looksLikeFileRef", () => {
   it("accepts a bare filename with a known extension", () => {
@@ -136,5 +136,77 @@ describe("modelDisplayName", () => {
   it("returns '' for a falsy model ID", () => {
     expect(modelDisplayName("", models)).toBe("");
     expect(modelDisplayName(undefined, models)).toBe("");
+  });
+});
+
+describe("nextMicState", () => {
+  it("start enters 'connecting' (the listening waves come from the host, not the reducer)", () => {
+    expect(nextMicState("idle", "start")).toBe("connecting");
+    expect(nextMicState("listening", "stop")).toBe("transcribing");
+    expect(nextMicState("transcribing", "transcript")).toBe("idle");
+  });
+
+  it("is stoppable while connecting (cancel before the stream is ready)", () => {
+    expect(nextMicState("connecting", "stop")).toBe("transcribing");
+  });
+
+  it("resets to idle on error or reset from any state", () => {
+    expect(nextMicState("connecting", "error")).toBe("idle");
+    expect(nextMicState("listening", "error")).toBe("idle");
+    expect(nextMicState("transcribing", "error")).toBe("idle");
+    expect(nextMicState("listening", "reset")).toBe("idle");
+  });
+
+  it("does not start a new recording while transcribing or already active", () => {
+    expect(nextMicState("transcribing", "start")).toBe("transcribing");
+    expect(nextMicState("listening", "start")).toBe("listening");
+  });
+
+  it("ignores stop from idle or transcribing", () => {
+    expect(nextMicState("idle", "stop")).toBe("idle");
+    expect(nextMicState("transcribing", "stop")).toBe("transcribing");
+  });
+
+  it("ignores unknown events", () => {
+    expect(nextMicState("listening", "wat")).toBe("listening");
+  });
+});
+
+describe("trailingSendPhrase", () => {
+  it("locates a trailing 'grok send' (returns its range)", () => {
+    expect(trailingSendPhrase("fix the bug grok send", "grok send")).toEqual({ index: 12, length: 9 });
+  });
+
+  it("is case-insensitive and highlights only the phrase, not trailing punctuation", () => {
+    const r = trailingSendPhrase("Refactor this Grok Send!", "grok send");
+    expect(r).not.toBeNull();
+    // The "!" stays part of the message, so it is NOT inside the highlighted span.
+    expect("Refactor this Grok Send!".slice(r!.index, r!.index + r!.length)).toBe("Grok Send");
+  });
+
+  it("does NOT match a non-trailing or partial occurrence", () => {
+    expect(trailingSendPhrase("explain grok send to me", "grok send")).toBeNull();
+    expect(trailingSendPhrase("press send", "grok send")).toBeNull();
+  });
+
+  it("also highlights the 'grok sent' STT variant", () => {
+    const r = trailingSendPhrase("add a button grok sent", "grok send");
+    expect(r).not.toBeNull();
+    expect("add a button grok sent".slice(r!.index, r!.index + r!.length)).toBe("grok sent");
+  });
+
+  it("does NOT match a bare 'sent' without 'grok' before it", () => {
+    expect(trailingSendPhrase("the file was sent", "grok send")).toBeNull();
+    expect(trailingSendPhrase("make sure it gets sent", "grok send")).toBeNull();
+  });
+
+  it("returns null for empty text or empty phrase", () => {
+    expect(trailingSendPhrase("", "grok send")).toBeNull();
+    expect(trailingSendPhrase("grok send", "")).toBeNull();
+    expect(trailingSendPhrase(null as unknown as string, "grok send")).toBeNull();
+  });
+
+  it("supports a custom phrase", () => {
+    expect(trailingSendPhrase("do it now go", "go")).toEqual({ index: 10, length: 2 });
   });
 });

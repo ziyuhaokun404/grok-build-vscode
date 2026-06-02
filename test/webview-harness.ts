@@ -31,7 +31,11 @@ export const BODY = `
     </div>
   </main>
   <footer class="composer">
-    <textarea id="input"></textarea>
+    <div class="composer-input-wrap">
+      <div id="input-highlight"></div>
+      <textarea id="input"></textarea>
+    </div>
+    <button id="mic-btn"></button>
     <button id="add-btn"></button>
     <button id="gear-btn"></button>
     <div id="donut"><svg><circle id="donut-arc"/></svg><span id="donut-label"></span></div>

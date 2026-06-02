@@ -1,7 +1,11 @@
 import * as vscode from "vscode";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { AcpClient, EffortLevel, ExitPlanRequest, PermissionRequest } from "./acp";
+import { resolveVoiceKey, parseVoiceCommand, DEFAULT_SEND_PHRASE } from "./voice";
+import { VoiceRecorder, transcribeAudio, resolveWindowsAudioDevice } from "./voice-recorder";
+import { VoiceStreamer } from "./voice-streamer";
 import { isIncompatibleAgentError } from "./acp-dispatch";
 import { locateGrokCli } from "./cli-locator";
 import { TerminalManager } from "./terminal-manager";
@@ -57,7 +61,9 @@ type WebviewMsg =
   | { type: "resumeSession"; id: string }
   | { type: "renameSession"; id: string; name: string }
   | { type: "deleteSession"; id: string; name?: string }
-  | { type: "pickFile" };
+  | { type: "pickFile" }
+  | { type: "voiceStart" }
+  | { type: "voiceStop" };
 
 const SESSION_META_KEY = "grok.sessionMeta";
 
@@ -75,6 +81,14 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
   private chips: FileChip[] = [];
   private editorWatcher?: vscode.Disposable;
   private terminalManager = new TerminalManager();
+  private voiceRecorder = new VoiceRecorder();
+  private voiceTempPath?: string;
+  private voiceStreamer?: VoiceStreamer;
+  private voiceFinalizing = false;
+  // Stored so a "grok send" can transparently restart a fresh stream (each
+  // message = one clean utterance) without re-resolving the mic device.
+  private voiceStreamCtx?: { key: string; ffmpegPath: string; device?: string; phrase: string; keyterms: string[] };
+  private configWatcher?: vscode.Disposable;
   private autoApprove = false;
   private planActive = false;
   // Deferred post-turn action. The CLI's exit_plan_mode arrives *during* an
@@ -131,6 +145,18 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
     view.webview.html = this.getHtml(view.webview);
     view.webview.onDidReceiveMessage((m: WebviewMsg) => this.onMessage(m));
     this.watchActiveEditor();
+    // Re-tell the webview whether voice is set up when the relevant settings
+    // change, so the mic button's "needs setup" hint updates without a reload.
+    this.configWatcher?.dispose();
+    this.configWatcher = vscode.workspace.onDidChangeConfiguration((e) => {
+      if (
+        e.affectsConfiguration("grok.voiceApiKey") ||
+        e.affectsConfiguration("grok.ffmpegPath") ||
+        e.affectsConfiguration("grok.voiceSendPhrase")
+      ) {
+        this.postVoiceConfigured();
+      }
+    });
   }
 
   insertActiveMention(opts?: { selection?: boolean; uri?: vscode.Uri }): void {
@@ -510,7 +536,11 @@ See design doc for the full state machine diagram.`;
   dispose(): void {
     this.client?.dispose();
     this.editorWatcher?.dispose();
+    this.configWatcher?.dispose();
     this.terminalManager.disposeAll();
+    this.voiceRecorder.cancel();
+    this.voiceStreamer?.cancel();
+    try { if (this.voiceTempPath) fs.unlinkSync(this.voiceTempPath); } catch { /* best effort */ }
   }
 
   // ---------- internals ----------
@@ -573,6 +603,10 @@ See design doc for the full state machine diagram.`;
 
   private async startSession(resumeId?: string): Promise<AcpClient | undefined> {
     const gen = ++this.sessionGen;
+    // Stop any in-progress voice capture so listening never carries across a
+    // new/resumed/restarted session (covers New Session, history resume, and
+    // model/effort restarts — all of which route through here).
+    this.stopVoiceInput();
     this.client?.dispose();
     this.client = undefined;
     this.autoApprove = false;
@@ -1038,6 +1072,12 @@ See design doc for the full state machine diagram.`;
       case "pickFile":
         await this.pickFileFromComputer();
         break;
+      case "voiceStart":
+        await this.handleVoiceStart();
+        break;
+      case "voiceStop":
+        await this.handleVoiceStop();
+        break;
     }
 
   }
@@ -1120,6 +1160,260 @@ See design doc for the full state machine diagram.`;
       this.addDroppedFile(uri.fsPath, false);
     }
     this.reveal();
+  }
+
+  /** Resolve the xAI key for Speech-to-Text: the `grok.voiceApiKey` setting,
+   *  else `GROK_VOICE_API_KEY` / `XAI_API_KEY` from the workspace .env or the
+   *  host environment. Distinct from the CLI's login — STT is a separate xAI
+   *  product (api.x.ai/v1/stt) that wants a console.x.ai developer key. */
+  private resolveVoiceApiKey(cwd: string): string | undefined {
+    const setting = vscode.workspace.getConfiguration("grok").get<string>("voiceApiKey", "");
+    const env = { ...process.env, ...this.readDotEnv(cwd) } as Record<string, string | undefined>;
+    return resolveVoiceKey({ setting, env });
+  }
+
+  /** Tell the webview whether a voice API key is resolvable, so the mic button
+   *  can show a "needs setup" hint up front instead of only failing on click. */
+  private postVoiceConfigured(): void {
+    const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+    const cfg = vscode.workspace.getConfiguration("grok");
+    this.post({
+      type: "voiceConfigured",
+      value: !!this.resolveVoiceApiKey(cwd),
+      sendPhrase: cfg.get<string>("voiceSendPhrase", DEFAULT_SEND_PHRASE),
+    });
+  }
+
+  /** Show actionable guidance for setting up the voice API key. */
+  private async promptVoiceKeySetup(): Promise<void> {
+    const pick = await vscode.window.showErrorMessage(
+      "Voice input needs an xAI API key (Speech-to-Text) — a separate console.x.ai developer key, not your Grok CLI login. Set grok.voiceApiKey, or GROK_VOICE_API_KEY / XAI_API_KEY in your workspace .env.",
+      "Open Settings",
+      "Get a Key",
+    );
+    if (pick === "Open Settings") {
+      await vscode.commands.executeCommand("workbench.action.openSettings", "grok.voiceApiKey");
+    } else if (pick === "Get a Key") {
+      await vscode.env.openExternal(vscode.Uri.parse("https://console.x.ai"));
+    }
+  }
+
+  /** Begin recording the microphone (in the extension host — the webview can't
+   *  reach the mic). The webview has already flipped its button to "listening";
+   *  on any setup failure we send `voiceError` to reset it. */
+  private async handleVoiceStart(): Promise<void> {
+    const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+    const key = this.resolveVoiceApiKey(cwd);
+    if (!key) {
+      void this.promptVoiceKeySetup();
+      this.post({ type: "voiceError" });
+      return;
+    }
+    const cfg = vscode.workspace.getConfiguration("grok");
+    const ffmpegPath = cfg.get<string>("ffmpegPath", "") || "ffmpeg";
+    const device = cfg.get<string>("voiceInputDevice", "") || undefined;
+
+    // Streaming (default): live transcription over the STT WebSocket, so "grok
+    // send" can submit hands-free without a stop-click. Batch is the fallback.
+    if (cfg.get<boolean>("voiceStreaming", true)) {
+      await this.startVoiceStream(key, ffmpegPath, device, cfg);
+      return;
+    }
+
+    const tmp = path.join(os.tmpdir(), `grok-voice-${Date.now()}.wav`);
+    try {
+      await this.voiceRecorder.start({ ffmpegPath, outputPath: tmp, device, log: (m) => this.output.appendLine(m) });
+      this.voiceTempPath = tmp;
+      this.post({ type: "voiceState", status: "listening" });
+    } catch (e) {
+      const msg = (e as Error).message;
+      this.output.appendLine(`[voice] start failed: ${msg}`);
+      // ffmpeg-missing is the common, fixable case — offer a jump to its setting.
+      if (/ffmpeg/i.test(msg)) {
+        const pick = await vscode.window.showErrorMessage(msg, "Open Settings");
+        if (pick === "Open Settings") {
+          await vscode.commands.executeCommand("workbench.action.openSettings", "grok.ffmpegPath");
+        }
+      } else {
+        vscode.window.showErrorMessage(msg);
+      }
+      this.post({ type: "voiceError" });
+    }
+  }
+
+  /** Begin a hands-free streaming session. Resolves the mic device once, then
+   *  opens a stream; each "grok send" commits the message and restarts a fresh
+   *  stream so the mic keeps listening with zero clicks. */
+  private async startVoiceStream(
+    key: string,
+    ffmpegPath: string,
+    device: string | undefined,
+    cfg: vscode.WorkspaceConfiguration,
+  ): Promise<void> {
+    const phrase = cfg.get<string>("voiceSendPhrase", DEFAULT_SEND_PHRASE);
+    // Bias the model toward the send phrase + "Grok" so it spells them right
+    // (fixes the "grok send" → "gronsent" mishearing).
+    const keyterms = [...new Set([phrase, "Grok"].map((s) => (s || "").trim()).filter(Boolean))];
+    // Resolve the Windows mic once so per-message restarts don't re-enumerate.
+    let resolved = device;
+    if (process.platform === "win32" && !resolved) {
+      try { resolved = await resolveWindowsAudioDevice(ffmpegPath, (m) => this.output.appendLine(m)); } catch { /* streamer surfaces it */ }
+    }
+    this.voiceStreamCtx = { key, ffmpegPath, device: resolved, phrase, keyterms };
+    this.voiceFinalizing = false;
+    await this.openVoiceStream();
+  }
+
+  /** Open (or re-open after a "grok send") a streaming session from the stored
+   *  context. Late events from a superseded streamer are ignored via identity. */
+  private async openVoiceStream(): Promise<void> {
+    const ctx = this.voiceStreamCtx;
+    if (!ctx) return;
+    const streamer = new VoiceStreamer();
+    this.voiceStreamer = streamer;
+    const isCurrent = () => this.voiceStreamer === streamer;
+
+    streamer.on("partial", (ev: { text: string; speechFinal: boolean }) => {
+      if (!isCurrent()) return;
+      this.post({ type: "voicePartial", text: ev.text });
+      // A finished utterance ending in the send phrase → submit + keep listening.
+      if (ev.speechFinal && ctx.phrase) {
+        const parsed = parseVoiceCommand(ev.text, ctx.phrase);
+        if (parsed.send) this.commitVoiceStream(parsed.text);
+      }
+    });
+    streamer.on("ended", () => {
+      // Stream ended on its own (long silence hit the ffmpeg cap, or a device
+      // drop): finalize whatever we have and go idle. The user re-clicks to resume.
+      if (isCurrent()) void this.finalizeVoiceStream();
+    });
+    streamer.on("error", (e: Error) => {
+      if (!isCurrent()) return;
+      this.output.appendLine(`[voice] stream error: ${e.message}`);
+      if (!this.voiceFinalizing) {
+        vscode.window.showErrorMessage(`Voice transcription failed: ${e.message}`);
+        this.post({ type: "voiceError" });
+      }
+      this.voiceStreamer = undefined;
+      this.voiceStreamCtx = undefined;
+    });
+
+    try {
+      await streamer.start({ ffmpegPath: ctx.ffmpegPath, apiKey: ctx.key, device: ctx.device, keyterms: ctx.keyterms, log: (m) => this.output.appendLine(m) });
+      if (!isCurrent()) { streamer.cancel(); return; }
+      this.post({ type: "voiceState", status: "listening" });
+    } catch (e) {
+      if (!isCurrent()) return;
+      this.voiceStreamer = undefined;
+      this.voiceStreamCtx = undefined;
+      const msg = (e as Error).message;
+      this.output.appendLine(`[voice] stream start failed: ${msg}`);
+      if (/ffmpeg/i.test(msg)) {
+        const pick = await vscode.window.showErrorMessage(msg, "Open Settings");
+        if (pick === "Open Settings") {
+          await vscode.commands.executeCommand("workbench.action.openSettings", "grok.ffmpegPath");
+        }
+      } else {
+        vscode.window.showErrorMessage(msg);
+      }
+      this.post({ type: "voiceError" });
+    }
+  }
+
+  /** "grok send": submit the message and KEEP listening by restarting a fresh
+   *  stream (each message = one clean utterance). No clicks needed. */
+  private commitVoiceStream(text: string): void {
+    const old = this.voiceStreamer;
+    this.voiceStreamer = undefined; // detach so late events are ignored
+    old?.cancel();
+    if (text.trim()) this.post({ type: "voiceSubmit", text: text.trim() });
+    void this.openVoiceStream(); // reuses cached device → fast restart
+  }
+
+  /** Stop streaming entirely (manual click, or a self-ended stream): finalize the
+   *  remaining transcript and return to idle. */
+  private async finalizeVoiceStream(): Promise<void> {
+    if (this.voiceFinalizing) return;
+    this.voiceFinalizing = true;
+    const streamer = this.voiceStreamer;
+    this.voiceStreamer = undefined;
+    this.voiceStreamCtx = undefined;
+    if (!streamer) { this.voiceFinalizing = false; return; }
+    this.post({ type: "voiceState", status: "transcribing" });
+    let finalText = "";
+    try { finalText = await streamer.stop(); } catch { finalText = streamer.transcript; }
+    const phrase = vscode.workspace.getConfiguration("grok").get<string>("voiceSendPhrase", DEFAULT_SEND_PHRASE);
+    const { text, send } = parseVoiceCommand(finalText, phrase);
+    this.voiceFinalizing = false;
+    if (!text && !send) {
+      this.post({ type: "voiceError" });
+      return;
+    }
+    this.post({ type: "voiceTranscript", text, send });
+  }
+
+  /** Hard-stop any voice capture (no transcript) and reset the mic to idle.
+   *  Called on session switch/restart so listening never bleeds across sessions. */
+  private stopVoiceInput(): void {
+    const wasActive = !!this.voiceStreamer || this.voiceRecorder.active;
+    this.voiceStreamer?.cancel();
+    this.voiceStreamer = undefined;
+    this.voiceStreamCtx = undefined;
+    this.voiceFinalizing = false;
+    this.voiceRecorder.cancel();
+    try { if (this.voiceTempPath) fs.unlinkSync(this.voiceTempPath); } catch { /* best effort */ }
+    this.voiceTempPath = undefined;
+    if (wasActive) this.post({ type: "voiceState", status: "idle" });
+  }
+
+  /** Stop recording, transcribe via xAI STT, and send the text to the composer. */
+  private async handleVoiceStop(): Promise<void> {
+    // Streaming path: finalize the live stream.
+    if (this.voiceStreamer) {
+      await this.finalizeVoiceStream();
+      return;
+    }
+    if (!this.voiceRecorder.active) {
+      this.post({ type: "voiceError" });
+      return;
+    }
+    const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+    const key = this.resolveVoiceApiKey(cwd);
+    if (!key) {
+      this.voiceRecorder.cancel();
+      this.post({ type: "voiceError" });
+      return;
+    }
+    let wavPath: string;
+    try {
+      wavPath = await this.voiceRecorder.stop();
+    } catch (e) {
+      this.output.appendLine(`[voice] stop failed: ${(e as Error).message}`);
+      vscode.window.showErrorMessage(`Voice recording failed: ${(e as Error).message}`);
+      this.post({ type: "voiceError" });
+      return;
+    }
+    this.post({ type: "voiceState", status: "transcribing" });
+    try {
+      const raw = await transcribeAudio(wavPath, key, (m) => this.output.appendLine(m));
+      // Strip a trailing "grok send" (configurable) so dictation can submit
+      // hands-free. The webview inserts `text` and, if `send`, fires the send.
+      const sendPhrase = vscode.workspace.getConfiguration("grok").get<string>("voiceSendPhrase", DEFAULT_SEND_PHRASE);
+      const { text, send } = parseVoiceCommand(raw, sendPhrase);
+      if (!text && !send) {
+        vscode.window.showInformationMessage("Voice input: nothing was transcribed (silence?).");
+        this.post({ type: "voiceError" });
+        return;
+      }
+      this.post({ type: "voiceTranscript", text, send });
+    } catch (e) {
+      this.output.appendLine(`[voice] transcription failed: ${(e as Error).message}`);
+      vscode.window.showErrorMessage((e as Error).message);
+      this.post({ type: "voiceError" });
+    } finally {
+      try { if (this.voiceTempPath) fs.unlinkSync(this.voiceTempPath); } catch { /* best effort */ }
+      this.voiceTempPath = undefined;
+    }
   }
 
   private async openDiffEditor(filePath: string, oldText: string, newText: string): Promise<void> {
@@ -1304,6 +1598,7 @@ See design doc for the full state machine diagram.`;
     if (cfg.get<boolean>("includeActiveFileByDefault", true)) {
       this.addActiveEditorChip();
     }
+    this.postVoiceConfigured();
     void this.startSession();
   }
 
@@ -1351,7 +1646,9 @@ See design doc for the full state machine diagram.`;
     this.postChips();
   }
 
-  private buildEnv(cwd: string): NodeJS.ProcessEnv {
+  /** Parse the workspace `.env` into a plain map (no process.env merge). Used by
+   *  both the CLI env builder and the voice key resolver. */
+  private readDotEnv(cwd: string): Record<string, string> {
     const dotEnv: Record<string, string> = {};
     try {
       const content = fs.readFileSync(path.join(cwd, ".env"), "utf8");
@@ -1365,7 +1662,11 @@ See design doc for the full state machine diagram.`;
         if (key) dotEnv[key] = val;
       }
     } catch { /* no .env — fine */ }
+    return dotEnv;
+  }
 
+  private buildEnv(cwd: string): NodeJS.ProcessEnv {
+    const dotEnv = this.readDotEnv(cwd);
     const env: NodeJS.ProcessEnv = { ...process.env, ...dotEnv };
 
     // XAI_API_KEY is the generic xAI key name; grok CLI needs GROK_CODE_XAI_API_KEY.
@@ -1414,7 +1715,11 @@ See design doc for the full state machine diagram.`;
   </main>
 
   <footer class="composer">
-    <textarea id="input" placeholder="Ask Grok..." rows="3"></textarea>
+    <div class="composer-input-wrap">
+      <div id="input-highlight" class="input-highlight" aria-hidden="true"></div>
+      <textarea id="input" placeholder="Ask Grok..." rows="3"></textarea>
+    </div>
+    <button id="mic-btn" class="mic-btn" title="Voice input"></button>
     <div class="composer-toolbar">
       <div class="toolbar-left">
         <button id="add-btn" class="toolbar-btn" title="Add context"></button>

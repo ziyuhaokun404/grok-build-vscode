@@ -89,7 +89,16 @@ See `README.md § Install` for the full per-platform matrix.
 
 ## Publishing
 
-Per-release: bump version in `package.json`, `npm test`, `npm run publish`. The `PawelHuryn` publisher is already registered and authenticated locally.
+**Release procedure — ALWAYS tag + create a GitHub Release on a release push to `main`** (standing convention; mirrors the `v1.0.0…` tag history + GitHub Releases):
+
+1. Bump `version` in `package.json` (user-initiated) and add the dated section to `changelog.md`.
+2. `npm test` (337-test floor, all green) + `tsc -p . --noEmit` clean.
+3. Commit + push to `main` (direct-to-main, no feature branches).
+4. **Annotated git tag** `vX.Y.Z` at the release commit → `git tag -a vX.Y.Z -m "Release vX.Y.Z"` → `git push origin vX.Y.Z`.
+5. **GitHub Release** for that tag → `gh release create vX.Y.Z --title "Release vX.Y.Z" --notes-file <notes>` (notes = the new changelog section(s); include any earlier version that was bumped but never released).
+6. **Marketplace publish is separate and explicit** — only `npm run publish` (vsce) when the user asks. The `PawelHuryn` publisher is registered + authenticated locally; publishing ≠ tagging.
+
+Don't skip the tag/release on a release push. (A pure mid-dev version bump that isn't a release — e.g. the unreleased v1.3.0 voice iteration — is the only exception.)
 
 ## Repo conventions
 

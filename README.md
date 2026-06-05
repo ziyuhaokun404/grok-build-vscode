@@ -7,6 +7,8 @@ A thin VS Code sidebar client for xAI's Grok Build CLI. It spawns `grok agent st
 Works with SuperGrok Heavy subscription or xAI API key (standard Grok). 
 **Not affiliated with xAI.**
 
+**Install free from [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=PawelHuryn.grok-vscode-phuryn)**
+
 ![Grok Build in the VS Code sidebar](docs/screenshots/v1.2.0.png)
 
 ![Grok Build alongside VS Code](docs/screenshots/v1.3.1_vscode.png)

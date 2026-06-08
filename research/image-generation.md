@@ -61,6 +61,21 @@ For prompt `"/imagine a small red cube on white background"`:
 - `addGeneratedImage` renders `<img>`; clicking opens the source file.
   (`media/chat.js`, `media/chat.css`)
 
+## Resume (`session/load`) — confirmed
+
+On resume grok **collapses** the image into a **single completed `tool_call`**
+(not the live tool_call + separate update). The one replayed payload carries
+everything together: `title: "imagine: <prompt>"`, `status: "completed"`,
+`rawInput.variant: "ImageGen"`, and the path-JSON content. Captured with
+`research/resume-probe.cjs`.
+
+Because the host's `handleSessionUpdate` runs identically for live and replay,
+and this collapsed payload is *both* image-gen-detected (`isImageGenToolCall`,
+via the title) *and* path-bearing (`extractGeneratedImagePaths`), the image
+renders on resume with no extra code. The webview only suppresses the primer turn
+(`suppressReplayTurn`), not real replayed turns. Locked by a unit test
+("resume: the collapsed tool_call carries title + path together").
+
 ## Notes
 
 - `/imagine-video` (subscription) was not probed; expect an analogous tool

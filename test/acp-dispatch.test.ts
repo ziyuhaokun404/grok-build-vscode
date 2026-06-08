@@ -402,4 +402,23 @@ describe("image_gen (grok's real /imagine wire shape)", () => {
     expect(extractGeneratedImagePaths({ content: [{ type: "content", content: { type: "text", text: "done" } }] })).toEqual([]);
     expect(extractGeneratedImagePaths({ content: [{ type: "content", content: { type: "text", text: '{"ok":true}' } }] })).toEqual([]);
   });
+
+  it("resume: the collapsed tool_call carries title + path together, so replay renders the image", () => {
+    // On session/load grok replays image_gen as ONE completed tool_call (not the
+    // live tool_call + separate update) titled `imagine: …` with rawInput.variant
+    // "ImageGen" AND the path content. Both detectors must fire on this one
+    // payload so resumed sessions show the image. Confirmed via resume probe.
+    const replayed = {
+      sessionUpdate: "tool_call",
+      toolCallId: "call-b508",
+      title: "imagine: a small red cube on white background",
+      status: "completed",
+      rawInput: { variant: "ImageGen", prompt: "a small red cube", aspect_ratio: "1:1" },
+      content: [{ type: "content", content: { type: "text", text: JSON.stringify({ path: "/root/.grok/sessions/s/images/1.jpg", session_folder: "images" }) } }],
+    };
+    expect(isImageGenToolCall(replayed)).toBe(true);
+    expect(extractGeneratedImagePaths(replayed)).toEqual([
+      { kind: "path", path: "/root/.grok/sessions/s/images/1.jpg" },
+    ]);
+  });
 });

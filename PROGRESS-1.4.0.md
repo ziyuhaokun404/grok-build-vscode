@@ -53,10 +53,17 @@ writes the JPEG to the session dir itself (observed 1024×1024).
   `data:` URI (CSP can't load arbitrary disk paths). Verified the path is readable.
 - `media/chat.js` `addGeneratedImage()` + `case "image"`; `media/chat.css` `.generated-image`.
 
+  **Resume (`session/load`) — ✅ confirmed.** Probed `research/resume-probe.cjs`: grok
+  collapses the image into ONE completed `tool_call` (title `imagine: …` + path-JSON
+  content). The host's update handling is identical for live/replay, so the image renders
+  on resume with no extra code; locked by a unit test. Subagent cards likewise replay (the
+  `spawn_subagent` tool_call carries `subagent_type`).
+
   **Still worth a local UI smoke test:** install the vsix, `/imagine …`, confirm the image
-  renders in the panel (the host-side path→data-URI was confirmed, but the end-to-end
-  webview render wasn't exercised in a real VS Code instance). `/imagine-video` is unprobed —
-  the path extractor is image-ext-only, so video would fall through; revisit if wanted.
+  renders in the panel (host-side path→data-URI confirmed, but the end-to-end webview render
+  wasn't exercised in a real VS Code instance) — then reload/resume the session and confirm
+  it's still there. `/imagine-video` is unprobed — the path extractor is image-ext-only, so
+  video would fall through; revisit if wanted.
 
 ### 2. Subagent card — ✅ tool name CONFIRMED (from CLI's bundled docs); inspector still TODO
 Tool is **`spawn_subagent`** with a **`subagent_type`** param (`general-purpose`/`explore`/

@@ -289,6 +289,20 @@ describe("ACP integration (real subprocess, fake CLI)", () => {
     expect(stderr.join("")).toMatch(/"answers":\{"Pick one\?":"Option A"\}/);
   });
 
+  // Regression: grok ≥0.2.33 echoes the *live* prompt back as a
+  // user_message_chunk (0.2.3 did not — the fake CLI now models this on every
+  // prompt). The wire client surfaces it as a `userMessageChunk` event;
+  // sidebar.ts gates forwarding to replay-only so the optimistic live bubble
+  // isn't doubled. Here we prove the event reaches the client during a live
+  // prompt — the trigger the host's gate guards against.
+  it("user_message_chunk: a live echo surfaces as a userMessageChunk event on the client", async () => {
+    const echoes = collect<string>(client, "userMessageChunk");
+
+    await client.prompt("investigate the parser");
+
+    expect(echoes).toContain("investigate the parser");
+  });
+
   // Regression (HIGH): writing to the CLI's stdin after the pipe is gone must
   // not crash the extension host. Pre-fix, respond*/cancel did a bare
   // `this.proc?.stdin.write(...)` — a destroyed pipe throws ERR_STREAM_DESTROYED

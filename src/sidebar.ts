@@ -61,6 +61,8 @@ type WebviewMsg =
   | { type: "runInstallCmd" }
   | { type: "runGrokLogin" }
   | { type: "logout" }
+  | { type: "checkGrokUpdate" }
+  | { type: "updateGrok" }
   | { type: "recheckConnection" }
   | { type: "listSessions" }
   | { type: "resumeSession"; id: string }
@@ -154,6 +156,10 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
   // True while a sequence of user_message_chunk events is mid-flight, so we
   // only increment userMessageCount once per user message during replay.
   private inUserMessage = false;
+  // True only while replaying a resumed session (session/load). grok ≥0.2.33
+  // echoes the *live* prompt back as user_message_chunk too, so this gates the
+  // handler to replay-only — the live bubble already comes from send().
+  private replaying = false;
   private activeSessionId?: string;
   private titleGenerated = false;
   private firstUserMessageForTitle?: string;
@@ -673,6 +679,70 @@ See design doc for the full state machine diagram.`;
     }
   }
 
+  /**
+   * On-demand "is a newer grok available?" check for the gear → About panel.
+   * Read-only — `grok update --check --json` doesn't touch the binary, so it's
+   * safe while a session is live. Posts a grokUpdateStatus back to the webview.
+   */
+  private async checkGrokUpdate(): Promise<void> {
+    const cliPath = this.cliPath || locateGrokCli(
+      vscode.workspace.getConfiguration("grok").get<string>("cliPath", ""),
+    );
+    if (!cliPath) {
+      this.post({ type: "grokUpdateStatus", error: "grok CLI not found" });
+      return;
+    }
+    try {
+      const { stdout } = await execFileAsync(cliPath, ["update", "--check", "--json"], { timeout: 30_000 });
+      const info = JSON.parse(stdout) as { currentVersion?: string; latestVersion?: string; updateAvailable?: boolean };
+      this.post({
+        type: "grokUpdateStatus",
+        current: info.currentVersion ?? null,
+        latest: info.latestVersion ?? null,
+        updateAvailable: !!info.updateAvailable,
+      });
+    } catch (e) {
+      this.output.appendLine(`grok update --check failed: ${(e as Error).message}`);
+      this.post({ type: "grokUpdateStatus", error: (e as Error).message });
+    }
+  }
+
+  /**
+   * On-demand "Update Grok Build" from the About panel. grok holds its binary
+   * open while running (a hard lock on Windows), so we tear the session down,
+   * run `grok update`, then resume the *same* session on the fresh binary —
+   * preserving the conversation. The welcome lifecycle (Updating… → Starting… →
+   * Connected · v<new>) shows progress. cliUpdateChecked is already set, so
+   * startSession's silent path won't re-run the update.
+   */
+  private async updateGrokCliOnDemand(): Promise<void> {
+    const cliPath = this.cliPath || locateGrokCli(
+      vscode.workspace.getConfiguration("grok").get<string>("cliPath", ""),
+    );
+    if (!cliPath) {
+      this.post({ type: "onboarding", state: "missing-cli", platform: process.platform });
+      return;
+    }
+    const resumeId = this.activeSessionId;
+    // Free the binary: bump the generation so the disposed client's events are
+    // ignored, then tear it down before the update replaces the executable.
+    this.sessionGen++;
+    this.client?.dispose();
+    this.client = undefined;
+    this.post({ type: "clearMessages" });
+    this.post({ type: "cliUpdating" });
+    try {
+      const { stdout, stderr } = await execFileAsync(cliPath, ["update"], { timeout: 180_000 });
+      if (stdout?.trim()) this.output.appendLine(stdout.trim());
+      if (stderr?.trim()) this.output.appendLine(stderr.trim());
+    } catch (e) {
+      this.output.appendLine(`grok update failed: ${(e as Error).message}`);
+      void vscode.window.showWarningMessage(`Grok Build update failed: ${(e as Error).message}`);
+    }
+    // Respawn on the (possibly) updated binary, resuming the same session.
+    await this.startSession(resumeId);
+  }
+
   /** Confirm a restart for a setting that only applies on a fresh session
    *  (reasoning effort, cross-agent model). Returns the chosen restart mode, or
    *  undefined if the user dismissed the dialog. */
@@ -859,9 +929,13 @@ See design doc for the full state machine diagram.`;
     });
     client.on("userMessageChunk", (text: string) => {
       if (gen !== this.sessionGen) return;
-      // Only the CLI replays these (during session/load). Live prompts render
-      // their user bubble from send(); the agent never echoes them back. The
-      // first chunk after a non-user chunk marks the start of a new user
+      // grok ≥0.2.33 echoes the *live* prompt back as user_message_chunk; 0.2.3
+      // did not (its comment here read "the agent never echoes them back"). The
+      // live bubble + userMessageCount come from send(), so a forwarded live
+      // echo would render a duplicate bubble and double-count. Only the CLI's
+      // session/load *replay* should drive user bubbles from here.
+      if (!this.replaying) return;
+      // The first chunk after a non-user chunk marks the start of a new user
       // message — count it so the next persisted plan knows where it lives.
       if (!this.inUserMessage) {
         this.userMessageCount += 1;
@@ -1003,6 +1077,7 @@ See design doc for the full state machine diagram.`;
         // Bracket the replay so the webview can render finalized "Thought"
         // headers (no elapsed time — the original timing isn't in the stream).
         this.post({ type: "historyReplay", active: true });
+        this.replaying = true;
         try {
           await client.loadSession(resumeId, defaultModel || undefined);
         } catch (e) {
@@ -1017,6 +1092,7 @@ See design doc for the full state machine diagram.`;
             `[resume] kept the session's own model; default '${defaultModel}' needs a different agent`,
           );
         } finally {
+          this.replaying = false;
           this.post({ type: "historyReplay", active: false });
         }
         this.activeSessionId = resumeId;
@@ -1214,6 +1290,12 @@ See design doc for the full state machine diagram.`;
         break;
       case "logout":
         await this.logout();
+        break;
+      case "checkGrokUpdate":
+        await this.checkGrokUpdate();
+        break;
+      case "updateGrok":
+        await this.updateGrokCliOnDemand();
         break;
       case "listSessions":
         this.postSessionsList();
@@ -1752,6 +1834,7 @@ See design doc for the full state machine diagram.`;
       effort: cfg.get("defaultEffort", ""),
       cwd,
       useCtrlEnter: cfg.get("useCtrlEnterToSend", false),
+      extVersion: (this.context.extension.packageJSON as { version?: string })?.version ?? "",
     });
     if (cfg.get<boolean>("includeActiveFileByDefault", true)) {
       this.addActiveEditorChip();
@@ -1867,7 +1950,7 @@ See design doc for the full state machine diagram.`;
       <img src="${resourceUri("grok-mark-light.svg")}" alt="Grok" class="welcome-mark" />
       <h2>Grok Build</h2>
       <p class="welcome-byline muted">by Paweł Huryn (<a href="https://www.productcompass.pm" class="muted-link">productcompass.pm</a>)</p>
-      <p id="welcome-version" class="muted">starting...</p>
+      <p id="welcome-version" class="muted loading-dots">Starting</p>
       <div id="welcome-onboarding"></div>
     </div>
   </main>

@@ -111,6 +111,14 @@
     // priming spinner clears (setBusy:false). See the initialized/setBusy cases.
     cliVersion: "",
     startingPhase: false,
+    // Extension version (from initialState) — shown in the gear → About panel.
+    extVersion: "",
+    // Which gear-popover view is showing ("main"|"model"|"about"|"config"), so an
+    // async grokUpdateStatus only re-renders About when it's the visible view.
+    gearView: "main",
+    // Latest `grok update --check` result for the About panel: { checking } while
+    // in flight, then { current, latest, updateAvailable, error }.
+    grokUpdate: null,
     // While replaying, suppress everything from the start of the current user
     // message (a primer turn) through the end of grok's response to it — until
     // the next user message starts. Keeps the chat clean of our session-start
@@ -499,7 +507,16 @@
     gearPopover.appendChild(el);
   }
 
+  // A non-clickable, muted info row (e.g. version lines in the About panel).
+  function addGearInfo(labelHtml) {
+    const el = document.createElement("div");
+    el.className = "popover-info";
+    el.innerHTML = labelHtml;
+    gearPopover.appendChild(el);
+  }
+
   function renderGearMain() {
+    state.gearView = "main";
     gearPopover.innerHTML = "";
 
     // ── Model + effort header ─────────────────────────────────────────────
@@ -558,8 +575,66 @@
       closePopovers();
     });
 
-    // ── Config ────────────────────────────────────────────────────────────
-    addSection("Config");
+    // ── Other ─────────────────────────────────────────────────────────────
+    // Collapses the former Config / Account / Debug sections into sub-views
+    // (mirrors the Model picker), keeping the main menu short.
+    addSection("Other");
+    addGearItem('<span>About</span><span class="popover-chevron">›</span>', () => renderAboutPanel(true));
+    addGearItem('<span>Config &amp; debug</span><span class="popover-chevron">›</span>', () => renderConfigDebugPanel());
+    addGearItem("<span>Log out</span>", () => {
+      vscode.postMessage({ type: "logout" });
+      closePopovers();
+    });
+  }
+
+  // About: extension + Grok Build versions, update availability, and an action to
+  // update the CLI on demand. `check` triggers a fresh `grok update --check`; the
+  // async grokUpdateStatus reply re-renders this view (check=false) to fill it in.
+  function renderAboutPanel(check) {
+    state.gearView = "about";
+    if (check) {
+      state.grokUpdate = { checking: true };
+      vscode.postMessage({ type: "checkGrokUpdate" });
+    }
+    gearPopover.innerHTML = "";
+    addGearItem('<span class="popover-back">← About</span>', renderGearMain);
+    addGearInfo(`<span>Extension</span><span class="popover-ver">v${escapeHtml(state.extVersion || "?")}</span>`);
+    addGearInfo(`<span>Grok Build</span><span class="popover-ver">${state.cliVersion ? "v" + escapeHtml(state.cliVersion) : "—"}</span>`);
+
+    const u = state.grokUpdate || {};
+    let statusHtml, canUpdate = false, disabledTitle = "";
+    if (u.checking) {
+      statusHtml = '<span class="loading-dots">Checking for updates</span>';
+    } else if (u.error) {
+      statusHtml = '<span class="popover-warn">Couldn’t check — try updating anyway</span>';
+      canUpdate = true;
+    } else if (u.updateAvailable) {
+      statusHtml = `<span class="popover-update-avail">Update available · v${escapeHtml(u.latest || "")}</span>`;
+      canUpdate = true;
+    } else if (u.current || u.latest) {
+      statusHtml = '<span class="popover-ver">Up to date</span>';
+      disabledTitle = "Already on the latest version";
+    } else {
+      statusHtml = '<span class="popover-ver">—</span>';
+    }
+    addGearInfo(statusHtml);
+
+    const btn = document.createElement("div");
+    btn.className = "toolbar-popover-item popover-action" + (canUpdate ? "" : " disabled");
+    btn.innerHTML = "<span>Update Grok Build</span>";
+    if (canUpdate) {
+      btn.onclick = (e) => { e.stopPropagation(); vscode.postMessage({ type: "updateGrok" }); closePopovers(); };
+    } else if (disabledTitle) {
+      btn.title = disabledTitle;
+    }
+    gearPopover.appendChild(btn);
+  }
+
+  // Config & debug: the former Config + Debug items behind one sub-view.
+  function renderConfigDebugPanel() {
+    state.gearView = "config";
+    gearPopover.innerHTML = "";
+    addGearItem('<span class="popover-back">← Config &amp; debug</span>', renderGearMain);
     addGearItem('<span>Open global config</span><span class="popover-external">↗</span>', () => {
       vscode.postMessage({ type: "openGlobalConfig" });
       closePopovers();
@@ -572,16 +647,6 @@
       vscode.postMessage({ type: "runMcpList" });
       closePopovers();
     });
-
-    // ── Account ───────────────────────────────────────────────────────────
-    addSection("Account");
-    addGearItem("<span>Sign out</span>", () => {
-      vscode.postMessage({ type: "logout" });
-      closePopovers();
-    });
-
-    // ── Debug ─────────────────────────────────────────────────────────────
-    addSection("Debug");
     addGearItem("<span>Show extension logs</span>", () => {
       vscode.postMessage({ type: "showLogs" });
       closePopovers();
@@ -589,6 +654,7 @@
   }
 
   function renderModelPicker() {
+    state.gearView = "model";
     gearPopover.innerHTML = "";
     addGearItem('<span class="popover-back">← Model</span>', renderGearMain);
     const models = state.availableModels.length
@@ -826,7 +892,7 @@
       const onb = $("welcome-onboarding");
       if (onb) onb.innerHTML = "";
       const ver = $("welcome-version");
-      if (ver) ver.textContent = "starting...";
+      if (ver) { ver.classList.add("loading-dots"); ver.textContent = "Starting"; }
     }
     state.welcomeVisible = true;
     state.pendingDiffByToolCallId.clear();
@@ -856,7 +922,7 @@
     const ver = $("welcome-version");
     if (!onb) return;
     if (mode === "missing-cli") {
-      if (ver) ver.textContent = "CLI not installed";
+      if (ver) { ver.classList.remove("loading-dots"); ver.textContent = "CLI not installed"; }
       const installCmd = info.platform === "win32"
         ? "irm https://x.ai/cli/install.ps1 | iex"
         : "curl -fsSL https://x.ai/cli/install.sh | bash";
@@ -871,7 +937,7 @@
           `<button class="onb-action onb-secondary" type="button" data-act="recheck">Re-check connection</button>` +
         `</div>`;
     } else if (mode === "auth-required") {
-      if (ver) ver.textContent = "Authentication required";
+      if (ver) { ver.classList.remove("loading-dots"); ver.textContent = "Authentication required"; }
       onb.innerHTML =
         `<div class="onb">` +
           `<p class="onb-heading">Sign in to continue</p>` +
@@ -1254,7 +1320,7 @@
       el.className = "msg thinking";
       const hdr = document.createElement("div");
       hdr.className = "thinking-header";
-      hdr.innerHTML = `<span class="thinking-chevron">▶</span><span class="thinking-label">Thinking...</span>`;
+      hdr.innerHTML = `<span class="thinking-chevron">▶</span><span class="thinking-label loading-dots">Thinking</span>`;
       const body = document.createElement("div");
       body.className = "thinking-body";
       body.hidden = true;
@@ -1319,10 +1385,14 @@
     flushThought();
     if (state.thoughtStartTime && state.activeThoughtHdrEl) {
       const label = state.activeThoughtHdrEl.querySelector(".thinking-label");
-      // Replayed turns have no real elapsed time, so drop the seconds.
-      if (label) label.textContent = state.replaying
-        ? "Thought"
-        : `Thought for ${Math.round((Date.now() - state.thoughtStartTime) / 1000)}s`;
+      // Replayed turns have no real elapsed time, so drop the seconds. The live
+      // header animated its ellipsis via .loading-dots — strip it once settled.
+      if (label) {
+        label.classList.remove("loading-dots");
+        label.textContent = state.replaying
+          ? "Thought"
+          : `Thought for ${Math.round((Date.now() - state.thoughtStartTime) / 1000)}s`;
+      }
       state.thoughtStartTime = null;
     }
     closeToolGroup();
@@ -1335,6 +1405,11 @@
   // Replayed user prompts (session/load) arrive as user_message_chunk updates.
   // Commit any in-flight agent turn first, then accumulate into one user bubble.
   function appendUserChunk(text) {
+    // Replay-only: live user bubbles come from the optimistic `userMessage`
+    // post. grok ≥0.2.33 echoes the live prompt back as a user_message_chunk;
+    // the host already drops those, but guard here too so a stray live echo
+    // can never double the bubble.
+    if (!state.replaying) return;
     if (state.activeAgentEl || state.activeThoughtEl || state.activeToolGroupEl) {
       commitAgentTurn();
     }
@@ -2134,6 +2209,16 @@
         state.useCtrlEnter = msg.useCtrlEnter;
         state.effort = msg.effort || "";
         state.cwd = msg.cwd || "";
+        state.extVersion = msg.extVersion || "";
+        break;
+      case "grokUpdateStatus":
+        // Reply to the About panel's checkGrokUpdate. Refresh the panel if it's
+        // the visible gear view (re-render with check=false → no request loop).
+        state.grokUpdate = {
+          current: msg.current, latest: msg.latest,
+          updateAvailable: !!msg.updateAvailable, error: msg.error || null,
+        };
+        if (!gearPopover.hidden && state.gearView === "about") renderAboutPanel(false);
         break;
       case "initialized": {
         // The ACP handshake is done, but grok isn't ready for the user until the
@@ -2143,7 +2228,7 @@
         state.cliVersion = msg.info.version || "";
         state.startingPhase = true;
         const verEl = $("welcome-version");
-        if (verEl) verEl.textContent = "starting...";
+        if (verEl) { verEl.classList.add("loading-dots"); verEl.textContent = "Starting"; }
         const onb = $("welcome-onboarding");
         if (onb) onb.innerHTML = "";
         break;
@@ -2153,7 +2238,7 @@
         // spawns; overwritten by "starting…" once grok connects, then
         // "connected · v<new version>" once the primer finishes.
         const verEl = $("welcome-version");
-        if (verEl) verEl.textContent = "Updating Grok Build CLI…";
+        if (verEl) { verEl.classList.add("loading-dots"); verEl.textContent = "Updating Grok Build CLI"; }
         break;
       }
       case "session": {
@@ -2447,7 +2532,8 @@
             const verEl = $("welcome-version");
             if (verEl) {
               const ver = state.cliVersion ? ` · v${state.cliVersion}` : "";
-              verEl.textContent = `connected${ver}`;
+              verEl.classList.remove("loading-dots"); // settled — no animated dots
+              verEl.textContent = `Connected${ver}`;
             }
           }
         }
@@ -2458,8 +2544,8 @@
         clearWelcome();
         const si = document.createElement("div");
         si.id = "summarizing-indicator";
-        si.className = "session-context-banner";
-        si.textContent = "Summarizing…";
+        si.className = "session-context-banner loading-dots";
+        si.textContent = "Summarizing";
         messagesEl.appendChild(si);
         scrollToBottom();
         break;

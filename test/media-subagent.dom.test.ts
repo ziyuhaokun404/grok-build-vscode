@@ -98,7 +98,26 @@ describe("addSubagentCard (spawn_subagent tool call)", () => {
     expect(messages(doc).querySelector(".tool-group")).toBeNull();
   });
 
-  it("an ordinary tool call still goes to the tool group, not a subagent card", () => {
+  it("renders a card for grok 0.2.x's background-task delegation (real subagent mechanism)", () => {
+    const { window, doc } = bootWebview();
+    // No spawn_subagent on the native build — a delegation is a backgrounded
+    // run_terminal_command (research/subagents.md § Ground truth).
+    dispatch(window, {
+      type: "toolCall",
+      call: {
+        toolCallId: "bg-1",
+        title: "run_terminal_command",
+        rawInput: { variant: "Bash", command: "investigate the parser", is_background: true },
+      },
+    });
+
+    const card = messages(doc).querySelector(".subagent-card");
+    expect(card).not.toBeNull();
+    expect(card!.textContent).toContain("Subagent: investigate the parser");
+    expect(messages(doc).querySelector(".tool-group")).toBeNull();
+  });
+
+  it("an ordinary (foreground) tool call still goes to the tool group, not a subagent card", () => {
     const { window, doc } = bootWebview();
     dispatch(window, {
       type: "toolCall",

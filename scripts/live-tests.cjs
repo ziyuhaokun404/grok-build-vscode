@@ -236,7 +236,11 @@ async function testPrompt() {
     const text = acp.agentText();
     assert(text.trim().length > 0, "no agent_message_chunk text came back");
     const pong = /pong/i.test(text);
-    return `stopReason=${pr.result && pr.result.stopReason}, replied ${text.trim().length} chars${pong ? " (contains PONG)" : ""}`;
+    // grok ≥0.2.33 echoes the live prompt back as a user_message_chunk — the very
+    // behavior that doubled every sent message before the host gated forwarding to
+    // replay-only. Surface the count so a future version dropping it is visible.
+    const liveEchoes = acp.updates.filter((u) => u.sessionUpdate === "user_message_chunk").length;
+    return `stopReason=${pr.result && pr.result.stopReason}, replied ${text.trim().length} chars${pong ? " (contains PONG)" : ""}, live-echo×${liveEchoes}`;
   } finally { acp.kill(); }
 }
 
@@ -365,8 +369,8 @@ async function testSubagent() {
     const ns = await withTimeout(acp.send("session/new", { cwd, mcpServers: [] }), 30000, "new");
     assert(ns.result && ns.result.sessionId, "session/new failed");
     await withTimeout(
-      acp.send("session/prompt", { sessionId: ns.result.sessionId, prompt: [{ type: "text", text: "Spawn a subagent to investigate this codebase and report what add() does. Use a subagent for the investigation." }] }),
-      180000, "subagent prompt");
+      acp.send("session/prompt", { sessionId: ns.result.sessionId, prompt: [{ type: "text", text: "Use a subagent to read math.js and report in one sentence what add() does. Delegate to a subagent." }] }),
+      300000, "subagent prompt");
 
     // Regression guard: grok's get_command_or_subagent_output is an output READER,
     // not a delegation. Its tool name contains "subagent", which used to false-fire

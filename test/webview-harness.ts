@@ -26,7 +26,7 @@ export const BODY = `
   </header>
   <main id="messages" class="messages">
     <div class="welcome" id="welcome">
-      <p id="welcome-version">starting...</p>
+      <p id="welcome-version" class="loading-dots">Starting</p>
       <div id="welcome-onboarding"></div>
     </div>
   </main>

@@ -280,9 +280,21 @@ describe("isSubagentToolCall", () => {
     // shape from research/subagents.md.
     expect(isSubagentToolCall({ title: "get_command_or_subagent_output", rawInput: { task_id: "t1" } })).toBe(false);
     expect(isSubagentToolCall({ title: "Get task output: t1", rawInput: { variant: "TaskOutput", task_id: "t1", block: true } })).toBe(false);
-    // the background run_terminal_command that actually spawns it is also not
-    // (mis)matched as a subagent — it's a plain terminal call over the wire.
-    expect(isSubagentToolCall({ title: "run_terminal_command", rawInput: { variant: "Bash", command: "powershell ...", is_background: true } })).toBe(false);
+  });
+
+  it("matches grok 0.2.x's background-task delegation (its real subagent mechanism)", () => {
+    // No spawn_subagent on the native build — a delegation is a backgrounded
+    // run_terminal_command (research/subagents.md § Ground truth). Card it so it
+    // doesn't disappear into the generic tool group.
+    expect(isSubagentToolCall({ title: "run_terminal_command", rawInput: { variant: "Bash", command: "Spawn background subagent to investigate", is_background: true } })).toBe(true);
+    expect(isSubagentToolCall({ title: "[bg] Background task t1 started", rawInput: { variant: "Bash" } })).toBe(true);
+  });
+
+  it("does NOT match a foreground run_terminal_command", () => {
+    // A normal command (is_background false or absent) stays in the tool group —
+    // this is the shape grok used in the real session that prompted the fix.
+    expect(isSubagentToolCall({ title: "run_terminal_command", rawInput: { variant: "Bash", command: "git status", is_background: false } })).toBe(false);
+    expect(isSubagentToolCall({ title: "run_terminal_command", rawInput: { variant: "Bash", command: "git status" } })).toBe(false);
   });
 });
 
@@ -294,8 +306,16 @@ describe("subagentLabel", () => {
     expect(subagentLabel({ tool: "task", rawInput: { description: "Fix the build" } })).toBe("Fix the build");
   });
 
+  it("derives a label from the backgrounded command, truncating if long", () => {
+    expect(subagentLabel({ title: "run_terminal_command", rawInput: { command: "investigate the parser", is_background: true } })).toBe("investigate the parser");
+    const long = subagentLabel({ rawInput: { command: "x".repeat(80), is_background: true } });
+    expect(long.endsWith("…")).toBe(true);
+    expect(long.length).toBeLessThanOrEqual(48);
+  });
+
   it("falls back to a generic label", () => {
     expect(subagentLabel({ tool: "task" })).toBe("Subagent");
+    expect(subagentLabel({ rawInput: { is_background: true } })).toBe("background task");
     expect(subagentLabel(null)).toBe("Subagent");
   });
 });

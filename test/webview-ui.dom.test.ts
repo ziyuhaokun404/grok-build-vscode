@@ -235,44 +235,173 @@ describe("reasoning trace (regression: thinking traces no longer expandable)", (
   });
 });
 
+describe("user message (regression: doubled on grok 0.2.33)", () => {
+  const users = (doc: Document) => doc.querySelectorAll(".msg.user");
+
+  it("does not render a second bubble when a live prompt is echoed back as a user chunk", () => {
+    const { window, doc } = bootWebview();
+
+    // Live send: the host posts the optimistic bubble.
+    dispatch(window, { type: "userMessage", text: "/imagine a rocket", chips: [] });
+    expect(users(doc).length).toBe(1);
+
+    // grok 0.2.33 echoes the prompt back as a user_message_chunk mid-turn (not
+    // replaying). It must NOT spawn a duplicate bubble.
+    dispatch(window, { type: "userMessageChunk", text: "/imagine a rocket" });
+    expect(users(doc).length).toBe(1);
+  });
+
+  it("still renders the user bubble from chunks during a session replay", () => {
+    const { window, doc } = bootWebview();
+
+    dispatch(window, { type: "historyReplay", active: true });
+    dispatch(window, { type: "userMessageChunk", text: "resumed prompt" });
+
+    expect(users(doc).length).toBe(1);
+    expect(users(doc)[0].textContent).toContain("resumed prompt");
+  });
+});
+
 describe("welcome version line (session-start lifecycle)", () => {
-  const ver = (doc: Document) => $(doc, "welcome-version").textContent;
+  const verEl = (doc: Document) => $(doc, "welcome-version");
+  const ver = (doc: Document) => verEl(doc).textContent;
+  // The trailing dots are an animated ::after pseudo-element (the .loading-dots
+  // class), so the literal text is dot-free while a status is transient.
+  const animating = (doc: Document) => verEl(doc).classList.contains("loading-dots");
 
   it("flips to connected only when priming finishes, not at the handshake", () => {
     const { window, doc } = bootWebview();
 
     // ACP handshake done — but the hidden primer is still in flight, so the
-    // line must stay "starting…", NOT jump to "connected" yet.
+    // line must stay "Starting…" (animated), NOT jump to "Connected" yet.
     dispatch(window, { type: "initialized", info: { version: "0.2.33" } });
-    expect(ver(doc)).toBe("starting...");
+    expect(ver(doc)).toBe("Starting");
+    expect(animating(doc)).toBe(true);
 
     // Priming spinner clears → grok is finally ready → reveal the version.
     dispatch(window, { type: "setBusy", value: false });
-    expect(ver(doc)).toBe("connected · v0.2.33");
+    expect(ver(doc)).toBe("Connected · v0.2.33");
+    expect(animating(doc)).toBe(false); // settled — dots stop
   });
 
   it("shows the silent-update hint, then starting, then the new version", () => {
     const { window, doc } = bootWebview();
 
     dispatch(window, { type: "cliUpdating" });
-    expect(ver(doc)).toBe("Updating Grok Build CLI…");
+    expect(ver(doc)).toBe("Updating Grok Build CLI");
+    expect(animating(doc)).toBe(true);
 
     dispatch(window, { type: "initialized", info: { version: "0.2.40" } });
-    expect(ver(doc)).toBe("starting...");
+    expect(ver(doc)).toBe("Starting");
+    expect(animating(doc)).toBe(true);
 
     dispatch(window, { type: "setBusy", value: false });
-    expect(ver(doc)).toBe("connected · v0.2.40");
+    expect(ver(doc)).toBe("Connected · v0.2.40");
+    expect(animating(doc)).toBe(false);
   });
 
   it("does not overwrite the version on later (post-priming) busy toggles", () => {
     const { window, doc } = bootWebview();
     dispatch(window, { type: "initialized", info: { version: "0.2.33" } });
     dispatch(window, { type: "setBusy", value: false });
-    expect(ver(doc)).toBe("connected · v0.2.33");
+    expect(ver(doc)).toBe("Connected · v0.2.33");
 
     // A normal prompt's busy cycle later — the line must not revert.
     dispatch(window, { type: "setBusy", value: true });
     dispatch(window, { type: "setBusy", value: false });
-    expect(ver(doc)).toBe("connected · v0.2.33");
+    expect(ver(doc)).toBe("Connected · v0.2.33");
+  });
+});
+
+describe("gear menu — Other group + About / Config & debug sub-views", () => {
+  function boot() {
+    const h = bootWebview();
+    dispatch(h.window, { type: "initialState", useCtrlEnter: false, effort: "", cwd: "/x", extVersion: "1.4.0" });
+    dispatch(h.window, { type: "initialized", info: { version: "0.2.33" } });
+    dispatch(h.window, { type: "session", sessionId: "s1", models: [], currentModelId: "grok-build" });
+    h.posted.length = 0;
+    return h;
+  }
+  const gear = (doc: Document) => $(doc, "gear-popover");
+  const items = (doc: Document) => [...doc.querySelectorAll("#gear-popover .toolbar-popover-item")] as HTMLElement[];
+  const itemByText = (doc: Document, text: string) =>
+    items(doc).find((el) => el.textContent!.includes(text)) as HTMLElement;
+
+  it("replaces the flat Config/Account/Debug sections with an Other group", () => {
+    const h = boot();
+    click(h.window, $(h.doc, "gear-btn"));
+    const labels = items(h.doc).map((el) => el.textContent || "");
+    expect(labels.some((l) => l.includes("About"))).toBe(true);
+    expect(labels.some((l) => l.includes("Config & debug"))).toBe(true);
+    expect(labels.some((l) => l.includes("Log out"))).toBe(true);
+    // the old standalone items no longer live on the main view
+    expect(labels.some((l) => l.trim() === "Sign out")).toBe(false);
+    expect(labels.some((l) => l.includes("Show extension logs"))).toBe(false);
+  });
+
+  it("About shows both versions and requests an update check", () => {
+    const h = boot();
+    click(h.window, $(h.doc, "gear-btn"));
+    click(h.window, itemByText(h.doc, "About"));
+
+    const text = gear(h.doc).textContent || "";
+    expect(text).toContain("Extension");
+    expect(text).toContain("v1.4.0");
+    expect(text).toContain("Grok Build");
+    expect(text).toContain("v0.2.33");
+    expect(types(h.posted)).toContain("checkGrokUpdate");
+  });
+
+  it("enables Update Grok Build when an update is available and posts updateGrok", () => {
+    const h = boot();
+    click(h.window, $(h.doc, "gear-btn"));
+    click(h.window, itemByText(h.doc, "About"));
+    dispatch(h.window, { type: "grokUpdateStatus", current: "0.2.3", latest: "0.2.33", updateAvailable: true });
+
+    expect(gear(h.doc).textContent).toContain("Update available");
+    const btn = itemByText(h.doc, "Update Grok Build");
+    expect(btn.className).not.toContain("disabled");
+
+    h.posted.length = 0;
+    click(h.window, btn);
+    expect(types(h.posted)).toContain("updateGrok");
+  });
+
+  it("disables Update Grok Build when already up to date", () => {
+    const h = boot();
+    click(h.window, $(h.doc, "gear-btn"));
+    click(h.window, itemByText(h.doc, "About"));
+    dispatch(h.window, { type: "grokUpdateStatus", current: "0.2.33", latest: "0.2.33", updateAvailable: false });
+
+    expect(gear(h.doc).textContent).toContain("Up to date");
+    const btn = itemByText(h.doc, "Update Grok Build");
+    expect(btn.className).toContain("disabled");
+
+    h.posted.length = 0;
+    click(h.window, btn);
+    expect(types(h.posted)).not.toContain("updateGrok");
+  });
+
+  it("the About back row returns to the main menu", () => {
+    const h = boot();
+    click(h.window, $(h.doc, "gear-btn"));
+    click(h.window, itemByText(h.doc, "About"));
+    click(h.window, itemByText(h.doc, "← About"));
+    expect(items(h.doc).some((el) => (el.textContent || "").includes("Config & debug"))).toBe(true);
+  });
+
+  it("Config & debug exposes the config + logs links and posts the right message", () => {
+    const h = boot();
+    click(h.window, $(h.doc, "gear-btn"));
+    click(h.window, itemByText(h.doc, "Config & debug"));
+
+    const labels = items(h.doc).map((el) => el.textContent || "");
+    expect(labels.some((l) => l.includes("Open global config"))).toBe(true);
+    expect(labels.some((l) => l.includes("Open project config"))).toBe(true);
+    expect(labels.some((l) => l.includes("MCP servers"))).toBe(true);
+    expect(labels.some((l) => l.includes("Show extension logs"))).toBe(true);
+
+    click(h.window, itemByText(h.doc, "Show extension logs"));
+    expect(types(h.posted)).toContain("showLogs");
   });
 });

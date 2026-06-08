@@ -113,12 +113,13 @@
   // parameter (general-purpose | explore | plan | custom), and we match that
   // shape (forward-compat; some builds may emit it). BUT the native-Windows
   // grok 0.2.x build does NOT actually emit `spawn_subagent` over ACP — it
-  // delegates via a *background* `run_terminal_command` (`is_background:true`)
-  // and then reads its output with `get_command_or_subagent_output`. That output
-  // READER is not a delegation, yet its name contains the substring "subagent",
-  // so it must be explicitly excluded or it false-fires a card on the poller.
-  // See research/subagents.md for the wire capture. Degrades gracefully (no
-  // match → the call stays in the generic tool group).
+  // delegates via a *background* `run_terminal_command` (`is_background:true`),
+  // which we DO card, and then reads its output with
+  // `get_command_or_subagent_output`. That output READER is not a delegation,
+  // yet its name contains the substring "subagent", so it must be explicitly
+  // excluded or it false-fires a card on the poller. See research/subagents.md
+  // for the wire capture. Degrades gracefully (no match → the call stays in the
+  // generic tool group).
   function isSubagentToolCall(call) {
     if (!call) return false;
     if (call.kind === "subagent" || call.kind === "agent") return true;
@@ -130,8 +131,17 @@
     if (/subagent|spawnagent|launchagent|dispatchagent|runagent|delegat/.test(n)) return true;
     if (n === "task" || n === "agent" || n === "agents") return true;
     const r = call.rawInput || call.input || {};
-    return !!(r.subagent_type || r.subagentType || r.subagent ||
-      r.agent_type || r.agentType || r.agent);
+    if (r.subagent_type || r.subagentType || r.subagent ||
+      r.agent_type || r.agentType || r.agent) return true;
+    // grok 0.2.x has no spawn_subagent tool — it delegates by *backgrounding* a
+    // run_terminal_command (rawInput.is_background:true, or a "[bg]" title) and
+    // reads the result with the get_command_or_subagent_output poller (already
+    // excluded above). Backgrounding IS grok's subagent mechanism on the native
+    // build, so surface the spawn as a card. See research/subagents.md § Ground
+    // truth. (A foreground command — is_background:false/absent — is untouched.)
+    if (r.is_background === true || r.background === true) return true;
+    if (/^\s*\[bg\]/i.test(String(call.title || ""))) return true;
+    return false;
   }
 
   // Human label for a subagent card: the agent type grok delegated to
@@ -139,10 +149,15 @@
   // else a generic fallback.
   function subagentLabel(call) {
     const r = (call && (call.rawInput || call.input)) || {};
+    // Prefer a named agent type; for a background-task delegation (no type) fall
+    // back to the command being backgrounded, truncated for the card.
     const name = r.subagent_type || r.subagentType || r.agent_type || r.agentType ||
-      r.subagent || r.agent || r.description || r.name;
-    const s = name != null ? String(name).trim() : "";
-    return s || "Subagent";
+      r.subagent || r.agent || r.description || r.name || r.command;
+    let s = name != null ? String(name).trim() : "";
+    if (s.length > 48) s = s.slice(0, 47).replace(/\s+$/, "") + "…";
+    if (s) return s;
+    if (r.is_background === true || r.background === true) return "background task";
+    return "Subagent";
   }
 
   const api = { FILE_EXTS, looksLikeFileRef, formatRelativeTime, modelDisplayName, MIC_STATES, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel };

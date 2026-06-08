@@ -126,6 +126,24 @@ code {
 .muted-link { color: inherit; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
 .muted-link:hover { opacity: 0.8; }
 
+/* Animated trailing ellipsis for transient status text ("Starting", "Thinking",
+   "Updating Grok Build CLI", "Summarizing"). The dots are a pseudo-element so the
+   element's textContent stays clean (the literal "..." is stripped at the call
+   sites); a reserved width keeps the label from shifting as the dots cycle. */
+@keyframes loading-ellipsis {
+  0% { content: ""; }
+  25% { content: "."; }
+  50% { content: ".."; }
+  75%, 100% { content: "..."; }
+}
+.loading-dots::after {
+  content: "...";
+  display: inline-block;
+  width: 1.2em;
+  text-align: left;
+  animation: loading-ellipsis 1.4s steps(1, end) infinite;
+}
+
 /* ---- onboarding panel ---- */
 
 #welcome-onboarding:empty { display: none; }
@@ -871,6 +889,25 @@ textarea#input {
 .popover-value { color: var(--vscode-descriptionForeground); font-size: 10px; }
 .popover-external { color: var(--vscode-descriptionForeground); font-size: 12px; }
 .popover-back { color: var(--vscode-textLink-foreground); }
+.popover-chevron { color: var(--vscode-descriptionForeground); flex-shrink: 0; }
+
+/* Non-clickable info rows (About panel: versions, update status). */
+.popover-info {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 10px;
+  font-size: 13px;
+  color: var(--vscode-foreground);
+}
+.popover-ver { color: var(--vscode-descriptionForeground); }
+.popover-update-avail { color: var(--vscode-textLink-foreground); }
+.popover-warn { color: var(--vscode-editorWarning-foreground, var(--vscode-descriptionForeground)); }
+/* The "Update Grok Build" action; disabled when checking / already up to date. */
+.popover-action { color: var(--vscode-textLink-foreground); }
+.popover-action.disabled { color: var(--vscode-descriptionForeground); opacity: 0.55; cursor: default; pointer-events: none; }
+.popover-action.disabled:hover { background: transparent; }
 
 .mode-item-icon {
   flex-shrink: 0;

@@ -5,7 +5,8 @@
 //     session/prompt, session/cancel  (client → server)
 //   - fs/write_text_file, terminal/create, x.ai/exit_plan_mode,
 //     x.ai/ask_user_question  (server → client)
-//   - session/update notifications (agent_message_chunk)
+//   - session/update notifications (agent_message_chunk, and a user_message_chunk
+//     echo of the live prompt — grok ≥0.2.33 does this on every prompt)
 //
 // Each test drives a scenario by sending a prompt whose text matches one of the
 // SCENARIO_* tags below. The scenario script issues exactly the server→client
@@ -111,6 +112,12 @@ function extractPromptText(params) {
 
 async function runScenario(promptId, text) {
   try {
+    // grok ≥0.2.33 echoes the live prompt back as a user_message_chunk before it
+    // starts working (0.2.3 did not). Model it on EVERY prompt so the host's
+    // replay-only de-dup is faithfully exercised by the whole integration suite
+    // — the regression that doubled every sent message lived exactly here.
+    notify("session/update", { sessionId: SESSION_ID, update: { sessionUpdate: "user_message_chunk", content: { type: "text", text } } });
+
     if (text.includes("SCENARIO_PROPOSE_PLAN")) {
       // 1. Write to grok's own plan.md (outside the workspace — should be allowed).
       const planText = "# TEST PLAN\n\nStep 1\nStep 2";

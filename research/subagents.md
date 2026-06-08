@@ -77,11 +77,16 @@ Disable subagents with `GROK_SUBAGENTS=0` or `[subagents] enabled = false`.
   `media/webview-helpers.js`):
   - match the forward-compat `spawn_subagent` shape (by name and by
     `rawInput.subagent_type`), plus broad fallbacks for relabeled titles / renames;
+  - **also card the native-build delegation** — a backgrounded `run_terminal_command`
+    (`rawInput.is_background:true`, or a `[bg]`-prefixed title). This is grok 0.2.x's
+    actual subagent mechanism, so without it the card never fires on the native build.
+    A *foreground* command (`is_background:false`/absent) is left in the tool group;
   - **explicitly exclude the `get_command_or_subagent_output` poller** — an
     early-return on names ending in `output` or starting with `getcommand`, so the
-    "subagent"-in-the-name reader never cards;
+    "subagent"-in-the-name reader never cards (its `is_background` is unset anyway);
   - degrade gracefully (no match → existing tool-group behavior). The label is the
-    `subagent_type` (e.g. "general-purpose"), else a generic "Subagent".
+    `subagent_type` (e.g. "general-purpose"), else the backgrounded command
+    (truncated), else a generic "Subagent" / "background task".
 - `media/chat.js` renders a distinct **Subagent: \<type\>** card
   (`addSubagentCard`); `media/chat.css` `.subagent-card`.
 

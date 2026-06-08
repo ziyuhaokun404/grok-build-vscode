@@ -4,8 +4,9 @@
 log for the `v1.4.0` branch so the session can be teleported to local VS Code and
 finished there.
 
-Branch: `v1.4.0` · base: `1.3.2` working tree · `npm test` → **363 passing** (was 337,
-+26) · `tsc -p . --noEmit` clean.
+Branch: `v1.4.0` · base: `1.3.2` working tree · `npm test` → **368 passing** (was 337,
++31) · `tsc -p . --noEmit` clean. (+5 happy-dom DOM tests added locally covering
+`addGeneratedMedia` image/video/remote-link and `addSubagentCard` render paths.)
 
 > **Update (post-login):** logged into a SuperGrok account in this container via
 > `grok login --device-auth`, so the image + subagent wire formats are now
@@ -99,7 +100,7 @@ Tool is **`spawn_subagent`** with a **`subagent_type`** param (`general-purpose`
 
 ## Suggested local verification order
 
-1. `npm install && npm test` (expect 354) + `tsc -p . --noEmit`.
+1. `npm install && npm test` (expect 368) + `tsc -p . --noEmit`.
 2. `npm run package`, install the vsix, open the sidebar.
 3. **Logout:** gear → Sign out → confirm `grok logout` runs and onboarding returns. (#13 ✅)
 4. **Image:** SuperGrok auth → `/imagine …` → confirm it renders. If not, grab the
@@ -112,4 +113,4 @@ Tool is **`spawn_subagent`** with a **`subagent_type`** param (`general-purpose`
 - Branch named after the version (`v1.4.0`) per request — not the usual direct-to-main.
 - `package.json` bumped to `1.4.0`; CHANGELOG `1.4.0 — unreleased` added. **Tag/GitHub
   Release + Marketplace publish are deliberately NOT done** (that's the release-to-main step).
-- All new tests are grok-free; the 337→354 floor moved up.
+- All new tests are grok-free; the 337→368 floor moved up.

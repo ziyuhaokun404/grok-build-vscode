@@ -18,7 +18,7 @@
 
 ### Tests
 
-- 26 new grok-free tests (363 total): the `image_gen`/`image_to_video` path-in-JSON result extraction (`isMediaGenToolCall`/`extractGeneratedMediaPaths`, classifying image vs video and covering the collapsed-resume shape) and ACP-standard image fallbacks (`extractImageContent`/`collectToolImages` across inline base64, resource blob, file/remote `resource_link`) plus image-vs-text chunk routing, and the `isSubagentToolCall`/`subagentLabel` classifier including the confirmed `spawn_subagent` + `subagent_type` shape.
+- 31 new grok-free tests (368 total): the `image_gen`/`image_to_video` path-in-JSON result extraction (`isMediaGenToolCall`/`extractGeneratedMediaPaths`, classifying image vs video and covering the collapsed-resume shape) and ACP-standard image fallbacks (`extractImageContent`/`collectToolImages` across inline base64, resource blob, file/remote `resource_link`) plus image-vs-text chunk routing, the `isSubagentToolCall`/`subagentLabel` classifier including the confirmed `spawn_subagent` + `subagent_type` shape, and happy-dom DOM tests driving the real `media/chat.js` render paths — `addGeneratedMedia` (clickable inline `<img>`, `<video controls>`, remote-link fallback) and `addSubagentCard` (the *Subagent: \<type\>* card, and the divert away from the generic tool group).
 
 ## 1.3.2 — 2026-06-05
 

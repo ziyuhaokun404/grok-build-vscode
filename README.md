@@ -311,7 +311,7 @@ VS Code commands (not Grok slash commands). Open with **Ctrl+Shift+P** / **Cmd+S
 
 ```bash
 npm install
-npm test         # 363 tests, ~1.5s, vitest — no VS Code, no spawn (except terminal-manager)
+npm test         # 368 tests, ~1.5s, vitest — no VS Code, no spawn (except terminal-manager)
 npm run package  # → grok-vscode-phuryn-<version>.vsix
 ```
 

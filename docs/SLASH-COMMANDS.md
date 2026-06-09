@@ -4,7 +4,7 @@ Slash commands are sourced live from the running CLI via the ACP `available_comm
 
 This page is a snapshot for reference; the autocomplete list is the source of truth. Skills installed under `~/.grok/skills/` or `~/.grok/bundled/skills/` also appear in autocomplete as `/<skill-name>` but are not documented here — they vary per install and are owned by their respective `SKILL.md` files.
 
-Snapshot taken against `grok` v0.1.212.
+Snapshot last reconciled against a recent `grok` 0.2.x build; the autocomplete list is the source of truth.
 
 ## Built-in
 
@@ -28,15 +28,15 @@ Present in subscription mode, not on API-key auth.
 
 | Command | Effect |
 |---|---|
-| `/imagine` | Generate an image from a text description |
+| `/imagine` | Generate an image from a text description (also edits a reference photo) |
 | `/imagine-video` | Generate a video from a text description |
 
-Since v1.4.0 the extension **renders the result inline** — `/imagine` output shows as an image (click to open the source file), `/imagine-video` as a playable `<video>`. Grok writes the file into its session directory and the extension reads + inlines it; see [research/image-generation.md](../research/image-generation.md) for the wire format.
+Since v1.4.0 the extension **renders the result inline** — `/imagine` output shows as an image (click to open the source file), `/imagine-video` as a playable `<video>`. Grok writes the file into its session directory and the extension serves it to the webview via `asWebviewUri` (streamed from disk; a base64 `data:` URI is used only as a fallback for files outside grok's served roots). Inline media is capped at 320px, and hovering an image/video reveals **Copy path** / **Open in VS Code** actions pinned to the media. When `/imagine` is given a source image to edit, grok runs an `image_edit` tool call, which the extension detects and renders the same way. See [research/image-generation.md](../research/image-generation.md) for the wire format.
 
 ## Not slash commands
 
 A few things look like slash commands but are surfaced through the extension UI, not the CLI:
 
 - **New session** — sidebar `+` button (`Grok: New Session` from the command palette)
-- **Plan mode** — mode picker in the bottom toolbar (currently disabled — see Known limits in `CLAUDE.md`)
+- **Plan mode** — mode picker in the bottom toolbar; enabled and enforced client-side (Grok proposes a plan; workspace writes and non-read-only commands are blocked until you approve — see [src/plan-gate.ts](../src/plan-gate.ts) and [src/grok-primer.ts](../src/grok-primer.ts))
 - **YOLO mode** — mode picker; toggles auto-approval on the client side

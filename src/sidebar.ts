@@ -24,7 +24,7 @@ import { parseFileRef, shouldReadFileInline } from "./file-ref";
 import { pickRejectOption, shouldRejectPermission } from "./plan-gate";
 import { appendPlanEntry, decideRestoreState } from "./plan-restore";
 import { planReviewFileBaseName, sanitizePlanReviewFilePart } from "./plan-review";
-import { GROK_PRIMER } from "./grok-primer";
+import { GROK_PRIMER, isPrimerText } from "./grok-primer";
 import {
   SessionListEntry,
   SessionMetaOverrides,
@@ -138,6 +138,14 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
   // are ignored while priming — the webview also disables the controls (busy),
   // this is the host-side backstop for a click that slips through that window.
   private priming = false;
+  // False until the hidden primer has been sent on THIS session load. The primer
+  // is no longer sent at session start — it's deferred to the first outbound
+  // prompt (ensurePrimed), so a startup or glance-only restore costs nothing.
+  // It's (re-)sent on the first send of every load, new OR restored: a primer
+  // buried in a restored session's replayed history isn't reliably honored by
+  // grok (a /compact can drop it from effective context), so we re-assert it
+  // once before the first post-restore turn rather than trusting history.
+  private primed = false;
   private suppressContent = false;
   // Plan-reject specific suppression: drop streaming output (the false-approval
   // ramble) but let lifecycle events through so the webview clears `busy` and
@@ -429,6 +437,8 @@ See design doc for the full state machine diagram.`;
         try { await client.setMode(ACT_MODE_ID); } catch { /* CLI usually auto-exits already */ }
         this.post({ type: "agentStart" });
         try {
+          await this.ensurePrimed(client, gen);
+          if (gen !== this.sessionGen) return;
           const meta = await client.prompt(promptToGrok);
           if (gen !== this.sessionGen) return;
           this.post({ type: "agentEnd", meta });
@@ -478,6 +488,8 @@ See design doc for the full state machine diagram.`;
         try { await client.setMode("plan"); } catch { /* gate still enforces */ }
         this.post({ type: "agentStart" });
         try {
+          await this.ensurePrimed(client, gen);
+          if (gen !== this.sessionGen) return;
           const meta = await client.prompt(promptToGrok);
           if (gen !== this.sessionGen) return;
           this.post({ type: "agentEnd", meta });
@@ -519,29 +531,25 @@ See design doc for the full state machine diagram.`;
     };
   }
 
-  /** Send the extension's standing instructions to grok at session start.
-   *  Suppresses both the user-side bubble and grok's acknowledgment in the live
-   *  chat so the conversation reads clean. Posts setBusy true/false so the
-   *  user can't fire a concurrent prompt during the primer's brief turn —
-   *  while busy, the send button reverts to a stop icon. */
-  private async primeGrok(client: AcpClient, gen: number): Promise<void> {
-    // Locked busy: the send button shows a spinner and is disabled. The user
-    // can't cancel the primer mid-flight — leaving grok un-primed would
-    // silently break the verdict protocol the primer establishes.
-    this.post({ type: "setBusy", value: true, locked: true });
+  /** Send the extension's standing instructions ("primer") to grok exactly once
+   *  per grok session, lazily — right before the first outbound prompt that needs
+   *  it, not at session start. The primer's user bubble and grok's ack are hidden
+   *  from the live chat (suppressContent). A restored session already carries the
+   *  primer in its replayed history, so it's marked primed during replay and is
+   *  never re-sent. Best-effort: a failed primer leaves the session unprimed (the
+   *  next outbound prompt retries) and never blocks the user's real prompt — the
+   *  plan-gate, not the primer, is the actual enforcement. */
+  private async ensurePrimed(client: AcpClient, gen: number): Promise<void> {
+    if (this.primed) return;
+    const prevSuppress = this.suppressContent;
     this.suppressContent = true;
     try {
       await client.prompt(GROK_PRIMER);
+      if (gen === this.sessionGen) this.primed = true;
     } catch (e) {
-      // Best-effort: a failed primer doesn't block the session, the gate is
-      // still the real defense. Log it for debugging.
       this.output.appendLine(`[primer] failed: ${(e as Error).message}`);
     } finally {
-      this.suppressContent = false;
-      if (gen === this.sessionGen) {
-        this.priming = false;
-        this.post({ type: "setBusy", value: false });
-      }
+      this.suppressContent = prevSuppress;
     }
   }
 
@@ -814,6 +822,7 @@ See design doc for the full state machine diagram.`;
       this.post({ type: "sessionContext" });
       this.suppressContent = true;
       try {
+        await this.ensurePrimed(this.client, this.sessionGen);
         await this.client.prompt(`[Context from previous session]\n${summary}`);
       } catch { /* best effort */ } finally {
         this.suppressContent = false;
@@ -833,6 +842,7 @@ See design doc for the full state machine diagram.`;
     this.planActive = false;
     this.afterTurn = undefined;
     this.hasHistory = false;
+    this.primed = false;
     this.suppressContent = false;
     this.suppressPlanReject = false;
     this.lastPlanText = "";
@@ -962,6 +972,18 @@ See design doc for the full state machine diagram.`;
       // echo would render a duplicate bubble and double-count. Only the CLI's
       // session/load *replay* should drive user bubbles from here.
       if (!this.replaying) return;
+      // Our own hidden primer(s) replay as user messages. Don't count them toward
+      // plan positions (the webview hides them too, via its matching
+      // PRIMER_PATTERN) but DO forward so the webview can suppress the whole
+      // primer turn (its bubble + grok's ack). We deliberately do NOT mark the
+      // session primed from this: a primer buried in replayed history isn't
+      // reliably honored by grok (a /compact can drop it), so the first
+      // post-restore send re-primes instead of trusting the replay.
+      if (!this.inUserMessage && isPrimerText(text)) {
+        this.inUserMessage = true;
+        this.post({ type: "userMessageChunk", text });
+        return;
+      }
       // The first chunk after a non-user chunk marks the start of a new user
       // message — count it so the next persisted plan knows where it lives.
       if (!this.inUserMessage) {
@@ -1141,12 +1163,14 @@ See design doc for the full state machine diagram.`;
       }
       if (gen !== this.sessionGen) { client.dispose(); this.client = undefined; return undefined; }
 
-      // Send our "system prompt" to grok — once per session start (new AND
-      // restored). The CLI's exit_plan_mode bug can't be patched at the wire
-      // layer, so we tell grok in plain English to ignore the wire verdict
-      // and read it from the follow-up message. See src/grok-primer.ts.
-      await this.primeGrok(client, gen);
-      if (gen !== this.sessionGen) { client.dispose(); this.client = undefined; return undefined; }
+      // Session is live — unlock the composer now. The "system prompt" (primer)
+      // that teaches grok the plan-verdict protocol is no longer sent here; it's
+      // deferred to the user's first real send (ensurePrimed), on a new OR
+      // restored session. This drops the startup round-trip and the busy lock
+      // that waited on it, and a glance-only restore costs nothing. See
+      // src/grok-primer.ts.
+      this.priming = false;
+      this.post({ type: "setBusy", value: false });
     } catch (err) {
       if (gen !== this.sessionGen) { client.dispose(); return undefined; }
       const msg = (err as any).message ?? String(err);
@@ -1824,6 +1848,10 @@ See design doc for the full state machine diagram.`;
     this.post({ type: "agentStart" });
 
     try {
+      // First real send of a fresh session: slip the hidden primer in as its own
+      // turn first (no-op once primed / on a restored, already-primed session).
+      await this.ensurePrimed(client, gen);
+      if (gen !== this.sessionGen) return;
       const meta = await client.prompt(finalPrompt);
       if (gen !== this.sessionGen) return; // session was switched mid-turn
       // Skip agentEnd if a verdict was clicked mid-turn (afterTurn is queued).

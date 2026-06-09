@@ -215,11 +215,19 @@ a plan-mode turn and logged every server→client call without writing anything 
 | Effect | auto-allow every permission | block workspace writes + mutating commands |
 | Enforced at | `session/request_permission` | `fs/write_text_file` + `terminal/create` |
 
-- **Policy is a pure module** — `src/plan-gate.ts`, 30 unit tests in
+- **Policy is a pure module** — `src/plan-gate.ts`, 38 unit tests in
   `test/plan-gate.test.ts` covering Windows long-path prefixes, case-insensitive
   containment, sibling-prefix false positives, `..` traversal, the read-only command
   allowlist (git/npm subcommands, interpreter `--version` only), chaining/redirection
   metacharacters, and the plan.md carve-out.
+- **The gate is one of TWO enforcement pillars (since v1.4.x).** Alongside the gate, a
+  hidden **primer** (`src/grok-primer.ts`) is sent before the user's first prompt
+  instructing grok to disregard the always-"approved" `exit_plan_mode` result and read
+  the real verdict from the *next* message as a bracketed marker — `[Plan approved]` /
+  `[Plan rejected]` / `[Plan cancelled]` (+ optional comment). The gate blocks workspace
+  mutation; the primer aligns grok's own behavior. The primer is sent lazily (first
+  prompt of new **and** restored sessions, re-sent on restore — not trusted from replayed
+  history). See [research/understanding-plan-mode.md](understanding-plan-mode.md).
 - **acp.ts** gates the two handlers and emits `mutationBlocked` / `planFileContent`.
 - **sidebar.ts** owns `planActive`, mutual exclusivity with YOLO, agent-initiated-plan
   sync (closes the Option-C hole for free — entering plan mode *any* way raises the gate),

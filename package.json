@@ -2,7 +2,7 @@
   "name": "grok-vscode-phuryn",
   "displayName": "Grok Build",
   "description": "Thin VS Code sidebar client for the Grok Build CLI over Agent Client Protocol (ACP). Streams responses with thinking traces, tool calls, file chips, and permission cards with diff preview. All session state stays in the CLI. Not affiliated with xAI.",
-  "version": "1.4.2",
+  "version": "1.4.3",
   "publisher": "PawelHuryn",
   "author": {
     "name": "Paweł Huryn",
@@ -226,6 +226,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:live": "tsc -p . && node scripts/live-tests.cjs",
+    "prepackage": "node -e \"for (const f of require('fs').readdirSync('.')) if (f.endsWith('.vsix')) require('fs').unlinkSync(f)\"",
     "package": "npx @vscode/vsce package",
     "publish": "npx @vscode/vsce publish"
   },

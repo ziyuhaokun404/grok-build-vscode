@@ -1,9 +1,17 @@
 # Subagents over ACP
 
+> **Status: research-only / deferred.** The card code exists and is unit-tested
+> (`isSubagentToolCall`/`subagentLabel` in `webview-helpers.js`, `addSubagentCard`
+> in `chat.js`, the live-suite guard), but grok 0.2.x does **not** emit a
+> `spawn_subagent` ACP tool — it backgrounds a process and reads it via
+> `get_command_or_subagent_output` — so the card rarely fires. It was dropped from
+> the README/UI as a shipped feature in v1.4.3; treat this doc as the investigation
+> log, not a description of a live surface.
+
 Bundled-docs theory confirmed against **grok 0.2.33** (CLI docs at
 `~/.grok/docs/user-guide/16-subagents.md`, cross-checked with `grok --help`:
 `--agents <JSON>`, `--best-of-n`). **Live wire shape captured against the
-native-Windows build `grok` 0.2.3** (`research/subagents.md` probe + the
+native-Windows build `grok` 0.2.3** (`research/win-subagent-probe.cjs` + the
 `subagent` live test in `scripts/live-tests.cjs`) — and it does **not** match the
 docs. See [§ Ground truth](#ground-truth-native-windows-02x) below.
 
@@ -37,14 +45,6 @@ poller is **NOT** carded (`misfired.length === 0`) and that a real delegation is
 detected via the background spawn + poll pair.
 
 ## `spawn_subagent` (forward-compat / other builds)
-
-| Field | Notes |
-|---|---|
-| tool name | `spawn_subagent` |
-| `subagent_type` | child role — built-ins below; project/user agents can add or shadow types |
-| (other rawInput) | the task prompt for the child |
-
-## `spawn_subagent`
 
 | Field | Notes |
 |---|---|

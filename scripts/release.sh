@@ -58,8 +58,8 @@ notes_file="$(mktemp -t grok-release-notes.XXXXXX)"
 awk -v ver="$version" '
   /^## / { if (started) exit; if (index($0, "## " ver) == 1) started=1 }
   started { print }
-' changelog.md > "$notes_file"
-[ -s "$notes_file" ] || { echo "No '## $version' section in changelog.md." >&2; exit 1; }
+' CHANGELOG.md > "$notes_file"
+[ -s "$notes_file" ] || { echo "No '## $version' section in CHANGELOG.md." >&2; exit 1; }
 
 if [ "$DRY_RUN" -eq 1 ]; then
   printf '\033[33m[dry-run] would commit, tag %s, push main + tag, then:\033[0m\n' "$tag"

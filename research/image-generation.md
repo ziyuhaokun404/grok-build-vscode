@@ -117,9 +117,14 @@ swallowed into the path (lookahead on the extension). `isMediaGenToolCall` match
 - `AcpClient.emitToolMedia` — on every tool call/update, emits `mediaContent`
   for ACP-standard image blocks (`collectToolImages`, forward-compat fallback)
   plus the flagged media-gen path. (`src/acp.ts`)
-- `GrokSidebar.postGeneratedMedia` — reads the file and inlines it as a `data:`
-  URI (the webview CSP can't load arbitrary disk paths; `media-src data:` added
-  for video), posts `{type:"media", media}`. (`src/sidebar.ts`)
+- `GrokSidebar.postGeneratedMedia` — when the file lives under a
+  `localResourceRoot` (the grok home), serves it to the webview via
+  `webview.asWebviewUri` so the webview streams the bytes straight from disk
+  (required for multi-MB videos, which a base64 `data:` inline silently dropped);
+  files outside the served roots fall back to a base64 `data:` URI. CSP grants
+  `img-src`/`media-src ${webview.cspSource} data:` — `cspSource` for the streamed
+  source, `data:` for the fallback. Posts `{type:"media", media, src, mimeType,
+  path}`. (`src/sidebar.ts`)
 - `addGeneratedMedia` renders `<img>` (click opens the source file) or
   `<video controls>`. (`media/chat.js`, `media/chat.css`)
 
@@ -132,8 +137,8 @@ everything together: `title: "imagine: <prompt>"`, `status: "completed"`,
 `research/resume-probe.cjs`.
 
 Because the host's `handleSessionUpdate` runs identically for live and replay,
-and this collapsed payload is *both* image-gen-detected (`isImageGenToolCall`,
-via the title) *and* path-bearing (`extractGeneratedImagePaths`), the image
+and this collapsed payload is *both* media-gen-detected (`isMediaGenToolCall`,
+via the title) *and* path-bearing (`extractGeneratedMediaPaths`), the image
 renders on resume with no extra code. The webview only suppresses the primer turn
 (`suppressReplayTurn`), not real replayed turns. Locked by a unit test
 ("resume: the collapsed tool_call carries title + path together").

@@ -23,9 +23,11 @@ The CLI still thinks it is in "plan mode" and will eventually emit `x.ai/exit_pl
 
 | Verdict (button)          | Gate after click | What the extension does next                                                                 | Observable result for the user |
 |---------------------------|------------------|----------------------------------------------------------------------------------------------|--------------------------------|
-| **Approve & implement**   | Lowered          | Drop gate, ask CLI to switch to act mode, then send the follow-up prompt "The plan is approved. Implement it now." | Grok starts executing the plan (real writes & commands now succeed). |
-| **Reject** ("Keep planning") | Stays up      | Keep gate up, cancel the false-approval turn (suppress its output), optionally send the user's feedback as a new user message, then send a wire-level clarifying prompt that tells grok "I rejected this — stay in plan mode." | You stay in Plan mode. The feedback (if any) becomes a normal user bubble. Grok sees an unambiguous rejection on the wire. |
-| **Cancel**                | Lowered          | Drop gate, switch CLI to act mode, send a clarifying prompt that says "I cancelled the previous plan. Disregard it." | You are back in normal Agent mode. Grok's understanding is reset. |
+| **Approve & implement**   | Lowered          | Drop gate, ask CLI to switch to act mode, then send the follow-up marker `[Plan approved]` (+ the user's comment if any). | Grok starts executing the plan (real writes & commands now succeed). |
+| **Reject** ("Keep planning") | Stays up      | Keep gate up, cancel the false-approval turn (suppress its output), then send `[Plan rejected]` (+ the user's comment if any, which also shows as a normal user bubble). | You stay in Plan mode. Grok sees an unambiguous rejection on the wire. |
+| **Cancel**                | Lowered          | Drop gate, switch CLI to act mode, send `[Plan cancelled]` (+ the user's comment if any). | You are back in normal Agent mode. Grok's understanding is reset. |
+
+These bracketed markers are not free-form English — they are an explicit **contract** the hidden **primer** (`src/grok-primer.ts`) trained grok to recognize. The verdict is **always** carried by the follow-up message's marker, **never** by the `exit_plan_mode` tool result (which the CLI always reports as "approved"). The primer is sent lazily before the first prompt of new **and** restored sessions (re-sent on restore, not trusted from replayed history); the pure `isPrimerText()` hides it and keeps it out of the plan-position count on replay.
 
 **The fundamental asymmetry (the thing most people get wrong on first encounter):**
 
@@ -172,7 +174,7 @@ The pure helpers live in `src/plan-restore.ts` (15 unit tests).
 
 Two kinds of plan cards exist:
 
-- **Live card** (`addPlanCard`, triggered by `exitPlanRequest`): shows the three buttons, an optional feedback textarea (only sent for the "rejected" verdict), and resolves in place after the user clicks.
+- **Live card** (`addPlanCard`, triggered by `exitPlanRequest`): shows the three buttons and an optional feedback textarea whose comment is sent for **any** of the three verdicts (Approve, Reject, or Cancel) — it lands as a normal user bubble and is appended after the bracketed marker on the wire — and resolves in place after the user clicks.
 - **History card** (`addPlanHistoryCard`, triggered by `planHistoryQueue` during replay): read-only, shows the old verdict label if we have one.
 
 Notices (`planNotice`, `planBlocked`) are simple one-line callouts that appear in the stream when the gate silently refuses something or when the host wants to tell the user "you are still in plan mode."
@@ -251,7 +253,7 @@ If you can explain, in your own words, why the gate is raised on agent-initiated
 
 ### Further reading & practice
 - [research/plan-mode.md](plan-mode.md) — the original deep research + probe findings
-- The four `test/plan-*.test.ts` files — executable specification of the intended behavior
+- The five `test/plan-*.test.ts` files (plan-card, plan-gate, plan-history-restore, plan-restore, plan-review) — executable specification of the intended behavior
 - `CLAUDE.md` (the one-paragraph ACP surfaces summary)
 - Try the `debugShowDummyPlan()` helper and the research probes for hands-on experience
 

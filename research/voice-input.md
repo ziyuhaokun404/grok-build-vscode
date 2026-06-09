@@ -1,5 +1,18 @@
 # Voice input ("Grok Voice") — feasibility verdict
 
+> **Superseded (shipped in v1.3.0).** This was the original feasibility log; its
+> "not buildable today" conclusion was later overturned. Voice input **was** built —
+> via "Path B" below: mic capture moved into the **extension host** (an `ffmpeg`
+> child process), with transcription POSTed/streamed to `api.x.ai/v1/stt`. See
+> [src/voice.ts](../src/voice.ts), [src/voice-recorder.ts](../src/voice-recorder.ts),
+> [src/voice-streamer.ts](../src/voice-streamer.ts), the `grok.voice*` settings, the
+> `ws` dependency, and CHANGELOG § Voice input. The verification probes are
+> `research/voice-stt-probe.cjs`, `voice-stream-probe.cjs`, `voice-stream-verify.cjs`,
+> `voice-e2e-verify.cjs`, `voice-cost-probe.cjs`. The **evidence** sections below
+> remain accurate as the design rationale; read every "not possible / not buildable /
+> either wall sinks it / no code was added" conclusion as the *pre-build* assessment.
+> The one still-true limit: audio cannot ride the grok CLI/ACP pipe (Path A unrealized).
+
 **Question.** Can we add a microphone button to the chat textbox that records the
 user's speech and transcribes it into the input box, using the Grok Build CLI?
 

@@ -72,12 +72,12 @@ Run "npm run package" { npm run package }
 if (-not (Test-Path $vsix)) { throw "Expected $vsix but it wasn't produced." }
 
 # 5. extract this version's changelog section for the release notes
-$lines = Get-Content changelog.md -Encoding UTF8
+$lines = Get-Content CHANGELOG.md -Encoding UTF8
 $start = -1
 for ($i = 0; $i -lt $lines.Count; $i++) {
   if ($lines[$i] -match ('^##\s+' + [regex]::Escape($version) + '(\D|$)')) { $start = $i; break }
 }
-if ($start -lt 0) { throw "No '## $version' section in changelog.md." }
+if ($start -lt 0) { throw "No '## $version' section in CHANGELOG.md." }
 $end = $lines.Count
 for ($i = $start + 1; $i -lt $lines.Count; $i++) {
   if ($lines[$i] -match '^##\s+\d') { $end = $i; break }

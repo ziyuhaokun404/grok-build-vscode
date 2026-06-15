@@ -1522,3 +1522,22 @@ body.dragging { outline: 2px dashed var(--vscode-focusBorder); outline-offset: -
   color: var(--vscode-textPreformat-foreground);
 }
 .math-raw.math-display { display: block; margin: 0.5em 0; white-space: pre-wrap; }
+
+/* ---- Mermaid diagrams ---- */
+/* Once rendered, .mermaid-block holds the SVG directly (the fallback code block
+   markup is replaced). Center it and let a wide diagram scroll horizontally
+   rather than overflow the narrow sidebar. While unrendered (mermaid not loaded
+   or still rendering) it keeps the normal .code-block look showing the source. */
+.mermaid-block[data-mermaid-state="done"] {
+  display: block;
+  margin: 0.5em 0;
+  padding: 0;
+  background: none;
+  border: none;
+  overflow-x: auto;
+  text-align: center;
+}
+.mermaid-block[data-mermaid-state="done"] svg {
+  max-width: 100%;
+  height: auto;
+}

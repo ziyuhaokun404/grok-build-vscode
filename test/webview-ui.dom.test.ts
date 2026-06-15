@@ -474,3 +474,48 @@ describe("LaTeX math rendering", () => {
     expect(math.textContent).toContain("f(x) &= x^2");
   });
 });
+
+describe("Mermaid diagram rendering", () => {
+  // mermaid (the 3.3 MB browser bundle) is never loaded in happy-dom, so these
+  // exercise the fallback: a ```mermaid fence becomes a tagged .mermaid-block
+  // whose source stays readable until the real lib swaps in an SVG at runtime.
+  const renderAgent = (text: string) => {
+    const { doc, window } = bootWebview();
+    dispatch(window, { type: "messageChunk", text });
+    dispatch(window, { type: "promptComplete" });
+    return doc.querySelector(".msg.agent") as HTMLElement;
+  };
+
+  it("turns a ```mermaid fence into a .mermaid-block, not a plain code block", () => {
+    const el = renderAgent(
+      "Here:\n```mermaid\nflowchart TD\n    A[Start] --> B[End]\n```\ndone",
+    );
+    const block = el.querySelector(".mermaid-block");
+    expect(block).not.toBeNull();
+    // mermaid isn't loaded under happy-dom, so it must stay in the fallback state
+    expect(block!.getAttribute("data-mermaid-state")).toBeNull();
+  });
+
+  it("keeps the diagram source readable in the fallback", () => {
+    const el = renderAgent("```mermaid\nsequenceDiagram\n    A->>B: hi\n```");
+    const src = el.querySelector(".mermaid-block .mermaid-src") as HTMLElement;
+    expect(src).not.toBeNull();
+    expect(src.textContent).toContain("sequenceDiagram");
+    expect(src.textContent).toContain("A->>B: hi");
+  });
+
+  it("leaves a non-mermaid fenced block as a normal code block", () => {
+    const el = renderAgent("```js\nconst x = 1;\n```");
+    expect(el.querySelector(".mermaid-block")).toBeNull();
+    const code = el.querySelector(".code-block") as HTMLElement;
+    expect(code).not.toBeNull();
+    expect(code.textContent).toContain("const x = 1;");
+  });
+
+  it("does not treat a half-streamed (unclosed) mermaid fence as a diagram", () => {
+    const el = renderAgent("```mermaid\nflowchart TD\n    A --> B");
+    expect(el.querySelector(".mermaid-block")).toBeNull();
+    // the raw text shows through until the closing fence arrives
+    expect(el.textContent).toContain("flowchart TD");
+  });
+});

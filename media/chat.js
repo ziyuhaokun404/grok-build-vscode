@@ -270,6 +270,92 @@
       : `<span class="math-raw">${esc}</span>`;
   }
 
+  // ---------- mermaid diagrams ----------
+  // Grok emits ```mermaid fenced blocks. renderMarkdown turns each into a
+  // .mermaid-block placeholder (showing the source as a fallback code block);
+  // this pass renders it to SVG with the vendored mermaid lib. mermaid.render is
+  // async and needs the live DOM (it measures text), so unlike KaTeX we can't do
+  // it inline in renderMarkdown — we post-process the inserted element instead.
+  //
+  // The streaming agent bubble re-runs renderMarkdown (and rebuilds the DOM) on
+  // every animation frame, so the SVG is destroyed and the placeholder recreated
+  // each frame. Two module-level caches keyed by the diagram source keep that
+  // flicker-free and cheap: `mermaidSvgCache` lets a re-render re-apply the SVG
+  // synchronously in the same frame (cache hit → no flash), and `mermaidInFlight`
+  // stops the same diagram being rendered dozens of times before the first async
+  // render resolves. A failed render caches null and leaves the readable source.
+  const mermaidSvgCache = new Map(); // src -> svg string, or null if render failed
+  const mermaidInFlight = new Set(); // src currently being rendered
+  let mermaidIdSeq = 0;
+  let mermaidReady = false;
+
+  function initMermaid() {
+    const m = globalThis.mermaid;
+    if (!m || typeof m.initialize !== "function") return;
+    const light = document.body.classList.contains("vscode-light");
+    try {
+      m.initialize({
+        startOnLoad: false,
+        securityLevel: "strict",
+        suppressErrorRendering: true,
+        theme: light ? "default" : "dark",
+        fontFamily: "var(--vscode-font-family, sans-serif)",
+      });
+      mermaidReady = true;
+    } catch (_) {
+      mermaidReady = false;
+    }
+  }
+
+  function mermaidSourceOf(block) {
+    const codeEl = block.querySelector(".mermaid-src code") || block.querySelector(".mermaid-src");
+    return (codeEl ? codeEl.textContent : "").trim();
+  }
+
+  // Replace every still-unrendered placeholder whose source matches `src` with the
+  // cached SVG. Scans the live document because the streaming re-render may have
+  // swapped out the element that originally kicked off the render.
+  function applyCachedMermaid(src) {
+    const svg = mermaidSvgCache.get(src);
+    if (!svg) return;
+    document.querySelectorAll(".mermaid-block").forEach((block) => {
+      if (block.getAttribute("data-mermaid-state") === "done") return;
+      if (mermaidSourceOf(block) === src) {
+        block.innerHTML = svg;
+        block.setAttribute("data-mermaid-state", "done");
+      }
+    });
+  }
+
+  function renderMermaidIn(root) {
+    if (!root || typeof root.querySelectorAll !== "function") return;
+    const blocks = root.querySelectorAll(".mermaid-block");
+    if (!blocks.length) return;
+    const m = globalThis.mermaid;
+    if (!mermaidReady || !m || typeof m.render !== "function") return; // not loaded → readable fallback stays
+    blocks.forEach((block) => {
+      if (block.getAttribute("data-mermaid-state") === "done") return;
+      const src = mermaidSourceOf(block);
+      if (!src) return;
+      if (mermaidSvgCache.has(src)) {
+        const svg = mermaidSvgCache.get(src);
+        if (svg) { block.innerHTML = svg; block.setAttribute("data-mermaid-state", "done"); }
+        return; // null → render failed earlier; keep the source fallback
+      }
+      if (mermaidInFlight.has(src)) return; // already rendering; the cache will fill in shortly
+      mermaidInFlight.add(src);
+      const id = "grok-mmd-" + (mermaidIdSeq++);
+      Promise.resolve()
+        .then(() => m.render(id, src))
+        .then((res) => { mermaidSvgCache.set(src, (res && res.svg) || null); })
+        .catch(() => { mermaidSvgCache.set(src, null); })
+        .then(() => {
+          mermaidInFlight.delete(src);
+          applyCachedMermaid(src);
+        });
+    });
+  }
+
   function renderDiffCode(code) {
     const lines = code.replace(/\n+$/, "").split("\n");
     const body = lines.map((ln) => {
@@ -287,6 +373,23 @@
     const codeBlocks = [];
     let s = raw.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => {
       const i = codeBlocks.length;
+      // Mermaid: keep the source as a normal-looking code block (so it shows as
+      // readable text if mermaid never loads or the diagram is malformed), but
+      // tag it so the post-render pass can swap in the rendered SVG. The closing
+      // ``` is required by this regex, so a half-streamed diagram never reaches
+      // mermaid — it stays raw text until the block completes.
+      if (lang === "mermaid") {
+        codeBlocks.push(
+          `<div class="code-block mermaid-block">` +
+            `<button class="code-copy-btn" type="button" title="Copy code">` +
+              `<span class="code-copy-glyph">${ICON.copy}</span>` +
+              `<span class="code-copy-label">Copy code</span>` +
+            `</button>` +
+            `<pre class="mermaid-src"><code>${escapeHtml(code).trimEnd()}</code></pre>` +
+          `</div>`
+        );
+        return `\x00B${i}\x00`;
+      }
       const isDiff = lang === "diff";
       const inner = isDiff
         ? renderDiffCode(code)
@@ -1050,7 +1153,7 @@
 
     const body = document.createElement("div");
     body.className = "body";
-    if (text) body.innerHTML = renderMarkdown(text);
+    if (text) { body.innerHTML = renderMarkdown(text); renderMermaidIn(body); }
     contentParent.appendChild(body);
 
     if (role === "user" && chips && chips.length > 0) {
@@ -1468,6 +1571,7 @@
     state.agentRenderScheduled = false;
     if (!state.activeAgentEl) return;
     state.activeAgentEl.innerHTML = renderMarkdown(state.activeAgentRaw);
+    renderMermaidIn(state.activeAgentEl);
     const wrapper = state.activeAgentEl.parentElement;
     if (wrapper) wrapper._copyText = state.activeAgentRaw;
     scrollToBottom();
@@ -1981,6 +2085,7 @@
     const body = document.createElement("div");
     body.className = "plan-body";
     body.innerHTML = planText ? renderMarkdown(planText) : "(empty plan)";
+    renderMermaidIn(body);
     el.appendChild(body);
 
     const feedback = document.createElement("textarea");
@@ -2051,6 +2156,7 @@
     const body = document.createElement("div");
     body.className = "plan-body";
     body.innerHTML = text ? renderMarkdown(text) : "(empty plan)";
+    renderMermaidIn(body);
     el.appendChild(body);
 
     if (verdictLabel) {
@@ -2837,5 +2943,6 @@
     }
   });
 
+  initMermaid();
   vscode.postMessage({ type: "ready" });
 })();

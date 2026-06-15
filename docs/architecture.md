@@ -150,3 +150,17 @@ The full pedagogical write-up lives in
   no `\ref`/`\eqref`, so it would paint a red error; `\label` is invisible in real
   LaTeX anyway). Single `$…$` is deliberately not a delimiter — it false-matches
   prose currency.
+- **Mermaid renders async, as a post-pass over the inserted DOM.** Grok answers
+  with ` ```mermaid ` fences (flowcharts, sequence/state diagrams, git graphs, …).
+  Unlike KaTeX's synchronous string render, `mermaid.render` is async and needs
+  the live DOM (it measures text to lay out nodes), so `renderMarkdown` only turns
+  the fence into a `.mermaid-block` placeholder (carrying the source as a readable
+  fallback code block) and `renderMermaidIn` in `chat.js` swaps in the SVG
+  afterward via vendored [Mermaid](https://mermaid.js.org) (`media/mermaid/`, a
+  self-contained ~3.3 MB IIFE, no network). The streaming agent bubble rebuilds
+  its DOM every animation frame, so two source-keyed module caches make that
+  flicker-free: `mermaidSvgCache` re-applies a rendered SVG synchronously on a
+  cache hit, and `mermaidInFlight` stops a diagram being laid out repeatedly before
+  its first render resolves. Themed to VS Code dark/light; `securityLevel:"strict"`;
+  malformed/half-streamed diagrams keep the readable source. No CSP change (the lib
+  has no `eval`/`new Function`; its inline styles are covered by `style-src`).

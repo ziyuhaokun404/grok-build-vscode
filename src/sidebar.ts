@@ -2055,6 +2055,7 @@ See design doc for the full state machine diagram.`;
   </footer>
 
   <script nonce="${nonce}" src="${mediaUri("katex/katex.min.js")}"></script>
+  <script nonce="${nonce}" src="${mediaUri("mermaid/mermaid.min.js")}"></script>
   <script nonce="${nonce}" src="${mediaUri("webview-helpers.js")}"></script>
   <script nonce="${nonce}" src="${mediaUri("chat.js")}"></script>
 </body>

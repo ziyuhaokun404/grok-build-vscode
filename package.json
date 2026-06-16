@@ -2,7 +2,7 @@
   "name": "grok-vscode-phuryn",
   "displayName": "Grok Build",
   "description": "Thin VS Code sidebar client for the Grok Build CLI over Agent Client Protocol (ACP). Streams responses with thinking traces, tool calls, file chips, and permission cards with diff preview. All session state stays in the CLI. Not affiliated with xAI.",
-  "version": "1.4.8",
+  "version": "1.4.9",
   "publisher": "PawelHuryn",
   "author": {
     "name": "Paweł Huryn",
@@ -190,6 +190,13 @@
           "type": "boolean",
           "default": false,
           "description": "Use Ctrl/Cmd+Enter to send (Enter inserts newline)."
+        },
+        "grok.chatFontScale": {
+          "type": "number",
+          "default": 100,
+          "minimum": 60,
+          "maximum": 300,
+          "markdownDescription": "Zoom for the Grok chat panel only, as a percent (100 = default). Scales the whole chat UI — text, icons, spacing — without affecting the rest of VS Code (unlike `Ctrl/Cmd+Shift+=`). Applies live, no reload needed. Supports User (global) and Workspace (local) scope."
         },
         "grok.voiceApiKey": {
           "type": "string",

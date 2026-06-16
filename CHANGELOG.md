@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.4.9 — 2026-06-16
+
+> Make the chat bigger — just the chat.
+
+### Features
+
+- **Adjustable chat font size (#14).** A new `grok.chatFontScale` setting zooms the Grok chat panel only — text, icons, and spacing together — as a percent (e.g. `150`, `200`, or smaller like `70`). Unlike VS Code's global `Ctrl/Cmd+Shift+=`, it leaves the rest of the editor at its normal size, so you can enlarge (or shrink) just the chat for readability. It applies live with no reload, the composer stays pinned to the bottom of the panel at any scale, and it works at both User (global) and Workspace (local) scope. ([package.json](package.json), [src/sidebar.ts](src/sidebar.ts), [media/chat.css](media/chat.css), [media/chat.js](media/chat.js))
+
+### Docs
+
+- **README polish.** Added screenshots for *Voice input* and the *Agent Dashboard*, and moved a few wire-level implementation details out of the feature blurbs into [docs/architecture.md](docs/architecture.md) so the feature list reads less like internals. ([README.md](README.md), [docs/architecture.md](docs/architecture.md))
+
 ## 1.4.8 — 2026-06-15
 
 > Run several Grok sessions at once — switch between them instantly, and see at a glance which one needs you.

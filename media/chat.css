@@ -18,7 +18,14 @@ html, body {
 body {
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  /* grok.chatFontScale zooms the chat via --chat-zoom (set inline on <body>).
+     `zoom` scales layout but `vh` ignores it, so a 100vh body at zoom 0.7 would
+     render at 70vh and leave dead space below the composer — divide the height
+     back out so the body always fills the viewport and the composer stays
+     pinned to the bottom at any scale. */
+  zoom: var(--chat-zoom, 1);
+  height: calc(100vh / var(--chat-zoom, 1));
+  overflow: hidden;
 }
 
 .muted { color: var(--vscode-descriptionForeground); }

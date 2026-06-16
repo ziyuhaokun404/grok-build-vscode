@@ -12,8 +12,6 @@ Works with a SuperGrok subscription or an xAI API key. **Not affiliated with xAI
 
 ![Generated image rendered inline from /imagine](docs/screenshots/imagine.png)
 
-**[More screenshots →](docs/screenshots/)**
-
 ---
 
 ## Why an extension, not the CLI?
@@ -97,7 +95,7 @@ _Click any feature to expand._
 <details>
 <summary><strong>Permission cards with diff preview</strong> — see every edit in VS Code's native diff before you approve</summary>
 
-For `kind:"edit"` tool calls the card shows a `path — N → M lines` summary and an **open diff →** button that opens VS Code's native diff editor against the proposed content. Approve with *Allow once / always*, or *Reject*. The actual write only happens *after* you approve, via `fs/write_text_file` — no surprise changes to your files.
+When Grok proposes an edit, the card shows a `path — N → M lines` summary and an **open diff →** button that opens VS Code's native diff editor against the proposed content. Approve with *Allow once / always*, or *Reject*. The file is written only **after** you approve — no surprise changes to your files.
 
 </details>
 
@@ -115,7 +113,7 @@ For `kind:"edit"` tool calls the card shows a `path — N → M lines` summary a
 <details>
 <summary><strong>Image & video generation</strong> — <code>/imagine</code> renders right in the chat</summary>
 
-Type `/imagine <prompt>` (or `/imagine-video <prompt>`) and the result renders **inline** — images as a compact thumbnail (capped at 320px; click to open the source file), videos with native playback controls. Hover either for **Copy path** / **Open in VS Code** icons. Both are **subscription-only** Grok features, both survive a session resume, and the file is streamed from disk so even a multi-MB video plays. (Editing a reference photo with `/imagine` works too, via Grok's `image_edit` tool.) Wire-format details: [research/image-generation.md](research/image-generation.md).
+Type `/imagine <prompt>` (or `/imagine-video <prompt>`) and the result renders **inline** — images as a compact thumbnail (capped at 320px; click to open the source file), videos with native playback controls. Hover either for **Copy path** / **Open in VS Code** icons. Both are **subscription-only** Grok features, both survive a session resume, and even a multi-MB video plays. Editing a reference photo with `/imagine` works too. Wire-format details, for the curious: [research/image-generation.md](research/image-generation.md).
 
 </details>
 
@@ -127,6 +125,8 @@ The **microphone button** in the composer dictates speech, transcribed by [xAI's
 The two-word send phrase is deliberate (it won't fire on a message that merely ends in "send") and is configurable via `grok.voiceSendPhrase`. Streaming is the default; set `grok.voiceStreaming: false` for one-shot batch mode.
 
 > **Cost:** Speech-to-Text is a *separate*, pay-as-you-go xAI product — **$0.10/hr** batch, **$0.20/hr** streaming, billed by audio duration. In practice ~500 words ≈ ½–1¢; a heavy 10,000-word day ≈ 10¢. It needs its own [console.x.ai](https://console.x.ai) key (`grok.voiceApiKey` / `GROK_VOICE_API_KEY` / `XAI_API_KEY`) — a SuperGrok subscription grants no API credit. Why it bypasses the CLI, and how the cost was measured end-to-end: [research/voice-input.md](research/voice-input.md).
+
+![Voice input with live transcription in the composer](docs/screenshots/voice_mode.png)
 
 </details>
 
@@ -156,6 +156,8 @@ The green/red dot is an **unread** badge: it appears when a session finishes whi
 
 To keep a pile of background sessions from each pinning a live process, a session left untouched for an hour (or beyond ~8 live) is quietly shut down — never one that's working or waiting on you — and reloads from history on click, losing nothing.
 
+![Session status dots in the history dropdown](docs/screenshots/v1.4.7_visual_status.jpg)
+
 </details>
 
 <details>
@@ -163,14 +165,14 @@ To keep a pile of background sessions from each pinning a live process, a sessio
 
 Every message you send shows an animated **Grokking…** placeholder immediately, so there's always feedback that Grok received it — it's replaced in place the instant the first thought, reply, or tool action streams in.
 
-There's also no longer a long silent pause before that first response. The extension primes each new session with a hidden plan-mode instruction; that primer now runs **eagerly in the background** the moment the session goes live (and on resume, and after `/compact`) instead of sitting in front of your first message — so it's almost always finished before you hit send. If you *are* quick, your message appears right away and is released the instant the primer settles. The primer text was also slimmed down so it completes in a beat rather than wandering off to read your workspace first.
+There's also no longer a long silent pause before that first response. Plan Mode needs a little hidden setup per session; it now happens **quietly in the background** the moment a session opens — instead of in front of your first message — so it's almost always done before you hit send. If you *are* quick, your message still appears right away. *(What that setup is and why it's needed: [How it works](#how-it-works).)*
 
 </details>
 
 <details>
 <summary><strong>Session history</strong> — resume, rename, or delete any past session</summary>
 
-The clock icon lists every session the CLI saved for this project (`~/.grok/sessions/<urlencoded-cwd>/`). Click a row to resume — the extension calls `session/load` and Grok replays the conversation, with inline images, plans, and reasoning intact. Hover to rename (pencil) or delete (trash); names default to the first message. Renames live in VS Code's `globalState` and never touch Grok's own files.
+The clock icon lists every session the CLI saved for this project. Click a row to resume — Grok replays the conversation, with inline images, plans, and reasoning intact. Hover to rename (pencil) or delete (trash); names default to the first message. Renames are stored by the extension and never touch Grok's own files.
 
 </details>
 
@@ -184,7 +186,7 @@ Every action Grok takes appears in chat — a single flat row ("Read sidebar.ts 
 <details>
 <summary><strong>Math &amp; LaTeX rendering</strong> — equations render as math, not raw TeX</summary>
 
-When Grok answers with LaTeX — inline `\(…\)`, display `\[…\]`, and environments like `\begin{pmatrix}` matrices, `cases`, integrals, sums, and Greek — the chat renders it as real typeset math via [MathJax](https://www.mathjax.org), vendored into the extension so it works **offline with no network**. Inline math sits on the text baseline in your editor's text color; display equations get their own centered block with horizontal scroll so a wide matrix doesn't overflow the narrow sidebar. A malformed expression shows a small inline error instead of blanking the message. **Hover a display equation** for actions: copy its LaTeX source, or export it as a PNG (your theme's background) or a transparent SVG tuned for a light or dark background. Bare `$…$` is intentionally **not** a delimiter — it would mangle prose like "it costs $5 and then $10".
+When Grok answers with LaTeX — inline `\(…\)`, display `\[…\]`, and environments like `\begin{pmatrix}` matrices, `cases`, integrals, sums, and Greek — the chat renders it as real typeset math via [MathJax](https://www.mathjax.org), bundled into the extension so it works **offline with no network**. Inline math sits on the text baseline in your editor's text color; display equations get their own centered block with horizontal scroll so a wide matrix doesn't overflow the narrow sidebar. A malformed expression shows a small inline error instead of blanking the message. **Hover a display equation** for actions: copy its LaTeX source, or export it as a PNG (your theme's background) or a transparent SVG tuned for a light or dark background. Bare `$…$` is intentionally **not** a delimiter — it would mangle prose like "it costs $5 and then $10".
 
 ![LaTeX expressions rendered as typeset math](docs/screenshots/v1.4.5%20LaTeX%20expressions.png)
 
@@ -193,7 +195,7 @@ When Grok answers with LaTeX — inline `\(…\)`, display `\[…\]`, and enviro
 <details>
 <summary><strong>Mermaid diagrams</strong> — flowcharts and sequence diagrams render as diagrams</summary>
 
-When Grok answers with a ` ```mermaid ` block — flowcharts, sequence and state diagrams, git graphs, class and ER diagrams, and more — the chat renders it as a real diagram via [Mermaid](https://mermaid.js.org), vendored into the extension so it works **offline with no network**. Diagrams are themed to match your VS Code light/dark mode and scroll horizontally so a wide flowchart doesn't overflow the narrow sidebar. **Hover a diagram** to copy its source, or export it as a PNG (your theme's background) or a transparent SVG re-themed for a light or dark background. If a diagram is still streaming or turns out to be malformed, the readable diagram source is shown instead — you never lose the content.
+When Grok answers with a ` ```mermaid ` block — flowcharts, sequence and state diagrams, git graphs, class and ER diagrams, and more — the chat renders it as a real diagram via [Mermaid](https://mermaid.js.org), bundled into the extension so it works **offline with no network**. Diagrams are themed to match your VS Code light/dark mode and scroll horizontally so a wide flowchart doesn't overflow the narrow sidebar. **Hover a diagram** to copy its source, or export it as a PNG (your theme's background) or a transparent SVG re-themed for a light or dark background. If a diagram is still streaming or turns out to be malformed, the readable diagram source is shown instead — you never lose the content.
 
 ![Mermaid diagram rendered inline in the chat](docs/screenshots/v1.4.6%20Mermaid%20diagrams.png)
 
@@ -202,7 +204,7 @@ When Grok answers with a ` ```mermaid ` block — flowcharts, sequence and state
 <details>
 <summary><strong>Model picker</strong> — switch models live, no restart</summary>
 
-Click the model name in the gear popover. The list comes from the CLI's `session/new` response; switching is live (`session/set_model`) with no restart when the target model belongs to the same agent.
+Click the model name in the gear popover. The model list comes from your CLI; switching is live with no restart in most cases. (A few models belong to a different agent and need a quick session restart — the extension detects that and handles it for you, carrying your context forward.)
 
 </details>
 
@@ -247,6 +249,7 @@ Or edit the config via gear → *Open global / project config*, then click **+**
 | `grok.defaultEffort` | `""` | Reasoning effort forwarded as `--reasoning-effort` (`none` / `minimal` / `low` / `medium` / `high` / `xhigh`). Empty = CLI default. Changing it restarts the session. |
 | `grok.includeActiveFileByDefault` | `true` | Auto-add the active editor as a context chip. |
 | `grok.useCtrlEnterToSend` | `false` | When true, Enter inserts a newline and Ctrl/Cmd+Enter sends. |
+| `grok.chatFontScale` | `100` | Zoom for the chat panel only, as a percent (`150`, `200`, …). Scales the whole chat UI without rescaling the rest of VS Code (unlike `Ctrl/Cmd+Shift+=`). Applies live; supports User (global) and Workspace (local) scope. |
 | `grok.voiceApiKey` | `""` | xAI API key for voice Speech-to-Text — a separate [console.x.ai](https://console.x.ai) developer key, not the CLI login. Empty = fall back to `GROK_VOICE_API_KEY` / `XAI_API_KEY` in the workspace `.env`. |
 | `grok.ffmpegPath` | `""` | Path to `ffmpeg` for microphone recording. Empty = use `ffmpeg` from `PATH`. |
 | `grok.voiceInputDevice` | `""` | Microphone device override. Empty = system default (Windows auto-detects the first DirectShow audio device). |

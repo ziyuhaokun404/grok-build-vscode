@@ -2721,6 +2721,13 @@
         state.cwd = msg.cwd || "";
         state.extVersion = msg.extVersion || "";
         break;
+      case "fontScale":
+        // Live chat-only zoom (grok.chatFontScale). Initial value is baked into
+        // <body style="--chat-zoom:…"> by the host; this just applies later edits.
+        // The CSS derives both `zoom` and the viewport-height compensation from
+        // this one variable, so the composer stays pinned to the bottom.
+        document.body.style.setProperty("--chat-zoom", String(msg.value || 1));
+        break;
       case "grokUpdateStatus":
         // Reply to the About panel's checkGrokUpdate. The check also reports the
         // CLI's current version — adopt it, since the ACP handshake doesn't always

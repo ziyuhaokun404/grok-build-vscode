@@ -187,6 +187,9 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
       ) {
         this.postVoiceConfigured();
       }
+      if (e.affectsConfiguration("grok.chatFontScale")) {
+        this.postFontScale();
+      }
     });
   }
 
@@ -1623,6 +1626,17 @@ See design doc for the full state machine diagram.`;
 
   /** Tell the webview whether a voice API key is resolvable, so the mic button
    *  can show a "needs setup" hint up front instead of only failing on click. */
+  /** Chat-panel zoom factor (1.0 = 100%). Clamped to the declared 60–300% range. */
+  private chatFontScale(): number {
+    const pct = vscode.workspace.getConfiguration("grok").get<number>("chatFontScale", 100);
+    const n = Number.isFinite(pct) ? (pct as number) : 100;
+    return Math.min(300, Math.max(60, n)) / 100;
+  }
+
+  private postFontScale(): void {
+    this.post({ type: "fontScale", value: this.chatFontScale() });
+  }
+
   private postVoiceConfigured(): void {
     const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
     const cfg = vscode.workspace.getConfiguration("grok");
@@ -2359,7 +2373,7 @@ See design doc for the full state machine diagram.`;
       content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; img-src ${webview.cspSource} data:; media-src ${webview.cspSource} data:; font-src ${webview.cspSource}; script-src 'nonce-${nonce}';" />
 <link rel="stylesheet" href="${mediaUri("chat.css")}" />
 </head>
-<body>
+<body style="--chat-zoom: ${this.chatFontScale()}">
 
   <header class="top-bar">
     <button id="history-btn" class="toolbar-btn" title="Session history"></button>

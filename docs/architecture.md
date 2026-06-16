@@ -216,6 +216,18 @@ The full pedagogical write-up lives in
 - **`available_commands_update` drives slash autocomplete.** No hardcoded command
   list; the CLI tells the extension what's available, so plugin/skill installs
   surface immediately.
+- **Model switching is agent-aware.** Models belong to *agent types*
+  (`grok-build`/`grok-build-plan` vs. the `cursor` agent that owns the Composer
+  models). The CLI binds the agent when the process spawns and locks it after the
+  first turn (including our primer), so a live `session/set_model` only works
+  *within* the same agent — a cross-agent switch errors
+  `MODEL_SWITCH_INCOMPATIBLE_AGENT`. So `switchModel` tries the live switch and,
+  on that specific error (`isIncompatibleAgentError` in
+  [src/acp-dispatch.ts](../src/acp-dispatch.ts)), persists the pick to
+  `grok.defaultModel` and restarts — `newSession` re-applies the model *before* the
+  primer runs, while the agent is still rebindable. No history → transparent
+  restart; with history → the same Summarize / Just-Restart choice as an effort
+  change.
 - **Generated media is path-based, not an ACP image block.** `/imagine` and
   `/imagine-video` write a file into the session dir and report its *path* as
   JSON-in-text on the completed tool result. The host parses the path, classifies

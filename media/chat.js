@@ -82,6 +82,16 @@
     dots: {},
     sessionSearch: "",
     renamingSessionId: null,
+    // History pagination: the host sends one page at a time (newest-first by last
+    // activity) so the popover stays fast with thousands of sessions. `sessionTotal`
+    // is the full count (or matched count when searching); `sessionHasMore` drives the
+    // scroll-to-load; `sessionLoading` guards against firing overlapping load-more
+    // requests; `sessionQuery` is the query the loaded page belongs to (so a stale
+    // page from a previous keystroke is ignored).
+    sessionTotal: 0,
+    sessionHasMore: false,
+    sessionLoading: false,
+    sessionQuery: "",
     replaying: false,
     // Live ask_user_question tool calls (toolCallId → {questions, fromReplay}).
     // grok emits a tool_call alongside the live x.ai/ask_user_question request; we
@@ -860,17 +870,22 @@
   function positionDropdownPopover(popover, btn) {
     const parentRect = popover.parentElement.getBoundingClientRect();
     const btnRect = btn.getBoundingClientRect();
+    const EDGE = 6; // gap kept from the panel's right edge (and minimum gap on the left)
     popover.style.bottom = "auto";
     popover.style.top = (btnRect.bottom - parentRect.top + 4) + "px";
-    popover.style.left = (btnRect.left - parentRect.left) + "px";
-    popover.style.right = "auto";
-    requestAnimationFrame(() => {
-      const pw = popover.getBoundingClientRect().width;
-      const leftOffset = btnRect.left - parentRect.left;
-      if (leftOffset + pw > parentRect.width) {
-        popover.style.left = Math.max(0, parentRect.width - pw) + "px";
-      }
-    });
+    // Right-align to the panel edge (respecting padding) and grow leftward. The width
+    // isn't settled when it opens — session rows stream in asynchronously (requestSessions
+    // → "sessions" message → render) and widen it from min-width toward max-width — so a
+    // left-anchor + one-shot overflow clamp (measured before those rows arrived) spilled
+    // off the right edge and only looked right on reopen. Right-anchoring is width-
+    // independent: no measurement, no reflow jump. We also cap the width to the panel
+    // (overriding the CSS min/max) so a long session name ellipsizes instead of
+    // overflowing the LEFT edge in a narrow panel — common-case sizing, not extreme.
+    popover.style.left = "auto";
+    popover.style.right = EDGE + "px";
+    const available = Math.max(0, parentRect.width - EDGE * 2);
+    popover.style.maxWidth = Math.min(360, available) + "px";
+    popover.style.minWidth = Math.min(280, available) + "px";
   }
 
   // ---------- gear popover ----------
@@ -1138,6 +1153,20 @@
     if (dot) applySessionDot(dot, state.dots[id]);
   }
 
+  // Live references to the popover's list + footer, so a `sessions` message can repaint
+  // just the rows (without rebuilding the search input, which would drop focus mid-type).
+  let historyListEl = null;
+  let historyFooterEl = null;
+  let sessionSearchTimer = null;
+
+  // Ask the host for a page of history. offset 0 = fresh list/search (host replaces);
+  // offset > 0 = load-more (host appends). The query rides along so search runs
+  // server-side across ALL sessions on disk, not just the page already loaded.
+  function requestSessions(offset) {
+    state.sessionLoading = true;
+    vscode.postMessage({ type: "listSessions", offset, query: state.sessionSearch });
+  }
+
   function renderHistoryList() {
     historyPopover.innerHTML = "";
 
@@ -1150,7 +1179,10 @@
     search.value = state.sessionSearch;
     search.oninput = () => {
       state.sessionSearch = search.value;
-      renderSessionRows();
+      if (sessionSearchTimer) clearTimeout(sessionSearchTimer);
+      // Debounce so each keystroke doesn't fan out a host read pass; the host filters
+      // by display name across every session and returns the first matching page.
+      sessionSearchTimer = setTimeout(() => requestSessions(0), 180);
     };
     search.onkeydown = (e) => { e.stopPropagation(); };
     search.onclick = (e) => e.stopPropagation();
@@ -1159,28 +1191,71 @@
 
     const list = document.createElement("div");
     list.className = "history-list";
-    historyPopover.appendChild(list);
-
-    function renderSessionRows() {
-      list.innerHTML = "";
-      const q = state.sessionSearch.trim().toLowerCase();
-      const filtered = state.sessions.filter((s) => {
-        if (!q) return true;
-        return (s.displayName || "").toLowerCase().includes(q);
-      });
-      if (filtered.length === 0) {
-        const empty = document.createElement("div");
-        empty.className = "history-empty";
-        empty.textContent = state.sessions.length === 0 ? "No sessions yet." : "No matches.";
-        list.appendChild(empty);
-        return;
+    // Auto-load the next page as the user nears the bottom. The loading/hasMore guards
+    // keep it to one request per page boundary.
+    list.onscroll = () => {
+      if (!state.sessionHasMore || state.sessionLoading) return;
+      if (list.scrollTop + list.clientHeight >= list.scrollHeight - 48) {
+        requestSessions(state.sessions.length);
       }
-      for (const s of filtered) {
-        list.appendChild(renderSessionRow(s));
+    };
+    historyPopover.appendChild(list);
+    historyListEl = list;
+
+    // Footer "Clear all" — shown whenever a non-active session exists (loaded or on a
+    // later page). The active session can't be deleted (grok re-persists it); the host
+    // shows a modal confirm with the real count and handles the empty case.
+    const footer = document.createElement("div");
+    footer.className = "history-footer";
+    footer.hidden = true;
+    const clearBtn = document.createElement("button");
+    clearBtn.className = "history-clear-all";
+    clearBtn.innerHTML = ICON.trash + "<span>Clear all history</span>";
+    clearBtn.title = "Delete all sessions in this workspace's history";
+    clearBtn.onclick = (e) => {
+      e.stopPropagation();
+      vscode.postMessage({ type: "clearAllSessions" });
+      closePopovers();
+    };
+    footer.appendChild(clearBtn);
+    historyPopover.appendChild(footer);
+    historyFooterEl = footer;
+
+    renderSessionRows();
+  }
+
+  function updateHistoryFooter() {
+    if (!historyFooterEl) return;
+    // A non-active session exists if a loaded row isn't the active one, or there are
+    // still-unloaded later pages (which sort after the active session, so they're all
+    // non-active by construction).
+    const loadedClearable = state.sessions.some((s) => s.id !== state.activeSessionId);
+    const moreUnloaded = state.sessionTotal > state.sessions.length;
+    historyFooterEl.hidden = !(loadedClearable || moreUnloaded);
+  }
+
+  function renderSessionRows() {
+    const list = historyListEl;
+    if (!list) return;
+    list.innerHTML = "";
+    if (state.sessions.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "history-empty";
+      empty.textContent = state.sessionSearch.trim() ? "No matches." : "No sessions yet.";
+      list.appendChild(empty);
+    } else {
+      for (const s of state.sessions) list.appendChild(renderSessionRow(s));
+      if (state.sessionHasMore) {
+        const more = document.createElement("div");
+        more.className = "history-more";
+        more.textContent = state.sessionLoading ? "Loading…" : "Scroll for more";
+        list.appendChild(more);
       }
     }
+    updateHistoryFooter();
+  }
 
-    function renderSessionRow(s) {
+  function renderSessionRow(s) {
       const row = document.createElement("div");
       const active = s.id === state.activeSessionId;
       row.className = "history-row" + (active ? " active" : "");
@@ -1271,9 +1346,6 @@
       row.appendChild(actions);
 
       return row;
-    }
-
-    renderSessionRows();
   }
 
   function openHistoryPopover() {
@@ -1281,10 +1353,12 @@
     closePopovers();
     state.sessionSearch = "";
     state.renamingSessionId = null;
+    state.sessionLoading = false;
+    state.sessionHasMore = false;
     renderHistoryList();
     positionDropdownPopover(historyPopover, historyBtn);
     historyPopover.hidden = false;
-    vscode.postMessage({ type: "listSessions" });
+    requestSessions(0);
   }
 
   // ---------- messages ----------
@@ -3093,12 +3167,42 @@
         break;
       case "xaiNotification":
         break;
-      case "sessions":
-        state.sessions = msg.entries || [];
-        state.activeSessionId = msg.activeId || null;
-        state.dots = msg.dots || {};
-        if (!historyPopover.hidden) renderHistoryList();
+      case "sessions": {
+        const entries = msg.entries || [];
+        const offset = msg.offset || 0;
+        const open = !historyPopover.hidden;
+        // Sticky search: a host-driven refresh (rename/delete/new session) posts an
+        // unfiltered first page. If the user has a search active, re-request with it
+        // rather than clobbering their filtered view with the full list.
+        if (open && offset === 0 && (msg.query || "") !== state.sessionSearch) {
+          requestSessions(0);
+          break;
+        }
+        if (offset > 0) {
+          // Load-more: append the next page, de-duped by id. A page whose query no
+          // longer matches the loaded list is stale (the user changed the search after
+          // the request went out) — drop it; the newer request's page will arrive.
+          if ((msg.query || "") !== state.sessionQuery) {
+            state.sessionLoading = false;
+            break;
+          }
+          const seen = new Set(state.sessions.map((s) => s.id));
+          for (const e of entries) if (!seen.has(e.id)) state.sessions.push(e);
+        } else {
+          // Fresh list or new search result: replace.
+          state.sessions = entries;
+          state.sessionQuery = msg.query || "";
+        }
+        if (msg.activeId !== undefined) state.activeSessionId = msg.activeId || null;
+        // Merge (not replace) so dots from earlier pages survive a load-more, which
+        // only carries dots for the new page.
+        state.dots = Object.assign({}, state.dots, msg.dots || {});
+        if (msg.total !== undefined) state.sessionTotal = msg.total;
+        state.sessionHasMore = !!msg.hasMore;
+        state.sessionLoading = false;
+        if (open) renderSessionRows();
         break;
+      }
       case "sessionDot":
         if (msg.dot && msg.dot !== "none") state.dots[msg.id] = msg.dot;
         else delete state.dots[msg.id];
@@ -3266,6 +3370,22 @@
       if (!m) continue;
       vscode.postMessage({ type: "dropFile", path: decodeURIComponent(m[1]), shift: e.shiftKey });
     }
+  });
+
+  // Keep the open history popover correctly placed + sized as the panel resizes. Its
+  // right-align and width cap depend on the panel width, so a resize while it's open would
+  // otherwise leave it stale until close+reopen. Only the history dropdown is panel-width
+  // dependent (the composer popovers are bottom-anchored), so just re-run its positioning.
+  window.addEventListener("resize", () => {
+    if (!historyPopover.hidden) positionDropdownPopover(historyPopover, historyBtn);
+  });
+
+  // A resize can also happen while Grok is hidden (another panel tab / extension focused),
+  // where the webview gets no resize event and so can't re-measure. Close any open popover
+  // when the view is hidden, so the history dropdown never reappears stale on refocus —
+  // reopening it re-measures against the current panel width.
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) closePopovers();
   });
 
   initMermaid();

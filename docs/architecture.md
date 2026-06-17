@@ -187,7 +187,7 @@ The full pedagogical write-up lives in
 | [src/chips.ts](../src/chips.ts) | File-chip CRUD (pure) |
 | [src/prompt-builder.ts](../src/prompt-builder.ts) | Chip → prompt-string with `@path` refs and fenced blocks (pure) |
 | [src/slash-filter.ts](../src/slash-filter.ts) | Slash-command autocomplete filter (pure) |
-| [src/sessions.ts](../src/sessions.ts) | Disk-driven session listing/delete + name overrides (pure) |
+| [src/sessions.ts](../src/sessions.ts) | Disk-driven session listing/delete + name overrides (pure) — `indexSessions` (stat-only ordering), `readSessionEntries` (windowed read), `listSessions` (whole-list), `clearSessions` |
 | [src/file-ref.ts](../src/file-ref.ts) | Open-file ref parsing + large-file inline-read guard (pure) |
 | [src/plan-review.ts](../src/plan-review.ts) | Plan-snapshot Markdown filename generation (pure) |
 | [src/voice.ts](../src/voice.ts) | Voice-input pure helpers — STT request/response, ffmpeg args, device parsing, key resolution |
@@ -195,6 +195,41 @@ The full pedagogical write-up lives in
 | [src/voice-streamer.ts](../src/voice-streamer.ts) | Live capture (ffmpeg PCM → WebSocket STT) |
 | [media/chat.{js,css}](../media/) | Webview UI |
 | [media/webview-helpers.js](../media/webview-helpers.js) | Pure webview helpers (file-ref detection, relative-time, mic-button state machine, trailing send-phrase highlight, math extraction `splitMath`/`stripUnsupportedTex`, and the deferred subagent classifier `isSubagentToolCall`/`subagentLabel`) — shared between webview and tests |
+
+## History at scale
+
+The history dropdown lists every session the CLI saved for this workspace, and that
+store can grow into the thousands. The old path read and `JSON.parse`d *every*
+`summary.json` on every open, then rendered every row — linear cost that stalled the
+popover at scale. It now loads **one page at a time** (`SESSION_PAGE_SIZE = 100`,
+newest-first), built from two pure primitives in
+[src/sessions.ts](../src/sessions.ts):
+
+- `indexSessions` does **one `stat` per session dir, no reads** — it orders every id
+  newest-first by `summary.json` **mtime**. mtime is the cheap last-activity proxy:
+  grok rewrites that file (it holds `updated_at`) on every turn. We sort by mtime
+  *because the id is a UUIDv7 whose timestamp is creation, not last activity* — an
+  id-sort would order by when the session was first opened, which is wrong.
+- `readSessionEntries` reads + parses `summary.json` for **exactly the visible page's
+  ids** and applies name overrides.
+
+The host (`postSessionsList` in [src/sidebar.ts](../src/sidebar.ts)) orders everything
+cheaply with `indexSessions`, then drives an **mtime-keyed read cache** so a re-open /
+load-more / search only re-reads entries whose `summary.json` actually changed —
+steady-state opens cost ~zero reads. **Search is server-side and complete**: a query
+warms the whole catalog once (cache-backed) and filters by display name across *all*
+sessions, not just the loaded page. One wrinkle the disk scan can't cover on its own:
+a *brand-new* session has no `summary.json` yet, so opening history the instant a
+session goes live would drop the active row until grok flushes the file. The host fixes
+that by synthesizing a top-pinned row from in-memory state for any live session not yet
+on disk (first, unfiltered page only — those ids can't appear on a later page). The
+webview appends pages on scroll-near-bottom (de-duped by id, one request per boundary)
+and debounces the search box. An opt-in
+perf simulation ([test/sessions.perf.ts](../test/sessions.perf.ts) via
+`npm run test:perf`, kept out of `npm test`/CI) asserts the op counts at N=5000: first
+open drops reads 5000→100 (~98%), steady-state re-open is 0 reads, search warms once
+then 0. **Clear all** remains the relief valve for an overgrown store; pagination is
+the steady-state fix.
 
 ## Design choices worth knowing
 
@@ -227,7 +262,13 @@ The full pedagogical write-up lives in
   `grok.defaultModel` and restarts — `newSession` re-applies the model *before* the
   primer runs, while the agent is still rebindable. No history → transparent
   restart; with history → the same Summarize / Just-Restart choice as an effort
-  change.
+  change. A restart on a *primer-only* session (no real conversation — common when
+  you flip models/effort right after opening) takes the no-prompt path **and**
+  discards the abandoned grok session dir afterward, so repeated switches don't pile
+  up identical empty sessions in history; the pure `carrySessionName` moves any user
+  rename onto the fresh session so the chosen name survives. The same cleanup runs on
+  the effort-change empty-session branch, guarded so a dead client on a session *with*
+  history keeps its history.
 - **Generated media is path-based, not an ACP image block.** `/imagine` and
   `/imagine-video` write a file into the session dir and report its *path* as
   JSON-in-text on the completed tool result. The host parses the path, classifies

@@ -30,9 +30,13 @@ import { GROK_PRIMER, isPrimerText } from "./grok-primer";
 import {
   SessionListEntry,
   SessionMetaOverrides,
+  carrySessionName,
+  clearSessions,
   defaultFs,
   deleteSessionDir,
-  listSessions,
+  fallbackName,
+  indexSessions,
+  readSessionEntries,
   resolveGrokHome,
   sessionsDirFor,
 } from "./sessions";
@@ -67,15 +71,19 @@ type WebviewMsg =
   | { type: "checkGrokUpdate" }
   | { type: "updateGrok" }
   | { type: "recheckConnection" }
-  | { type: "listSessions" }
+  | { type: "listSessions"; offset?: number; limit?: number; query?: string }
   | { type: "resumeSession"; id: string }
   | { type: "renameSession"; id: string; name: string }
   | { type: "deleteSession"; id: string; name?: string }
+  | { type: "clearAllSessions" }
   | { type: "pickFile" }
   | { type: "voiceStart" }
   | { type: "voiceStop" };
 
 const SESSION_META_KEY = "grok.sessionMeta";
+
+// History pagination: rows fetched per "page" (initial open + each load-more / search page).
+const SESSION_PAGE_SIZE = 100;
 
 // Records the extension version at the last grok-CLI auto-update check, so the
 // silent `grok update` fires once per extension upgrade and never on a fresh
@@ -121,6 +129,14 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
    * (switch-away of an empty one, delete, logout, reap, teardown).
    */
   private pool = new Set<Session>();
+  /**
+   * Cache of parsed session metadata for the history popover, keyed by session id. Each value
+   * remembers the `summary.json` mtime it was read at, so a cheap `indexSessions` stat pass can
+   * tell which entries are stale and re-read only those — the rest are reused across popover opens,
+   * load-more pages, and searches. Invalidated per id on rename/delete; the whole map is disposable
+   * (it's just a read cache, never a source of truth).
+   */
+  private sessionCache = new Map<string, { mtimeMs: number; entry: SessionListEntry }>();
   /**
    * Bounds on the live-session pool (see session-pool.ts). A backgrounded session
    * idle past {@link IDLE_TTL_MS}, or beyond the {@link MAX_LIVE_SESSIONS} LRU cap,
@@ -256,8 +272,14 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
         return;
       }
       if (!this.focused.hasHistory) {
+        // Primer-only session (no real conversation): a cross-agent switch restarts it with a fresh
+        // grok id. There's nothing to summarize, so we never prompt here — and we don't leave the
+        // abandoned primer-only session cluttering history (repeated switches would pile them up).
+        // Drop it after the restart, carrying over any rename the user made.
+        const discardId = this.focused.activeSessionId;
         await cfg.update("defaultModel", modelId, vscode.ConfigurationTarget.Global);
         await this.startSession();
+        this.discardRestartedEmptySession(discardId);
         return;
       }
       const mode = await this.pickRestartMode("Switching to this model requires a new session.");
@@ -934,6 +956,28 @@ See design doc for the full state machine diagram.`;
     }
   }
 
+  /** A model/effort switch on a primer-only session (no real conversation) restarts it with a new
+   *  grok session id. grok already persisted the abandoned one, so without this each repeated switch
+   *  would pile another empty session into history. Drop the old session's on-disk dir and carry any
+   *  user rename (`customName`) onto the new session so the chosen name survives the restart. The
+   *  caller must only invoke this when the prior session genuinely had no history. No-op if the ids
+   *  match or the old session was never persisted. */
+  private discardRestartedEmptySession(oldId: string | undefined): void {
+    const newId = this.focused.activeSessionId;
+    if (!oldId || oldId === newId) return;
+    const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+    const grokHome = resolveGrokHome(process.env);
+    try {
+      deleteSessionDir({ fs: defaultFs, grokHome, cwd, id: oldId });
+    } catch (e) {
+      this.output.appendLine(`[sessions] could not discard empty session ${oldId}: ${(e as Error).message}`);
+    }
+    const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    void this.context.globalState.update(SESSION_META_KEY, carrySessionName(overrides, oldId, newId));
+    this.sessionCache.delete(oldId);
+    this.postSessionsList();
+  }
+
   private async startSession(resumeId?: string): Promise<AcpClient | undefined> {
     // The session this start (re)builds. Today always the focused one (pool-of-1);
     // Step D passes a pool member. Its handlers close over `session`/`gen` so a
@@ -1400,8 +1444,14 @@ See design doc for the full state machine diagram.`;
         const cfg2 = vscode.workspace.getConfiguration("grok");
 
         if (!this.focused.hasHistory || !this.focused.client) {
+          // As with a model switch on an empty session: restart without the summarize-vs-restart
+          // prompt and discard the abandoned primer-only session — but only when it truly had no
+          // history (a dead client on a session WITH history must keep that history).
+          const wasEmpty = !this.focused.hasHistory;
+          const discardId = this.focused.activeSessionId;
           await cfg2.update("defaultEffort", newLevel, vscode.ConfigurationTarget.Global);
           await this.startSession();
+          if (wasEmpty) this.discardRestartedEmptySession(discardId);
           break;
         }
 
@@ -1491,7 +1541,7 @@ See design doc for the full state machine diagram.`;
         await this.updateGrokCliOnDemand();
         break;
       case "listSessions":
-        this.postSessionsList();
+        this.postSessionsList({ offset: msg.offset, limit: msg.limit, query: msg.query });
         break;
       case "resumeSession":
         await this.openSession(msg.id);
@@ -1501,6 +1551,9 @@ See design doc for the full state machine diagram.`;
         break;
       case "deleteSession":
         await this.deleteSession(msg.id, msg.name);
+        break;
+      case "clearAllSessions":
+        await this.clearAllSessions();
         break;
       case "pickFile":
         await this.pickFileFromComputer();
@@ -1515,21 +1568,77 @@ See design doc for the full state machine diagram.`;
 
   }
 
-  private postSessionsList(): void {
+  /**
+   * Send one page of session history to the webview. The cheap `indexSessions` stat pass orders
+   * every session by last activity without reading content; only the visible window (or, for a
+   * search, the matched window) is parsed — and even those come from {@link sessionCache} unless
+   * their `summary.json` changed. So opening the popover is O(page) reads regardless of how many
+   * thousands of sessions exist on disk; the multi-second full-scan stall is gone.
+   *
+   * `offset === 0` is a fresh list/search (the webview replaces); `offset > 0` is load-more (the
+   * webview appends). A non-empty `query` filters by display name across ALL sessions (it warms the
+   * cache once so search stays complete, not just over what's already loaded).
+   */
+  private postSessionsList(opts?: { offset?: number; limit?: number; query?: string }): void {
+    const offset = Math.max(0, opts?.offset ?? 0);
+    const limit = opts?.limit ?? SESSION_PAGE_SIZE;
+    const query = (opts?.query ?? "").trim().toLowerCase();
     const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+    const grokHome = resolveGrokHome(process.env);
     const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
-    const entries = listSessions({
-      fs: defaultFs,
-      grokHome: resolveGrokHome(process.env),
-      cwd,
-      overrides,
-      log: (m) => this.output.appendLine(m),
-    });
-    // Dashboard dot per grok-session-id (live status + persisted unread badge), so
-    // the dropdown can color each row. Computed for every listed row, plus any live
-    // pool member not yet written to disk (a brand-new session has no summary.json).
+    const log = (m: string) => this.output.appendLine(m);
+
+    const index = indexSessions({ fs: defaultFs, grokHome, cwd, log });
+    const mtimeById = new Map(index.map((e) => [e.id, e.mtimeMs]));
+
+    let pageEntries: SessionListEntry[];
+    let total: number;
+    if (query) {
+      // Search needs names for everything, so read (cache-backed) the whole list once, then filter.
+      const all = this.readEntriesCached(index.map((e) => e.id), mtimeById, overrides, cwd, grokHome, log);
+      all.sort((a, b) => b.updatedAt - a.updatedAt);
+      const matched = all.filter((e) => e.displayName.toLowerCase().includes(query));
+      total = matched.length;
+      pageEntries = matched.slice(offset, offset + limit);
+    } else {
+      total = index.length;
+      const pageIds = index.slice(offset, offset + limit).map((e) => e.id);
+      pageEntries = this.readEntriesCached(pageIds, mtimeById, overrides, cwd, grokHome, log);
+      // mtime is an approximate sort key; re-order the loaded page by exact updated_at.
+      pageEntries.sort((a, b) => b.updatedAt - a.updatedAt);
+    }
+
+    // hasMore is governed purely by what's on disk (load-more pages disk-only); compute it before
+    // injecting any live-only rows below so an injected entry can't be mistaken for another page.
+    const hasMore = offset + pageEntries.length < total;
+
+    // A brand-new live session has no summary.json yet, so the disk-scan index misses it. Without
+    // this, opening history the moment a session goes live drops the active row entirely (and the
+    // old top session masquerades as the whole list) until grok flushes the file — exactly the
+    // "open too early" glitch. Synthesize a row from in-memory state for any live pool session not
+    // yet on disk, pinned newest-first. Only on the first, unfiltered page: later pages are
+    // disk-only, and a nameless not-yet-persisted session can't be matched by a search query.
+    // These ids are never on disk, so they can't duplicate onto a later page when the user scrolls.
+    if (!query && offset === 0) {
+      const onDisk = new Set(index.map((e) => e.id));
+      const seen = new Set(pageEntries.map((e) => e.id));
+      const synthetic: SessionListEntry[] = [];
+      for (const s of this.pool) {
+        const id = s.activeSessionId;
+        if (!id || onDisk.has(id) || seen.has(id)) continue;
+        synthetic.push(this.liveSessionEntry(s, id, cwd, overrides));
+        seen.add(id);
+      }
+      if (synthetic.length) {
+        synthetic.sort((a, b) => b.updatedAt - a.updatedAt);
+        pageEntries = [...synthetic, ...pageEntries];
+      }
+    }
+
+    // Dashboard dot per grok-session-id (live status + persisted unread badge) for the rows we send,
+    // plus any live pool member not yet written to disk (a brand-new session has no summary.json).
     const dots: Record<string, Dot> = {};
-    for (const e of entries) dots[e.id] = this.dotForId(e.id);
+    for (const e of pageEntries) dots[e.id] = this.dotForId(e.id);
     for (const s of this.pool) {
       if (s.activeSessionId && !(s.activeSessionId in dots)) {
         dots[s.activeSessionId] = this.dotForId(s.activeSessionId);
@@ -1537,10 +1646,68 @@ See design doc for the full state machine diagram.`;
     }
     this.post({
       type: "sessions",
-      entries,
+      entries: pageEntries,
       activeId: this.focused.activeSessionId,
       dots,
+      offset,
+      total,
+      hasMore,
+      query: opts?.query ?? "",
     });
+  }
+
+  /** Synthesize a list entry for a live session grok hasn't written a `summary.json` for yet (a
+   *  brand-new one). The disk-scan index can't see it, so without this the active row would vanish
+   *  from history when the popover is opened the instant a session goes live. Uses the best name we
+   *  have in memory: a generated/renamed `customName`, else the first user message, else a
+   *  placeholder — all of which the next refresh replaces with grok's own summary once it lands. */
+  private liveSessionEntry(
+    session: Session,
+    id: string,
+    cwd: string,
+    overrides: SessionMetaOverrides,
+  ): SessionListEntry {
+    const now = Date.now();
+    const customName = overrides[id]?.customName?.trim() || undefined;
+    const firstMsg = (session.firstUserMessageForTitle || "").trim();
+    const displayName = customName || (firstMsg ? fallbackName(firstMsg, now) : "New session");
+    const ts = session.lastActiveAt || now;
+    return {
+      id,
+      cwd,
+      displayName,
+      rawSummary: firstMsg,
+      customName,
+      updatedAt: ts,
+      createdAt: ts,
+      numMessages: session.userMessageCount,
+      modelId: undefined,
+    };
+  }
+
+  /** Read entries for the given ids, serving unchanged ones from {@link sessionCache} and re-reading
+   *  only those whose `summary.json` mtime moved (or that aren't cached). Keeps the popover's
+   *  steady-state cost near zero across opens, load-more, and search. */
+  private readEntriesCached(
+    ids: string[],
+    mtimeById: Map<string, number>,
+    overrides: SessionMetaOverrides,
+    cwd: string,
+    grokHome: string,
+    log: (m: string) => void,
+  ): SessionListEntry[] {
+    const stale: string[] = [];
+    for (const id of ids) {
+      const cached = this.sessionCache.get(id);
+      if (!cached || cached.mtimeMs !== (mtimeById.get(id) ?? -1)) stale.push(id);
+    }
+    if (stale.length) {
+      const fresh = readSessionEntries({ fs: defaultFs, grokHome, cwd, ids: stale, overrides, log });
+      for (const e of fresh) {
+        this.sessionCache.set(e.id, { mtimeMs: mtimeById.get(e.id) ?? 0, entry: e });
+      }
+    }
+    return ids.map((id) => this.sessionCache.get(id)?.entry).filter((e): e is SessionListEntry => !!e);
   }
 
   private renameSession(id: string, name: string): void {
@@ -1558,6 +1725,9 @@ See design doc for the full state machine diagram.`;
       next[id] = { ...(next[id] ?? {}), customName: trimmed };
     }
     void this.context.globalState.update(SESSION_META_KEY, next);
+    // A rename changes displayName but not summary.json's mtime, so the mtime-keyed cache would
+    // otherwise keep serving the old name. Drop it so the next read rebuilds the entry.
+    this.sessionCache.delete(id);
     this.postSessionsList();
   }
 
@@ -1580,6 +1750,7 @@ See design doc for the full state machine diagram.`;
     } catch (e) {
       this.output.appendLine(`[sessions] delete failed for ${id}: ${(e as Error).message}`);
     }
+    this.sessionCache.delete(id);
     const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
     if (overrides[id]) {
       const next = { ...overrides };
@@ -1595,6 +1766,59 @@ See design doc for the full state machine diagram.`;
       if (wasFocused) {
         this.focused = new Session();
         await this.startSession();
+      }
+    }
+    this.postSessionsList();
+  }
+
+  /** Delete every session in this workspace's history except the live/focused one (grok
+   *  re-persists that, so deleting it wouldn't stick). Behind a modal confirm showing the
+   *  count. Tears down any backgrounded live members it deletes and purges their overrides. */
+  private async clearAllSessions(): Promise<void> {
+    const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+    const grokHome = resolveGrokHome(process.env);
+    const exceptId = this.focused?.activeSessionId;
+    // Count via the cheap stat-only index — no need to parse every summary just to confirm.
+    const clearableCount = indexSessions({ fs: defaultFs, grokHome, cwd }).filter(
+      (e) => e.id !== exceptId,
+    ).length;
+    if (clearableCount === 0) {
+      void vscode.window.showInformationMessage("No history to clear.");
+      return;
+    }
+    const choice = await vscode.window.showWarningMessage(
+      `Delete ${clearableCount} session${clearableCount === 1 ? "" : "s"} from this workspace's history? This cannot be undone.`,
+      { modal: true },
+      "Delete All",
+    );
+    if (choice !== "Delete All") return;
+
+    let removed: string[] = [];
+    try {
+      removed = clearSessions({ fs: defaultFs, grokHome, cwd, exceptId });
+    } catch (e) {
+      this.output.appendLine(`[sessions] clear-all failed: ${(e as Error).message}`);
+    }
+
+    // Purge our meta overrides + read cache for every removed id.
+    if (removed.length) {
+      const next = { ...this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {}) };
+      let changed = false;
+      for (const id of removed) {
+        this.sessionCache.delete(id);
+        if (next[id]) {
+          delete next[id];
+          changed = true;
+        }
+      }
+      if (changed) await this.context.globalState.update(SESSION_META_KEY, next);
+    }
+
+    // Tear down any backgrounded live pool members we just deleted (the focused one is kept).
+    const gone = new Set(removed);
+    for (const s of [...this.pool]) {
+      if (s !== this.focused && s.activeSessionId && gone.has(s.activeSessionId)) {
+        this.disposeSession(s);
       }
     }
     this.postSessionsList();

@@ -50,6 +50,80 @@ describe("history popover (regression: popover that never closed)", () => {
     click(window, $(doc, "messages"));
     expect((pop as any).hidden).toBe(true);
   });
+
+  it("right-anchors the popover so async row loading can't crop it off the right edge", () => {
+    // Regression: the session rows stream in after the popover is positioned, widening it
+    // from min-width toward max-width. The old left-anchor + one-shot width clamp measured
+    // the width BEFORE those rows arrived, so the popover later spilled off the right edge
+    // (and only looked right on reopen). Right-anchoring is width-independent.
+    const { window, doc } = bootWebview();
+    const pop = $(doc, "history-popover");
+    const btn = $(doc, "history-btn");
+    const parent = pop.parentElement as HTMLElement;
+    (parent as any).getBoundingClientRect = () =>
+      ({ left: 0, right: 400, top: 0, bottom: 600, width: 400, height: 600 });
+    (btn as any).getBoundingClientRect = () =>
+      ({ left: 360, right: 392, top: 8, bottom: 30, width: 32, height: 22 });
+
+    click(window, btn);
+
+    expect(pop.style.left).toBe("auto");
+    expect(pop.style.right).toBe("6px"); // gap from the panel's right edge, not under the button
+    expect(pop.style.top).toBe("34px"); // btnRect.bottom(30) - parentRect.top(0) + 4
+    expect(pop.style.maxWidth).toBe("360px"); // wide panel: full max width
+  });
+
+  it("caps the popover width to a narrow panel so names ellipsize instead of overflowing left", () => {
+    const { window, doc } = bootWebview();
+    const pop = $(doc, "history-popover");
+    const btn = $(doc, "history-btn");
+    const parent = pop.parentElement as HTMLElement;
+    // A 240px panel can't fit the 280px CSS min-width — without the inline cap the popover
+    // would overflow the left edge. available = 240 - 6*2 = 228.
+    (parent as any).getBoundingClientRect = () =>
+      ({ left: 0, right: 240, top: 0, bottom: 600, width: 240, height: 600 });
+    (btn as any).getBoundingClientRect = () =>
+      ({ left: 200, right: 232, top: 8, bottom: 30, width: 32, height: 22 });
+
+    click(window, btn);
+
+    expect(pop.style.maxWidth).toBe("228px");
+    expect(pop.style.minWidth).toBe("228px"); // min(280, 228) — shrinks below the CSS floor
+    expect(pop.style.right).toBe("6px");
+  });
+
+  it("re-measures the open popover when the panel is resized (no close+reopen needed)", () => {
+    const { window, doc } = bootWebview();
+    const pop = $(doc, "history-popover");
+    const btn = $(doc, "history-btn");
+    const parent = pop.parentElement as HTMLElement;
+    (btn as any).getBoundingClientRect = () =>
+      ({ left: 360, right: 392, top: 8, bottom: 30, width: 32, height: 22 });
+    (parent as any).getBoundingClientRect = () =>
+      ({ left: 0, right: 400, top: 0, bottom: 600, width: 400, height: 600 });
+
+    click(window, btn);
+    expect(pop.style.maxWidth).toBe("360px");
+
+    // Panel shrinks to 240px while the popover is still open -> it should re-fit live.
+    (parent as any).getBoundingClientRect = () =>
+      ({ left: 0, right: 240, top: 0, bottom: 600, width: 240, height: 600 });
+    window.dispatchEvent(new (window as any).Event("resize"));
+
+    expect(pop.style.maxWidth).toBe("228px"); // 240 - 6*2, re-measured without reopening
+  });
+
+  it("closes the popover when the view is hidden (switching to another extension/tab)", () => {
+    const { window, doc } = bootWebview();
+    const pop = $(doc, "history-popover");
+    click(window, $(doc, "history-btn"));
+    expect((pop as any).hidden).toBe(false);
+
+    Object.defineProperty(doc, "hidden", { configurable: true, get: () => true });
+    doc.dispatchEvent(new (window as any).Event("visibilitychange"));
+
+    expect((pop as any).hidden).toBe(true);
+  });
 });
 
 describe("session rows (regression: only the label was clickable)", () => {
@@ -112,6 +186,101 @@ describe("session rows (regression: only the label was clickable)", () => {
 
     expect(doc.querySelector(".history-row input.history-rename")).not.toBeNull();
     expect(types(posted)).not.toContain("resumeSession");
+  });
+
+  it("shows a Clear all footer that posts clearAllSessions and closes the popover", () => {
+    const { window, posted, doc } = openWithSessions();
+    const clearBtn = doc.querySelector(".history-clear-all") as HTMLElement;
+    expect(clearBtn).not.toBeNull();
+    click(window, clearBtn);
+
+    expect(posted).toContainEqual({ type: "clearAllSessions" });
+    expect(($(doc, "history-popover") as any).hidden).toBe(true);
+  });
+
+  it("hides the Clear all footer when the only session is the active one", () => {
+    const h = bootWebview();
+    click(h.window, $(h.doc, "history-btn"));
+    dispatch(h.window, {
+      type: "sessions",
+      entries: [entries[0]],
+      activeId: entries[0].id,
+      total: 1,
+    });
+    expect((h.doc.querySelector(".history-footer") as any).hidden).toBe(true);
+  });
+
+  it("hides the Clear all footer when there are no sessions", () => {
+    const h = bootWebview();
+    click(h.window, $(h.doc, "history-btn"));
+    dispatch(h.window, { type: "sessions", entries: [], activeId: null, total: 0 });
+    expect((h.doc.querySelector(".history-footer") as any).hidden).toBe(true);
+  });
+});
+
+describe("session history pagination", () => {
+  const page1 = [
+    { id: "p0", displayName: "Session 0", numMessages: 1, updatedAt: Date.now() - 1000 },
+    { id: "p1", displayName: "Session 1", numMessages: 1, updatedAt: Date.now() - 2000 },
+    { id: "p2", displayName: "Session 2", numMessages: 1, updatedAt: Date.now() - 3000 },
+  ];
+  const page2 = [
+    { id: "q0", displayName: "Older 0", numMessages: 1, updatedAt: Date.now() - 10000 },
+    { id: "q1", displayName: "Older 1", numMessages: 1, updatedAt: Date.now() - 11000 },
+  ];
+
+  function openPopover() {
+    const h = bootWebview();
+    click(h.window, $(h.doc, "history-btn"));
+    h.posted.length = 0; // forget the initial listSessions request
+    return h;
+  }
+
+  it("shows a 'more' indicator while later pages remain", () => {
+    const h = openPopover();
+    dispatch(h.window, { type: "sessions", entries: page1, activeId: null, offset: 0, total: 5, hasMore: true });
+    expect(h.doc.querySelector(".history-more")).not.toBeNull();
+    expect(h.doc.querySelectorAll(".history-row")).toHaveLength(3);
+  });
+
+  it("appends the next page on a load-more (offset > 0) response", () => {
+    const h = openPopover();
+    dispatch(h.window, { type: "sessions", entries: page1, activeId: null, offset: 0, total: 5, hasMore: true });
+    dispatch(h.window, { type: "sessions", entries: page2, activeId: null, offset: 3, total: 5, hasMore: false });
+    expect(h.doc.querySelectorAll(".history-row")).toHaveLength(5);
+    // The indicator disappears once the final page has arrived.
+    expect(h.doc.querySelector(".history-more")).toBeNull();
+  });
+
+  it("replaces (not appends) on a fresh offset-0 response", () => {
+    const h = openPopover();
+    dispatch(h.window, { type: "sessions", entries: page1, activeId: null, offset: 0, total: 5, hasMore: true });
+    dispatch(h.window, { type: "sessions", entries: page2, activeId: null, offset: 0, total: 2, hasMore: false });
+    const rows = h.doc.querySelectorAll(".history-row");
+    expect(rows).toHaveLength(2);
+    expect(rows[0].querySelector(".history-row-name")!.textContent).toBe("Older 0");
+  });
+
+  it("de-dupes when a load-more page overlaps the loaded list", () => {
+    const h = openPopover();
+    dispatch(h.window, { type: "sessions", entries: page1, activeId: null, offset: 0, total: 5, hasMore: true });
+    const overlap = [{ ...page1[2] }, ...page2]; // p2 already loaded
+    dispatch(h.window, { type: "sessions", entries: overlap, activeId: null, offset: 3, total: 5, hasMore: false });
+    expect(h.doc.querySelectorAll(".history-row")).toHaveLength(5); // 3 + 2, the dup dropped
+  });
+
+  it("keeps the Clear all footer visible when later pages hold the only deletable sessions", () => {
+    const h = openPopover();
+    // Only the active session is loaded, but `total` says more exist on later pages.
+    dispatch(h.window, {
+      type: "sessions",
+      entries: [{ id: "active", displayName: "Live", numMessages: 1, updatedAt: Date.now() }],
+      activeId: "active",
+      offset: 0,
+      total: 40,
+      hasMore: true,
+    });
+    expect((h.doc.querySelector(".history-footer") as any).hidden).toBe(false);
   });
 });
 

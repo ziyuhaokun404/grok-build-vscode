@@ -170,9 +170,9 @@ There's also no longer a long silent pause before that first response. Plan Mode
 </details>
 
 <details>
-<summary><strong>Session history</strong> — resume, rename, or delete any past session</summary>
+<summary><strong>Session history</strong> — resume, rename, delete, or clear past sessions</summary>
 
-The clock icon lists every session the CLI saved for this project. Click a row to resume — Grok replays the conversation, with inline images, plans, and reasoning intact. Hover to rename (pencil) or delete (trash); names default to the first message. Renames are stored by the extension and never touch Grok's own files.
+The clock icon lists the sessions the CLI saved for this project, most recent first. Click a row to resume — Grok replays the conversation, with inline images, plans, and reasoning intact. Hover to rename (pencil) or delete (trash); names default to the first message. The list loads the **most recent 100** and pulls in older ones as you **scroll**, and the **search box** filters by name across your whole history — so it stays fast even with thousands of sessions. **Clear all history** at the bottom of the dropdown removes every session for this project in one step (after a confirm), keeping the one you're currently in. Renames are stored by the extension and never touch Grok's own files.
 
 </details>
 

@@ -34,11 +34,29 @@ export interface SessionMetaOverride {
 }
 export type SessionMetaOverrides = Record<string, SessionMetaOverride>;
 
+/** Move a renamed session's `customName` from one id to another and drop the source entry. Used when
+ *  a primer-only session is discarded and restarted under a new grok id (a model/effort switch on an
+ *  empty session): the user's rename should follow to the new session, and the abandoned id's
+ *  override must not linger. Only `customName` carries — a fresh session has no plans/unread/etc.
+ *  worth keeping. Pure: removing the on-disk dir is the caller's job. Returns a new map; the input is
+ *  left untouched. No-op carry when the source has no `customName` or `toId` is undefined. */
+export function carrySessionName(
+  overrides: SessionMetaOverrides,
+  fromId: string,
+  toId: string | undefined,
+): SessionMetaOverrides {
+  const next: SessionMetaOverrides = { ...overrides };
+  const carried = next[fromId]?.customName?.trim();
+  delete next[fromId];
+  if (carried && toId) next[toId] = { ...(next[toId] ?? {}), customName: carried };
+  return next;
+}
+
 export interface FsLike {
   existsSync(p: string): boolean;
   readdirSync(p: string): string[];
   readFileSync(p: string, encoding: "utf8"): string;
-  statSync(p: string): { isDirectory(): boolean };
+  statSync(p: string): { isDirectory(): boolean; mtimeMs: number };
   rmSync?(p: string, opts?: { recursive?: boolean; force?: boolean }): void;
   rmdirSync(p: string, opts?: { recursive?: boolean }): void;
 }
@@ -84,60 +102,123 @@ function parseTimestamp(s: unknown, fallback: number): number {
   return isNaN(t) ? fallback : t;
 }
 
-export function listSessions(deps: ListDeps): SessionListEntry[] {
-  const { fs, grokHome, cwd, overrides, log } = deps;
-  const now = deps.now ? deps.now() : Date.now();
+/** Parse one already-read summary.json into a list entry, applying any customName override. */
+function buildEntry(
+  dirName: string,
+  raw: any,
+  cwd: string,
+  overrides: SessionMetaOverrides,
+  fallbackNow: number,
+): SessionListEntry {
+  const id = (raw?.info?.id as string) ?? dirName;
+  const sessCwd = (raw?.info?.cwd as string) ?? cwd;
+  const rawSummary = typeof raw?.session_summary === "string" ? raw.session_summary : "";
+  const updatedAt = parseTimestamp(raw?.updated_at, fallbackNow);
+  const createdAt = parseTimestamp(raw?.created_at, updatedAt);
+  const numMessages = typeof raw?.num_messages === "number" ? raw.num_messages : 0;
+  const modelId = typeof raw?.current_model_id === "string" ? raw.current_model_id : undefined;
+  const override = overrides[id];
+  const customName = override?.customName?.trim() || undefined;
+  const displayName = customName || fallbackName(rawSummary, updatedAt);
+  return { id, cwd: sessCwd, displayName, rawSummary, customName, updatedAt, createdAt, numMessages, modelId };
+}
+
+export interface SessionIndexEntry {
+  /** Directory name = grok session id. */
+  id: string;
+  /** Modification time of the session's `summary.json` (ms). A cheap proxy for last activity —
+   *  grok rewrites that file (which also holds `updated_at`) on every turn. */
+  mtimeMs: number;
+}
+
+export interface IndexDeps {
+  fs: FsLike;
+  grokHome: string;
+  cwd: string;
+  log?: (msg: string) => void;
+}
+
+/** Cheap ordering pass: every session id newest-first by `summary.json` mtime, WITHOUT reading or
+ *  parsing any summary content. One `stat` per dir instead of a `stat` + `read` + `JSON.parse`, so
+ *  it stays fast even with thousands of sessions. The caller reads (via `readSessionEntries`) only
+ *  the window it actually shows. mtime is an approximate sort key; the exact `updated_at` order is
+ *  re-applied within the loaded page after reading. */
+export function indexSessions(deps: IndexDeps): SessionIndexEntry[] {
+  const { fs, grokHome, cwd, log } = deps;
   const dir = sessionsDirFor(grokHome, cwd);
   if (!fs.existsSync(dir)) return [];
-
-  let entries: string[];
+  let names: string[];
   try {
-    entries = fs.readdirSync(dir);
+    names = fs.readdirSync(dir);
   } catch (e) {
     log?.(`[sessions] failed to read ${dir}: ${(e as Error).message}`);
     return [];
   }
-
-  const out: SessionListEntry[] = [];
-  for (const name of entries) {
-    const full = path.join(dir, name);
+  const out: SessionIndexEntry[] = [];
+  for (const name of names) {
+    const summaryPath = path.join(dir, name, "summary.json");
+    let st: { mtimeMs: number };
     try {
-      if (!fs.statSync(full).isDirectory()) continue;
+      // A stat on summary.json doubles as the "is this a real session dir?" check: a stray file
+      // entry (or a dir without summary.json) makes the join non-existent and statSync throws.
+      st = fs.statSync(summaryPath);
     } catch {
       continue;
     }
-    const summaryPath = path.join(full, "summary.json");
-    if (!fs.existsSync(summaryPath)) continue;
+    out.push({ id: name, mtimeMs: st.mtimeMs });
+  }
+  out.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  return out;
+}
+
+export interface ReadEntriesDeps {
+  fs: FsLike;
+  grokHome: string;
+  cwd: string;
+  ids: string[];
+  overrides: SessionMetaOverrides;
+  now?: () => number;
+  log?: (msg: string) => void;
+}
+
+/** Read + parse summary.json for exactly the given ids (a page), returning full list entries in the
+ *  same order. Malformed or vanished entries are skipped. This is the only path that touches file
+ *  content, so callers keep it to the visible window. */
+export function readSessionEntries(deps: ReadEntriesDeps): SessionListEntry[] {
+  const { fs, grokHome, cwd, ids, overrides, log } = deps;
+  const now = deps.now ? deps.now() : Date.now();
+  const dir = sessionsDirFor(grokHome, cwd);
+  const out: SessionListEntry[] = [];
+  for (const id of ids) {
+    const summaryPath = path.join(dir, id, "summary.json");
     let raw: any;
     try {
       raw = JSON.parse(fs.readFileSync(summaryPath, "utf8"));
     } catch (e) {
-      log?.(`[sessions] malformed summary.json in ${full}: ${(e as Error).message}`);
+      log?.(`[sessions] could not read summary.json for ${id}: ${(e as Error).message}`);
       continue;
     }
-    const id = (raw?.info?.id as string) ?? name;
-    const sessCwd = (raw?.info?.cwd as string) ?? cwd;
-    const rawSummary = typeof raw?.session_summary === "string" ? raw.session_summary : "";
-    const updatedAt = parseTimestamp(raw?.updated_at, now);
-    const createdAt = parseTimestamp(raw?.created_at, updatedAt);
-    const numMessages = typeof raw?.num_messages === "number" ? raw.num_messages : 0;
-    const modelId = typeof raw?.current_model_id === "string" ? raw.current_model_id : undefined;
-    const override = overrides[id];
-    const customName = override?.customName?.trim() || undefined;
-    const displayName = customName || fallbackName(rawSummary, updatedAt);
-    out.push({
-      id,
-      cwd: sessCwd,
-      displayName,
-      rawSummary,
-      customName,
-      updatedAt,
-      createdAt,
-      numMessages,
-      modelId,
-    });
+    out.push(buildEntry(id, raw, cwd, overrides, now));
   }
+  return out;
+}
 
+/** Full session list sorted by last activity. Equivalent to `indexSessions` + `readSessionEntries`
+ *  over every id; reads every summary.json, so prefer the paginated index/read primitives on hot
+ *  paths. Kept for callers that genuinely need the whole list at once. */
+export function listSessions(deps: ListDeps): SessionListEntry[] {
+  const { fs, grokHome, cwd, overrides, log } = deps;
+  const now = deps.now ? deps.now() : Date.now();
+  const index = indexSessions({ fs, grokHome, cwd, log });
+  const out = readSessionEntries({
+    fs,
+    grokHome,
+    cwd,
+    ids: index.map((e) => e.id),
+    overrides,
+    now: () => now,
+    log,
+  });
   out.sort((a, b) => b.updatedAt - a.updatedAt);
   return out;
 }
@@ -152,6 +233,47 @@ export function deleteSessionDir(deps: DeleteDeps): void {
   } else {
     fs.rmdirSync(dir, { recursive: true });
   }
+}
+
+export interface ClearDeps {
+  fs: FsLike;
+  grokHome: string;
+  cwd: string;
+  /** Session id to keep (the live/focused one — grok re-persists it, so deleting it wouldn't stick). */
+  exceptId?: string;
+}
+
+/** Remove every session directory under `cwd`, optionally keeping one. Returns the ids it removed.
+ *  Best-effort: a directory that fails to remove is skipped, not thrown, so one locked dir doesn't
+ *  abort the sweep. The directory name is the session id (mirrors `deleteSessionDir`). */
+export function clearSessions(deps: ClearDeps): string[] {
+  const { fs, grokHome, cwd, exceptId } = deps;
+  const dir = sessionsDirFor(grokHome, cwd);
+  if (!fs.existsSync(dir)) return [];
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(dir);
+  } catch {
+    return [];
+  }
+  const removed: string[] = [];
+  for (const name of entries) {
+    if (exceptId && name === exceptId) continue;
+    const full = path.join(dir, name);
+    try {
+      if (!fs.statSync(full).isDirectory()) continue;
+    } catch {
+      continue;
+    }
+    try {
+      if (fs.rmSync) fs.rmSync(full, { recursive: true, force: true });
+      else fs.rmdirSync(full, { recursive: true });
+      removed.push(name);
+    } catch {
+      continue;
+    }
+  }
+  return removed;
 }
 
 /** Default node fs adapter for production use. */

@@ -1457,6 +1457,36 @@ body.dragging { outline: 2px dashed var(--vscode-focusBorder); outline-offset: -
   font-size: 12px;
   text-align: center;
 }
+.history-more {
+  padding: 8px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 11px;
+  text-align: center;
+  opacity: 0.7;
+}
+.history-footer {
+  padding: 4px;
+  border-top: 1px solid var(--vscode-editorWidget-border, rgba(255,255,255,0.08));
+}
+.history-clear-all {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 8px;
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--vscode-descriptionForeground);
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.history-clear-all:hover {
+  color: var(--vscode-errorForeground);
+  background: var(--vscode-toolbar-hoverBackground, rgba(255,255,255,0.08));
+}
 .history-row {
   display: flex;
   align-items: center;

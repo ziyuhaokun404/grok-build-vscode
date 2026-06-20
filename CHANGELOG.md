@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.4.11 — 2026-06-20
+
+> Nested code blocks render correctly.
+
+### Fixes
+
+- **Nested code blocks no longer eat the outer fence (#20).** Asking the chat for a code block fenced by 4 or 5 backticks (so it can contain an inner ```` ``` ```` block) used to strip the first three backticks of the outer fence and close the block early at the inner fence — splitting one block into several and mangling the output. The Markdown renderer now matches a fence of three-or-more backticks and requires the closing fence to be the same length, so a longer outer fence correctly wraps shorter inner ones (per the CommonMark spec). This makes clean, copy-pasteable nested examples (e.g. for an `AGENTS.md`) render the same as on grok.com and in the Grok CLI. ([media/chat.js](media/chat.js))
+
 ## 1.4.10 — 2026-06-18
 
 > Session history that stays fast with thousands of sessions.

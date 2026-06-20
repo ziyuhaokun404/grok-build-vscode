@@ -856,6 +856,72 @@ describe("Mermaid diagram rendering", () => {
   });
 });
 
+// Nested code blocks (issue #20): an outer fence of 4+ backticks must survive so
+// it can wrap an inner ``` block. The old regex hardcoded exactly 3 backticks for
+// both fences, so it ate the first 3 of a 5-backtick outer fence and closed early
+// on the inner ```python fence — splitting one block into several and dropping
+// backticks. The fix matches a 3+ backtick fence and requires the close to be the
+// same length, so shorter inner fences can't terminate the outer block.
+describe("nested code blocks (issue #20)", () => {
+  const renderAgent = (text: string) => {
+    const { doc, window } = bootWebview();
+    dispatch(window, { type: "messageChunk", text });
+    dispatch(window, { type: "promptComplete" });
+    return doc.querySelector(".msg.agent") as HTMLElement;
+  };
+
+  const NESTED_5 =
+    "`````text\n" +
+    "Here is an example of nested code blocks.\n\n" +
+    "```python\n" +
+    "def hello():\n" +
+    '    print("Hello, world!")\n' +
+    "```\n\n" +
+    "The outer block uses 5 backticks.\n" +
+    "`````";
+
+  it("keeps a 5-backtick outer fence as ONE code block", () => {
+    const el = renderAgent(NESTED_5);
+    expect(el.querySelectorAll(".code-block").length).toBe(1);
+  });
+
+  it("preserves the inner ``` fence literally inside the outer block", () => {
+    const el = renderAgent(NESTED_5);
+    const code = el.querySelector(".code-block") as HTMLElement;
+    expect(code.textContent).toContain("```python");
+    expect(code.textContent).toContain("def hello():");
+    // the inner closing fence + the outer prose both live inside the one block
+    expect(code.textContent).toContain("The outer block uses 5 backticks.");
+  });
+
+  it("handles a 4-backtick outer fence the same way", () => {
+    const el = renderAgent(
+      "````\n```js\nconst x = 1;\n```\n````",
+    );
+    expect(el.querySelectorAll(".code-block").length).toBe(1);
+    const code = el.querySelector(".code-block") as HTMLElement;
+    expect(code.textContent).toContain("```js");
+    expect(code.textContent).toContain("const x = 1;");
+  });
+
+  it("still renders a plain 3-backtick block (the N=3 case)", () => {
+    const el = renderAgent("```js\nconst y = 2;\n```");
+    expect(el.querySelectorAll(".code-block").length).toBe(1);
+    expect((el.querySelector(".code-block") as HTMLElement).textContent)
+      .toContain("const y = 2;");
+  });
+
+  it("renders two sequential blocks of different fence lengths", () => {
+    const el = renderAgent(
+      "```js\na\n```\nthen\n`````md\n```inner```\n`````",
+    );
+    const blocks = el.querySelectorAll(".code-block");
+    expect(blocks.length).toBe(2);
+    expect(blocks[0].textContent).toContain("a");
+    expect(blocks[1].textContent).toContain("```inner```");
+  });
+});
+
 describe("math / diagram export actions (step b)", () => {
   const renderAgent = (window: any, text: string) => {
     dispatch(window, { type: "messageChunk", text });

@@ -608,7 +608,11 @@
 
   function renderMarkdown(raw) {
     const codeBlocks = [];
-    let s = raw.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => {
+    // Fence is 3+ backticks; the closing fence must be the SAME length (\1
+    // backreference). This lets an outer block fenced by 4/5 backticks wrap an
+    // inner ``` block — the shorter inner fences can't close the longer outer one
+    // (CommonMark nested code blocks, issue #20). A plain ``` block is the N=3 case.
+    let s = raw.replace(/(`{3,})(\w*)\n?([\s\S]*?)\1`*/g, (_, _fence, lang, code) => {
       const i = codeBlocks.length;
       // Mermaid: keep the source as a normal-looking code block (so it shows as
       // readable text if mermaid never loads or the diagram is malformed), but

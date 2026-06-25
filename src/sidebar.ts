@@ -17,6 +17,7 @@ import {
   isStdioBrokenGrokVersion,
   parseGrokVersion,
   grokUpdatePolicy,
+  shouldReactivelyDowngrade,
   GROK_STDIO_DOWNGRADE_TARGET,
 } from "./cli-locator";
 import { TerminalManager } from "./terminal-manager";
@@ -175,6 +176,12 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
   // a downgrade succeeds — a failed downgrade leaves it false so a manual restart
   // can retry.
   private brokenCliPinned = false;
+
+  // Re-entrancy guard for the reactive (post-init-failure) downgrade + retry in
+  // startSession. Prevents a tight loop if the downgrade "succeeds" but the spawn
+  // still fails; it is NOT a permanent latch — it's reset after each retry, so a
+  // later manual re-upgrade that breaks again gets downgraded again.
+  private reactiveDowngradeInFlight = false;
 
   constructor(
     private context: vscode.ExtensionContext,
@@ -868,13 +875,9 @@ See design doc for the full state machine diagram.`;
    */
   private async maybePinBrokenCli(cliPath: string): Promise<void> {
     if (this.brokenCliPinned) return;
-    let versionOutput = "";
-    try {
-      const { stdout } = await execFileAsync(cliPath, ["--version"], { timeout: 30_000 });
-      versionOutput = stdout?.trim() ?? "";
-    } catch (e) {
+    const versionOutput = await this.readGrokVersion(cliPath);
+    if (!versionOutput) {
       // Couldn't read the version — don't block startup; let the spawn proceed.
-      this.output.appendLine(`grok --version failed (skipping CLI compatibility check): ${(e as Error).message}`);
       return;
     }
     if (!isStdioBrokenGrokVersion(versionOutput, process.platform)) {
@@ -882,8 +885,24 @@ See design doc for the full state machine diagram.`;
       return;
     }
     const detected = parseGrokVersion(versionOutput)?.join(".") ?? versionOutput;
+    // A failed downgrade leaves brokenCliPinned false so a manual restart can retry.
+    if (await this.downgradeBrokenCli(cliPath, detected, "proactive")) this.brokenCliPinned = true;
+  }
+
+  /**
+   * Run `grok update --version 0.2.60` and notify the user, returning true on
+   * success. Shared by the proactive pin (`maybePinBrokenCli`, before spawn) and
+   * the reactive recovery (after an observed init failure on a build the proactive
+   * range didn't know about). Best-effort: a failure is logged and returns false.
+   * Every downgrade — proactive or reactive — surfaces a one-time notification.
+   */
+  private async downgradeBrokenCli(
+    cliPath: string,
+    fromVersion: string,
+    reason: "proactive" | "reactive",
+  ): Promise<boolean> {
     this.output.appendLine(
-      `Detected grok CLI ${detected}, which has a stdio regression (issue #22); ` +
+      `grok CLI ${fromVersion} has the stdio regression (issue #22, ${reason}); ` +
         `pinning to ${GROK_STDIO_DOWNGRADE_TARGET}.`,
     );
     this.post({ type: "cliUpdating" });
@@ -895,14 +914,17 @@ See design doc for the full state machine diagram.`;
       );
       if (stdout?.trim()) this.output.appendLine(stdout.trim());
       if (stderr?.trim()) this.output.appendLine(stderr.trim());
-      this.brokenCliPinned = true;
       void vscode.window.showInformationMessage(
-        `Grok CLI ${detected} has a bug that prevents the extension from starting a session ` +
-          `(issue #22). Pinned to the last working version ${GROK_STDIO_DOWNGRADE_TARGET} until xAI ships a fix.`,
+        reason === "reactive"
+          ? `Grok CLI ${fromVersion} failed to start a session (issue #22). Downgraded to the ` +
+              `last working version ${GROK_STDIO_DOWNGRADE_TARGET} and retrying.`
+          : `Grok CLI ${fromVersion} has a bug that prevents the extension from starting a session ` +
+              `(issue #22). Pinned to the last working version ${GROK_STDIO_DOWNGRADE_TARGET} until xAI ships a fix.`,
       );
+      return true;
     } catch (e) {
-      // Leave brokenCliPinned false so a manual restart can retry the downgrade.
       this.output.appendLine(`grok downgrade to ${GROK_STDIO_DOWNGRADE_TARGET} failed: ${(e as Error).message}`);
+      return false;
     }
   }
 
@@ -1460,9 +1482,27 @@ See design doc for the full state machine diagram.`;
         this.emit(session, { type: "onboarding", state: "auth-required" });
       } else if (process.platform === "win32" && /timed out: initialize|exited \(code null\)/i.test(msg)) {
         // The signature of the 0.2.61+ Windows stdio regression (issue #22): the
-        // handshake never completes. The auto-pin should have prevented this, so
-        // we land here only when the downgrade failed or the broken range moved.
-        // Point the user at the manual workaround instead of a bare timeout.
+        // handshake never completes. The proactive pin (maybePinBrokenCli) covers
+        // the *known* broken range (0.2.61–0.2.64); this is the evidence-driven
+        // safety net for a *newer* still-broken build (0.2.65+) that slips past it,
+        // or a build the user manually upgraded onto after a pin. We downgrade on
+        // the observed failure and retry the spawn once. After the pin the version
+        // is 0.2.60, so shouldReactivelyDowngrade() can't loop; a later manual
+        // re-upgrade pushes it back above the target and re-arms the recovery.
+        const version = await this.readGrokVersion(cliPath);
+        if (!this.reactiveDowngradeInFlight && shouldReactivelyDowngrade(version, process.platform)) {
+          this.reactiveDowngradeInFlight = true;
+          try {
+            const detected = parseGrokVersion(version)?.join(".") ?? version;
+            if (await this.downgradeBrokenCli(cliPath, detected, "reactive")) {
+              return await this.startSession(resumeId); // retry the spawn on 0.2.60
+            }
+          } finally {
+            this.reactiveDowngradeInFlight = false;
+          }
+        }
+        // Downgrade unavailable, already attempted, or it didn't help — point the
+        // user at the manual workaround instead of a bare timeout.
         this.emit(session, {
           type: "error",
           text:

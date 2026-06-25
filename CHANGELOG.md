@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.4.13 — 2026-06-25
+
+> Self-healing recovery if a *future* Grok CLI build ships the same Windows bug.
+
+### Fixes
+
+- **Auto-recovers from a still-broken future CLI build, not just the known ones (#22).** v1.4.12 pins the CLI back to 0.2.60 when it detects one of the *known* broken builds (0.2.61–0.2.64) before starting. But if xAI ships a **new** build (0.2.65+) that still has the bug, that closed range wouldn't catch it and the session would hang with no automatic fix. The extension now also recovers **reactively**: if a session fails to start on Windows with the regression's signature (the `initialize` handshake timing out / *"exited (code null)"*) and the CLI is on any build newer than the supported 0.2.60, it automatically downgrades to 0.2.60 and **retries the start once** — triggered by the actual failure rather than a hardcoded version list, so it self-heals on builds that don't exist yet. If you later update the CLI by hand onto another broken build, the same recovery runs again on the next failure. Every automatic downgrade (proactive or reactive) shows a notification explaining what happened. If the downgrade can't run, you still get the manual-workaround message as before. ([src/cli-locator.ts](src/cli-locator.ts), [src/sidebar.ts](src/sidebar.ts))
+
+### Internal
+
+- Verified on macOS (Apple Silicon) that the regression is **Windows-only** — grok 0.2.64, the build that hangs on Windows, completes the stdin-open ACP `initialize` handshake in ~450ms (4/4 runs) — so the whole workaround stays correctly gated to Windows. Recorded in [research/stdio-eof-regression.md](research/stdio-eof-regression.md) with a reproduction probe. ([research/stdio-eof-mac-probe.cjs](research/stdio-eof-mac-probe.cjs))
+
 ## 1.4.12 — 2026-06-25
 
 > Works around a Grok CLI 0.2.61+ bug that stopped sessions from starting.

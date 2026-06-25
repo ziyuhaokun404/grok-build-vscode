@@ -9,6 +9,7 @@ import {
   isStdioBrokenGrokVersion,
   compareVersionTuple,
   grokUpdatePolicy,
+  shouldReactivelyDowngrade,
   GROK_STDIO_DOWNGRADE_TARGET,
 } from "../src/cli-locator";
 
@@ -190,5 +191,37 @@ describe("grokUpdatePolicy (issue #22 — never upgrade onto an unsupported buil
     const p = grokUpdatePolicy("grok (dev build)", "win32");
     expect(p.allow).toBe(true);
     expect(p.target).toBeUndefined();
+  });
+});
+
+describe("shouldReactivelyDowngrade (issue #22 — evidence-driven recovery after an init failure)", () => {
+  it("downgrades any Windows build ABOVE the supported target, incl. the known-broken range", () => {
+    for (const v of ["0.2.61", "0.2.64", "0.2.65", "0.3.0", "1.0.0"]) {
+      expect(shouldReactivelyDowngrade(`grok ${v} (x) [stable]`, "win32")).toBe(true);
+    }
+  });
+
+  it("catches a FUTURE still-broken build (0.2.65+) the proactive range can't see", () => {
+    // The whole point: isStdioBrokenGrokVersion is a closed range and would miss 0.2.65,
+    // but a real init failure on it still recovers because this fires on evidence.
+    expect(isStdioBrokenGrokVersion("grok 0.2.65 (x) [stable]", "win32")).toBe(false);
+    expect(shouldReactivelyDowngrade("grok 0.2.65 (x) [stable]", "win32")).toBe(true);
+  });
+
+  it("never downgrades at/below the target — the loop guard once the pin lands", () => {
+    for (const v of ["0.2.60", "0.2.59", "0.1.211"]) {
+      expect(shouldReactivelyDowngrade(`grok ${v} (x) [stable]`, "win32")).toBe(false);
+    }
+  });
+
+  it("is Windows-only", () => {
+    for (const plat of ["linux", "darwin"] as const) {
+      expect(shouldReactivelyDowngrade("grok 0.2.65 (x) [stable]", plat)).toBe(false);
+    }
+  });
+
+  it("leaves an unparseable version alone (no spurious downgrade)", () => {
+    expect(shouldReactivelyDowngrade("grok (dev build)", "win32")).toBe(false);
+    expect(shouldReactivelyDowngrade("", "win32")).toBe(false);
   });
 });

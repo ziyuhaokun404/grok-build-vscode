@@ -128,3 +128,28 @@ export function grokUpdatePolicy(versionOutput: string, platform: NodeJS.Platfor
       `Supported version: ${GROK_STDIO_DOWNGRADE_TARGET}.`,
   };
 }
+
+/**
+ * Should the host REACTIVELY downgrade the CLI after an *observed* `agent stdio`
+ * init failure (handshake timeout / "exited code null")?
+ *
+ * The proactive `isStdioBrokenGrokVersion` only knows the closed, already-seen
+ * broken range (0.2.61–0.2.64) — so a *future* still-broken build (0.2.65+) would
+ * slip past it and hang with no recovery. This check is the evidence-driven safety
+ * net: it fires on the real failure, not a version guess, so it self-heals on any
+ * build *above* the supported target without having to widen a hardcoded range.
+ *
+ * Windows-only (the regression is). A build at/below 0.2.60 is never downgraded —
+ * that's the loop guard: once the pin lands the version is exactly the target, so a
+ * subsequent failure (some other cause) can't trigger another downgrade. A later
+ * *manual* re-upgrade pushes the version back above the target, so a fresh failure
+ * re-triggers the downgrade — exactly the "they upgraded anyway, fix it again"
+ * case. Unparseable version ⇒ leave alone. Pure.
+ */
+export function shouldReactivelyDowngrade(versionOutput: string, platform: NodeJS.Platform): boolean {
+  if (platform !== "win32") return false;
+  const v = parseGrokVersion(versionOutput);
+  if (!v) return false;
+  const target = parseGrokVersion(GROK_STDIO_DOWNGRADE_TARGET)!;
+  return compareVersionTuple(v, target) > 0;
+}

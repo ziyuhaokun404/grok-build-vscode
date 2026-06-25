@@ -44,3 +44,87 @@ export function locateGrokCli(configuredPath: string): string | undefined {
 export function extensionWasUpgraded(lastSeen: string | undefined, current: string): boolean {
   return !!lastSeen && !!current && lastSeen !== current;
 }
+
+/**
+ * Last grok CLI version known to work with the extension's `agent stdio` ACP
+ * transport on Windows. We pin the CLI to this when it's on a broken build (see
+ * `isStdioBrokenGrokVersion`).
+ */
+export const GROK_STDIO_DOWNGRADE_TARGET = "0.2.60";
+
+/**
+ * Parse a grok `--version` banner ("grok 0.2.64 (9a9ac25b10) [stable]") into a
+ * `[major, minor, patch]` tuple, or undefined when no `X.Y.Z` is present. Pure.
+ */
+export function parseGrokVersion(versionOutput: string): [number, number, number] | undefined {
+  const m = /(\d+)\.(\d+)\.(\d+)/.exec(versionOutput ?? "");
+  if (!m) return undefined;
+  return [Number(m[1]), Number(m[2]), Number(m[3])];
+}
+
+/**
+ * grok CLI 0.2.61–0.2.64 ships a Windows-only `agent stdio` regression: the
+ * agent doesn't read its first stdin line until stdin hits EOF, so the
+ * extension's ACP `initialize` never gets answered, the handshake times out, and
+ * the process is torn down ("exited with code null"). Confirmed via a controlled
+ * spawn (closing stdin → handshake succeeds; keeping it open as any real client
+ * must → hang). The last working build is 0.2.60. See issue #22 and
+ * `research/stdio-eof-regression.md`.
+ *
+ * Detect that range (Windows only) so the host can pin the CLI back to 0.2.60
+ * until xAI ships a fix. The upper bound is deliberately closed at the last
+ * known-broken build so a future *fixed* release isn't needlessly downgraded —
+ * widen it (or drop this guard) once a fix lands and is verified. Pure.
+ */
+export function isStdioBrokenGrokVersion(versionOutput: string, platform: NodeJS.Platform): boolean {
+  if (platform !== "win32") return false;
+  const v = parseGrokVersion(versionOutput);
+  if (!v) return false;
+  const [maj, min, pat] = v;
+  return maj === 0 && min === 2 && pat >= 61 && pat <= 64;
+}
+
+/** Compare two `[major, minor, patch]` tuples: <0, 0, or >0. Pure. */
+export function compareVersionTuple(a: [number, number, number], b: [number, number, number]): number {
+  return a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
+}
+
+/**
+ * Decision for the "Update Grok Build CLI" action (manual menu *and* the silent
+ * on-upgrade update), given the installed version + platform.
+ *
+ * The Windows `agent stdio` regression (see `isStdioBrokenGrokVersion`) makes any
+ * build above `GROK_STDIO_DOWNGRADE_TARGET` (0.2.60) unusable by the extension, so
+ * on Windows we must **never move the CLI onto an unsupported build**:
+ *   - at/above the 0.2.60 ceiling → **block** the update (a note explains why);
+ *   - below the ceiling → **allow**, but pin the update to 0.2.60, never `latest`.
+ * Other platforms are unaffected (latest works) → always allow, no pin.
+ * An unparseable version is treated as "allow, no pin" so we never wedge a user
+ * who's on a build we can't reason about.
+ */
+export interface GrokUpdatePolicy {
+  /** May the update run at all? */
+  allow: boolean;
+  /** When allowed, pin to this exact version instead of `latest` (undefined ⇒ latest). */
+  target?: string;
+  /** When blocked, the reason to surface in the menu / log. */
+  note?: string;
+}
+
+export function grokUpdatePolicy(versionOutput: string, platform: NodeJS.Platform): GrokUpdatePolicy {
+  if (platform !== "win32") return { allow: true };
+  const v = parseGrokVersion(versionOutput);
+  if (!v) return { allow: true };
+  const ceiling = parseGrokVersion(GROK_STDIO_DOWNGRADE_TARGET)!;
+  if (compareVersionTuple(v, ceiling) < 0) {
+    // Behind the supported ceiling — updating helps, but only as far as 0.2.60.
+    return { allow: true, target: GROK_STDIO_DOWNGRADE_TARGET };
+  }
+  // At/above the ceiling: any update would land on (or stay on) a broken build.
+  return {
+    allow: false,
+    note:
+      `Grok CLI updates are paused — 0.2.61+ has a bug that breaks the extension (#22). ` +
+      `Supported version: ${GROK_STDIO_DOWNGRADE_TARGET}.`,
+  };
+}

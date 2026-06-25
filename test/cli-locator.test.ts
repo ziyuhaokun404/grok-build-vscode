@@ -2,7 +2,15 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { locateGrokCli, extensionWasUpgraded } from "../src/cli-locator";
+import {
+  locateGrokCli,
+  extensionWasUpgraded,
+  parseGrokVersion,
+  isStdioBrokenGrokVersion,
+  compareVersionTuple,
+  grokUpdatePolicy,
+  GROK_STDIO_DOWNGRADE_TARGET,
+} from "../src/cli-locator";
 
 const IS_WIN = process.platform === "win32";
 const PATH_SEP = IS_WIN ? ";" : ":";
@@ -85,5 +93,102 @@ describe("extensionWasUpgraded", () => {
 
   it("is false defensively when the current version is empty", () => {
     expect(extensionWasUpgraded("1.4.0", "")).toBe(false);
+  });
+});
+
+describe("parseGrokVersion", () => {
+  it("parses the real --version banner", () => {
+    expect(parseGrokVersion("grok 0.2.64 (9a9ac25b10) [stable]")).toEqual([0, 2, 64]);
+  });
+
+  it("parses a bare version string", () => {
+    expect(parseGrokVersion("0.2.60")).toEqual([0, 2, 60]);
+  });
+
+  it("parses double-digit and larger components", () => {
+    expect(parseGrokVersion("grok 1.10.205 (abc) [alpha]")).toEqual([1, 10, 205]);
+  });
+
+  it("returns undefined when no X.Y.Z is present", () => {
+    expect(parseGrokVersion("grok (dev build)")).toBeUndefined();
+    expect(parseGrokVersion("")).toBeUndefined();
+    expect(parseGrokVersion(undefined as unknown as string)).toBeUndefined();
+  });
+});
+
+describe("isStdioBrokenGrokVersion (issue #22)", () => {
+  it("flags the broken 0.2.61–0.2.64 range on Windows", () => {
+    for (const p of ["0.2.61", "0.2.62", "0.2.63", "0.2.64"]) {
+      expect(isStdioBrokenGrokVersion(`grok ${p} (x) [stable]`, "win32")).toBe(true);
+    }
+  });
+
+  it("does not flag the last working version 0.2.60 on Windows", () => {
+    expect(isStdioBrokenGrokVersion("grok 0.2.60 (x) [stable]", "win32")).toBe(false);
+    expect(GROK_STDIO_DOWNGRADE_TARGET).toBe("0.2.60");
+  });
+
+  it("does not flag versions outside the broken range on Windows", () => {
+    expect(isStdioBrokenGrokVersion("grok 0.2.59 (x) [stable]", "win32")).toBe(false);
+    expect(isStdioBrokenGrokVersion("grok 0.2.65 (x) [stable]", "win32")).toBe(false);
+    expect(isStdioBrokenGrokVersion("grok 0.3.0 (x) [stable]", "win32")).toBe(false);
+    expect(isStdioBrokenGrokVersion("grok 0.1.211 (x) [stable]", "win32")).toBe(false);
+  });
+
+  it("never flags non-Windows platforms (the bug is Windows-only)", () => {
+    expect(isStdioBrokenGrokVersion("grok 0.2.64 (x) [stable]", "linux")).toBe(false);
+    expect(isStdioBrokenGrokVersion("grok 0.2.64 (x) [stable]", "darwin")).toBe(false);
+  });
+
+  it("is false defensively when the version is unparseable", () => {
+    expect(isStdioBrokenGrokVersion("grok (dev)", "win32")).toBe(false);
+    expect(isStdioBrokenGrokVersion("", "win32")).toBe(false);
+  });
+});
+
+describe("compareVersionTuple", () => {
+  it("orders by major, then minor, then patch", () => {
+    expect(compareVersionTuple([0, 2, 60], [0, 2, 61])).toBeLessThan(0);
+    expect(compareVersionTuple([0, 2, 64], [0, 2, 60])).toBeGreaterThan(0);
+    expect(compareVersionTuple([0, 2, 60], [0, 2, 60])).toBe(0);
+    expect(compareVersionTuple([1, 0, 0], [0, 9, 9])).toBeGreaterThan(0);
+    expect(compareVersionTuple([0, 3, 0], [0, 2, 99])).toBeGreaterThan(0);
+  });
+});
+
+describe("grokUpdatePolicy (issue #22 — never upgrade onto an unsupported build)", () => {
+  it("blocks updates on Windows at the supported ceiling (0.2.60)", () => {
+    const p = grokUpdatePolicy("grok 0.2.60 (x) [stable]", "win32");
+    expect(p.allow).toBe(false);
+    expect(p.target).toBeUndefined();
+    expect(p.note).toMatch(/#22/);
+  });
+
+  it("blocks updates on Windows when already on a broken build (0.2.61–0.2.64)", () => {
+    for (const v of ["0.2.61", "0.2.64"]) {
+      expect(grokUpdatePolicy(`grok ${v} (x) [stable]`, "win32").allow).toBe(false);
+    }
+  });
+
+  it("allows updates on Windows below the ceiling, but pins to 0.2.60 (never latest)", () => {
+    const p = grokUpdatePolicy("grok 0.2.59 (x) [stable]", "win32");
+    expect(p.allow).toBe(true);
+    expect(p.target).toBe(GROK_STDIO_DOWNGRADE_TARGET);
+    expect(p.target).toBe("0.2.60");
+    expect(grokUpdatePolicy("grok 0.1.211 (x) [stable]", "win32").target).toBe("0.2.60");
+  });
+
+  it("never restricts non-Windows platforms (update freely to latest)", () => {
+    for (const plat of ["linux", "darwin"] as const) {
+      const p = grokUpdatePolicy("grok 0.2.64 (x) [stable]", plat);
+      expect(p.allow).toBe(true);
+      expect(p.target).toBeUndefined();
+    }
+  });
+
+  it("allows (no pin) when the version is unparseable, so a user is never wedged", () => {
+    const p = grokUpdatePolicy("grok (dev build)", "win32");
+    expect(p.allow).toBe(true);
+    expect(p.target).toBeUndefined();
   });
 });

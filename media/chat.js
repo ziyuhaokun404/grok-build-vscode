@@ -1008,9 +1008,16 @@
     const cliVer = state.cliVersion || u.current || "";
     addGearInfo(`<span>Grok Build CLI</span><span class="popover-ver">${cliVer ? "v" + escapeHtml(cliVer) : "—"}</span>`);
 
+    // Updates can be paused for compatibility (issue #22): the host blocks moving
+    // the CLI onto an unsupported build on Windows. When blocked, the action is
+    // shown disabled with the reason instead of an active button.
+    const blocked = u.policy && u.policy.allow === false;
+
     let statusHtml, canUpdate = false;
     if (u.checking) {
       statusHtml = '<span class="loading-dots">Checking for updates</span>';
+    } else if (blocked) {
+      statusHtml = '<span class="popover-ver">On the supported version</span>';
     } else if (u.error) {
       statusHtml = '<span class="popover-warn">Couldn’t check — try updating anyway</span>';
       canUpdate = true;
@@ -1024,9 +1031,17 @@
     }
     addGearInfo(statusHtml);
 
-    // The update action only appears when there's actually something to do —
-    // when the CLI is up to date the grayed status line above says so on its own.
-    if (canUpdate) {
+    if (blocked) {
+      // Disabled action + the reason, so it's clear updates are intentionally held.
+      const btn = document.createElement("div");
+      btn.className = "toolbar-popover-item popover-action disabled";
+      btn.setAttribute("aria-disabled", "true");
+      btn.innerHTML = "<span>Update Grok Build CLI</span>";
+      gearPopover.appendChild(btn);
+      addGearInfo(`<span class="popover-warn">${escapeHtml(u.policy.note || "Updates are paused for compatibility.")}</span>`);
+    } else if (canUpdate) {
+      // The update action only appears when there's actually something to do —
+      // when the CLI is up to date the grayed status line above says so on its own.
       const btn = document.createElement("div");
       btn.className = "toolbar-popover-item popover-action";
       btn.innerHTML = "<span>Update Grok Build CLI</span>";
@@ -2814,6 +2829,7 @@
         state.grokUpdate = {
           current: msg.current, latest: msg.latest,
           updateAvailable: !!msg.updateAvailable, error: msg.error || null,
+          policy: msg.policy || null,
         };
         if (msg.current) state.cliVersion = msg.current;
         if (!gearPopover.hidden && state.gearView === "about") renderAboutPanel(false);

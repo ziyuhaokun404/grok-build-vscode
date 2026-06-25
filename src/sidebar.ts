@@ -11,7 +11,14 @@ import { resolveVoiceKey, parseVoiceCommand, DEFAULT_SEND_PHRASE } from "./voice
 import { VoiceRecorder, transcribeAudio, resolveWindowsAudioDevice } from "./voice-recorder";
 import { VoiceStreamer } from "./voice-streamer";
 import { MediaRef, isIncompatibleAgentError } from "./acp-dispatch";
-import { locateGrokCli, extensionWasUpgraded } from "./cli-locator";
+import {
+  locateGrokCli,
+  extensionWasUpgraded,
+  isStdioBrokenGrokVersion,
+  parseGrokVersion,
+  grokUpdatePolicy,
+  GROK_STDIO_DOWNGRADE_TARGET,
+} from "./cli-locator";
 import { TerminalManager } from "./terminal-manager";
 import {
   FileChip,
@@ -163,6 +170,11 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
   private cliPath?: string;
   // Guards the silent grok-CLI auto-update so it runs at most once per activation.
   private cliUpdateChecked = false;
+  // Guards the broken-CLI pin (issue #22) so the version probe + downgrade runs
+  // at most once per activation. Set only once the CLI is confirmed not-broken or
+  // a downgrade succeeds — a failed downgrade leaves it false so a manual restart
+  // can retry.
+  private brokenCliPinned = false;
 
   constructor(
     private context: vscode.ExtensionContext,
@@ -787,13 +799,25 @@ See design doc for the full state machine diagram.`;
     return this.startSession();
   }
 
+  /** Read `grok --version` for the policy checks. Returns "" on failure (logged). */
+  private async readGrokVersion(cliPath: string): Promise<string> {
+    try {
+      const { stdout } = await execFileAsync(cliPath, ["--version"], { timeout: 30_000 });
+      return stdout?.trim() ?? "";
+    } catch (e) {
+      this.output.appendLine(`grok --version failed: ${(e as Error).message}`);
+      return "";
+    }
+  }
+
   /**
    * Silently update the grok CLI when *our extension* was upgraded since the last
    * run (the user opted into silent updates). Runs once per activation, before we
    * spawn grok — so no grok process holds the binary open (matters on Windows) and
    * the next `initialize` reports the new version on the welcome screen. Never on a
    * fresh install (no prior version recorded), never blocking: a failed/slow update
-   * is logged and we proceed with the current binary.
+   * is logged and we proceed with the current binary. Respects the update policy
+   * (issue #22) so it never pulls the CLI onto an unsupported build on Windows.
    */
   private async maybeUpdateCliOnUpgrade(cliPath: string): Promise<void> {
     if (this.cliUpdateChecked) return;
@@ -802,20 +826,83 @@ See design doc for the full state machine diagram.`;
     const lastSeen = this.context.globalState.get<string>(CLI_UPDATE_VERSION_KEY);
     try {
       if (extensionWasUpgraded(lastSeen, current)) {
-        this.output.appendLine(`Extension upgraded ${lastSeen} → ${current}; updating grok CLI (silent).`);
-        this.post({ type: "cliUpdating" });
-        try {
-          const { stdout, stderr } = await execFileAsync(cliPath, ["update"], { timeout: 180_000 });
-          if (stdout?.trim()) this.output.appendLine(stdout.trim());
-          if (stderr?.trim()) this.output.appendLine(stderr.trim());
-        } catch (e) {
-          this.output.appendLine(`grok update failed (continuing with current binary): ${(e as Error).message}`);
+        const policy = grokUpdatePolicy(await this.readGrokVersion(cliPath), process.platform);
+        if (!policy.allow) {
+          // Already at/above the supported ceiling on Windows — updating would land
+          // on a broken build (#22). Skip; maybePinBrokenCli corrects a broken one.
+          this.output.appendLine(
+            `Extension upgraded ${lastSeen} → ${current}; skipping silent CLI update (${policy.note}).`,
+          );
+        } else {
+          const args = policy.target ? ["update", "--version", policy.target] : ["update"];
+          this.output.appendLine(
+            `Extension upgraded ${lastSeen} → ${current}; updating grok CLI (silent: ${args.join(" ")}).`,
+          );
+          this.post({ type: "cliUpdating" });
+          try {
+            const { stdout, stderr } = await execFileAsync(cliPath, args, { timeout: 180_000 });
+            if (stdout?.trim()) this.output.appendLine(stdout.trim());
+            if (stderr?.trim()) this.output.appendLine(stderr.trim());
+          } catch (e) {
+            this.output.appendLine(`grok update failed (continuing with current binary): ${(e as Error).message}`);
+          }
         }
       }
     } finally {
       // Record the current version regardless, so a fresh install sets the baseline
       // (no update) and the *next* upgrade is the one that triggers.
       void this.context.globalState.update(CLI_UPDATE_VERSION_KEY, current);
+    }
+  }
+
+  /**
+   * Pin the grok CLI back to the last working version when it's on a build with
+   * the Windows `agent stdio` regression (issue #22) — 0.2.61–0.2.64 hang the ACP
+   * `initialize` handshake forever (the agent doesn't read stdin until EOF, which
+   * never comes for a live client), so a session can't start at all. We detect the
+   * broken range from `grok --version` *before* spawning and run
+   * `grok update --version 0.2.60` to restore a working CLI. Runs at most once per
+   * activation; best-effort — a failed probe or downgrade is logged and we proceed
+   * (the user still gets the actionable start-failure error). Remove this once xAI
+   * ships a verified fix and `isStdioBrokenGrokVersion` stops matching it.
+   */
+  private async maybePinBrokenCli(cliPath: string): Promise<void> {
+    if (this.brokenCliPinned) return;
+    let versionOutput = "";
+    try {
+      const { stdout } = await execFileAsync(cliPath, ["--version"], { timeout: 30_000 });
+      versionOutput = stdout?.trim() ?? "";
+    } catch (e) {
+      // Couldn't read the version — don't block startup; let the spawn proceed.
+      this.output.appendLine(`grok --version failed (skipping CLI compatibility check): ${(e as Error).message}`);
+      return;
+    }
+    if (!isStdioBrokenGrokVersion(versionOutput, process.platform)) {
+      this.brokenCliPinned = true; // healthy build — no need to re-probe this activation
+      return;
+    }
+    const detected = parseGrokVersion(versionOutput)?.join(".") ?? versionOutput;
+    this.output.appendLine(
+      `Detected grok CLI ${detected}, which has a stdio regression (issue #22); ` +
+        `pinning to ${GROK_STDIO_DOWNGRADE_TARGET}.`,
+    );
+    this.post({ type: "cliUpdating" });
+    try {
+      const { stdout, stderr } = await execFileAsync(
+        cliPath,
+        ["update", "--version", GROK_STDIO_DOWNGRADE_TARGET],
+        { timeout: 180_000 },
+      );
+      if (stdout?.trim()) this.output.appendLine(stdout.trim());
+      if (stderr?.trim()) this.output.appendLine(stderr.trim());
+      this.brokenCliPinned = true;
+      void vscode.window.showInformationMessage(
+        `Grok CLI ${detected} has a bug that prevents the extension from starting a session ` +
+          `(issue #22). Pinned to the last working version ${GROK_STDIO_DOWNGRADE_TARGET} until xAI ships a fix.`,
+      );
+    } catch (e) {
+      // Leave brokenCliPinned false so a manual restart can retry the downgrade.
+      this.output.appendLine(`grok downgrade to ${GROK_STDIO_DOWNGRADE_TARGET} failed: ${(e as Error).message}`);
     }
   }
 
@@ -832,6 +919,10 @@ See design doc for the full state machine diagram.`;
       this.post({ type: "grokUpdateStatus", error: "grok CLI not found" });
       return;
     }
+    // Compute the update policy from the installed version (issue #22) so the menu
+    // can disable the action — with a note — when an update would land on an
+    // unsupported Windows build. Independent of the --check result below.
+    const policy = grokUpdatePolicy(await this.readGrokVersion(cliPath), process.platform);
     try {
       const { stdout } = await execFileAsync(cliPath, ["update", "--check", "--json"], { timeout: 30_000 });
       const info = JSON.parse(stdout) as { currentVersion?: string; latestVersion?: string; updateAvailable?: boolean };
@@ -840,10 +931,11 @@ See design doc for the full state machine diagram.`;
         current: info.currentVersion ?? null,
         latest: info.latestVersion ?? null,
         updateAvailable: !!info.updateAvailable,
+        policy,
       });
     } catch (e) {
       this.output.appendLine(`grok update --check failed: ${(e as Error).message}`);
-      this.post({ type: "grokUpdateStatus", error: (e as Error).message });
+      this.post({ type: "grokUpdateStatus", error: (e as Error).message, policy });
     }
   }
 
@@ -863,6 +955,17 @@ See design doc for the full state machine diagram.`;
       this.post({ type: "onboarding", state: "missing-cli", platform: process.platform });
       return;
     }
+    // Enforce the update policy (issue #22) server-side too — the menu already
+    // disables the action when blocked, but never move the CLI onto an
+    // unsupported Windows build even if the message arrives some other way.
+    const policy = grokUpdatePolicy(await this.readGrokVersion(cliPath), process.platform);
+    if (!policy.allow) {
+      void vscode.window.showInformationMessage(
+        policy.note ?? "Grok CLI updates are paused for compatibility.",
+      );
+      return;
+    }
+    const updateArgs = policy.target ? ["update", "--version", policy.target] : ["update"];
     // The update tears down the whole pool (the binary is locked while any session
     // holds it open), so a session that's mid-turn or waiting on you would be
     // interrupted. Warn first if any are — now that several can run at once, this
@@ -889,7 +992,7 @@ See design doc for the full state machine diagram.`;
     this.post({ type: "clearMessages" });
     this.post({ type: "cliUpdating" });
     try {
-      const { stdout, stderr } = await execFileAsync(cliPath, ["update"], { timeout: 180_000 });
+      const { stdout, stderr } = await execFileAsync(cliPath, updateArgs, { timeout: 180_000 });
       if (stdout?.trim()) this.output.appendLine(stdout.trim());
       if (stderr?.trim()) this.output.appendLine(stderr.trim());
     } catch (e) {
@@ -1033,6 +1136,13 @@ See design doc for the full state machine diagram.`;
     // If our extension was upgraded, silently bring the CLI up to date *before*
     // spawning it (once per activation). Bail if a newer start superseded us.
     await this.maybeUpdateCliOnUpgrade(cliPath);
+    if (gen !== session.gen) return undefined;
+
+    // If the (possibly just-updated) CLI is on a build with the Windows stdio
+    // regression (issue #22), pin it back to the last working version before we
+    // spawn — otherwise the ACP handshake hangs forever. Runs after the silent
+    // update so it corrects an upgrade that landed on a broken latest.
+    await this.maybePinBrokenCli(cliPath);
     if (gen !== session.gen) return undefined;
 
     const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
@@ -1348,6 +1458,18 @@ See design doc for the full state machine diagram.`;
       this.emit(session, { type: "setBusy", value: false });
       if (/auth|unauthor|forbidden|401|403|api[_\s-]?key|credential|sign.?in/i.test(msg)) {
         this.emit(session, { type: "onboarding", state: "auth-required" });
+      } else if (process.platform === "win32" && /timed out: initialize|exited \(code null\)/i.test(msg)) {
+        // The signature of the 0.2.61+ Windows stdio regression (issue #22): the
+        // handshake never completes. The auto-pin should have prevented this, so
+        // we land here only when the downgrade failed or the broken range moved.
+        // Point the user at the manual workaround instead of a bare timeout.
+        this.emit(session, {
+          type: "error",
+          text:
+            `Failed to start Grok: ${msg}. This is a known regression in Grok CLI 0.2.61+ ` +
+            `(issue #22). Workaround: run \`grok update --version ${GROK_STDIO_DOWNGRADE_TARGET}\` in a terminal, ` +
+            `then start a new session.`,
+        });
       } else {
         this.emit(session, { type: "error", text: `Failed to start Grok: ${msg}` });
       }

@@ -1,7 +1,8 @@
 # `grok agent stdio` Windows regression — stdin not read until EOF (issue #22)
 
 **Status:** confirmed upstream Grok CLI regression. First broken build **0.2.61**; last
-working build **0.2.60**. Reproduced on **0.2.64** (native Windows). Tracked in
+working build **0.2.60**. Reproduced on **0.2.64** (native Windows). **Windows-only** —
+macOS runs the same broken build fine (see § macOS is not affected). Tracked in
 extension issue [#22](https://github.com/phuryn/grok-build-vscode/issues/22).
 
 ## Symptom
@@ -123,3 +124,27 @@ verified.**
 >
 > **Likely area:** Windows async stdin read in the `agent stdio` path between
 > 0.2.60 and 0.2.61 (per-line read appears to wait for stream close).
+
+## macOS is not affected (verified 2026-06-25)
+
+Ran the identical stdin-open `initialize` probe on **macOS (Apple Silicon)** against
+the broken build to check whether the regression is platform-specific:
+
+- **grok 0.2.64** (the same build that hangs on Windows): `initialize` answered in
+  **~450 ms with stdin held open**, **4/4 runs**.
+- **grok 0.1.216**: answered in ~520 ms with stdin open.
+
+The EOF-gated-first-read hang **does not reproduce on macOS** — the bug is
+**Windows-only**. This confirms the workaround's `win32` gate is correct:
+`isStdioBrokenGrokVersion` / `grokUpdatePolicy` (`src/cli-locator.ts`) early-return to
+a no-op on every non-win32 platform, so the auto-pin and update-block never fire off
+Windows regardless of installed version. No code change needed; widen/remove the gate
+only if the regression is later observed on another platform.
+
+Probe: `research/stdio-eof-mac-probe.cjs` (keeps stdin open, asserts an `initialize`
+response — the exact condition that hangs on Windows).
+
+**Follow-up sent to xAI (2026-06-25):** submitted via the Grok CLI `/feedback` command,
+noting that the regression first reported on Windows is confirmed Windows-only and that
+macOS (0.2.64 and 0.1.216) answers the ACP handshake normally. Grok acked
+("Thanks for the feedback! The Grok Build team is on it.").

@@ -70,6 +70,8 @@
     slashActive: 0,
     pendingDiffByToolCallId: new Map(),
     toolItemsByToolCallId: new Map(),
+    toolFailuresById: new Map(), // toolCallId → error text, so a single-call group carries it onto the flat
+
     agentRenderScheduled: false,
     thoughtBuffer: "",
     thoughtRenderScheduled: false,
@@ -282,7 +284,7 @@
 
   // ---------- markdown ----------
 
-  const { looksLikeFileRef, formatRelativeTime, modelDisplayName, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, shouldStickToBottom, splitMath, stripUnsupportedTex } = globalThis.GrokWebviewHelpers;
+  const { looksLikeFileRef, formatRelativeTime, modelDisplayName, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText } = globalThis.GrokWebviewHelpers;
 
   function escapeAttr(s) {
     return String(s == null ? "" : s)
@@ -1077,7 +1079,7 @@
     const fine = document.createElement("div");
     fine.className = "popover-fineprint";
     fine.textContent =
-      "Unofficial · community-built · MIT. " +
+      "Unofficial · community-built · MIT | " +
       "A VS Code UI for xAI’s Grok Build CLI - not affiliated with or endorsed by xAI. " +
       "Grok, Grok Build, and xAI are trademarks of xAI; this project uses those names only to describe what it’s compatible with.";
     gearPopover.appendChild(fine);
@@ -1455,6 +1457,7 @@
     state.welcomeVisible = true;
     state.pendingDiffByToolCallId.clear();
     state.toolItemsByToolCallId.clear();
+    state.toolFailuresById.clear();
     state.activeAgentEl = null;
     state.activeAgentRaw = "";
     state.activeUserEl = null;
@@ -1609,6 +1612,13 @@
     web_fetch: "Fetch", webfetch: "Fetch",
   };
 
+  // Verb by ACP kind — the fallback when the tool name isn't in TOOL_VERB (a tool
+  // we didn't predict still gets a sensible verb from its kind).
+  const KIND_VERB = {
+    read: "Read", search: "Search", edit: "Edit", write: "Write",
+    delete: "Delete", execute: "Run", fetch: "Generate",
+  };
+
   function toolName(call) {
     return call.tool || call.name || call.title || "";
   }
@@ -1622,61 +1632,102 @@
     if (p === "." || p === "./") return "root folder";
     return p.split("/").pop() || p;
   }
+  // grok finalizes a tool call's kind over an update, but the *initial* tool_call
+  // (and the persisted replay form) often arrives with `kind` missing and only a
+  // leading-verb title ("Shell", "Grep", "Glob", "Read", "Write", "Delete").
+  // Recover the ACP kind from that title so categorization/labels don't fall
+  // through to the "command" catch-all.
+  function titleKind(call) {
+    const t = (call.title || "").trim().toLowerCase();
+    if (/^read\b/.test(t)) return "read";
+    if (/^(grep|glob|search|ripgrep)\b/.test(t)) return "search";
+    if (/^(shell|execute|run|bash)\b/.test(t)) return "execute";
+    if (/^(write|create)\b/.test(t)) return "write";
+    if (/^edit\b/.test(t)) return "edit";
+    if (/^delete\b/.test(t)) return "delete";
+    if (/^generate/.test(t)) return "fetch";
+    return "";
+  }
+  function toolKind(call) {
+    return call.kind || titleKind(call);
+  }
+  // Coarse bucket for the rollup summary, driven by the ACP kind (then the title,
+  // then the legacy name map). Reads and searches (grep/glob) are both read-only
+  // "exploration"; edits/writes are file changes; delete and execute stand alone.
+  // This is the fix for "ran 5 commands" when grok actually read 5 files / ran 5
+  // globs — those are `read`/`search`, not `execute`.
   function categorize(call) {
     const n = toolName(call);
-    if (call.kind === "read" || /^(read_file|file_read|list_dir|list_directory)$/.test(n)) return "explore";
-    if (/^(web_search|search_web|web_fetch|webfetch)$/.test(n)) return "web";
-    return "other";
+    // Web search/fetch first: grok ships these with a "Web search: …" title and no
+    // `kind`, so they'd otherwise fall through to the command catch-all (the exact
+    // "ran N commands" miscount the user saw).
+    if (/web.?search|web.?fetch|search_web/i.test(n)) return "web";
+    switch (toolKind(call)) {
+      case "read": case "search": return "explore";
+      case "edit": case "write": return "edit";
+      case "delete": return "delete";
+      case "fetch": return "generate";
+      case "execute": return "command";
+    }
+    const v = TOOL_VERB[n];
+    if (v === "Read" || v === "List" || v === "Search") return "explore";
+    if (v === "Edit" || v === "Write") return "edit";
+    if (v === "Web search" || v === "Fetch") return "web";
+    return "command";
   }
   function summarizeTools(calls) {
-    let explore = 0, web = 0, other = 0;
-    for (const c of calls) {
-      const cat = categorize(c);
-      if (cat === "explore") explore++;
-      else if (cat === "web") web++;
-      else other++;
-    }
+    const n = { explore: 0, edit: 0, delete: 0, generate: 0, web: 0, command: 0 };
+    for (const c of calls) n[categorize(c)]++;
     const parts = [];
-    if (explore) parts.push(`Explored ${explore} item${explore === 1 ? "" : "s"}`);
-    if (web) parts.push("searched web");
-    if (other) parts.push(`ran ${other} command${other === 1 ? "" : "s"}`);
+    if (n.explore) parts.push(`explored ${n.explore} item${n.explore === 1 ? "" : "s"}`);
+    if (n.edit) parts.push(`edited ${n.edit} file${n.edit === 1 ? "" : "s"}`);
+    if (n.delete) parts.push(`deleted ${n.delete} file${n.delete === 1 ? "" : "s"}`);
+    if (n.generate) parts.push(`generated ${n.generate} item${n.generate === 1 ? "" : "s"}`);
+    if (n.web) parts.push("searched web");
+    if (n.command) parts.push(`ran ${n.command} command${n.command === 1 ? "" : "s"}`);
     return parts.length ? parts.join(", ").replace(/^./, (c) => c.toUpperCase()) : "Tool calls";
   }
 
   function inProgressLabel(call) {
     const name = toolName(call);
+    const kind = toolKind(call);
     const filePath = toolFilePath(call);
     if (/^(list_dir|list_directory)$/.test(name)) {
       return filePath ? `Listing ${prettyPath(filePath)}` : "Listing files";
     }
-    if (/^(read_file|file_read)$/.test(name) || call.kind === "read") {
+    if (/^(read_file|file_read)$/.test(name) || kind === "read") {
       return filePath ? `Reading ${prettyPath(filePath)}` : "Reading file";
     }
     if (/^(web_search|search_web)$/.test(name)) return "Searching web";
     if (/^(web_fetch|webfetch)$/.test(name)) return "Fetching page";
-    if (/^(grep|ripgrep|search_files)$/.test(name)) return "Searching code";
-    if (/^(write_file|file_write|write|edit_file|search_replace|str_replace)$/.test(name) || call.kind === "edit") {
+    if (/^(grep|ripgrep|search_files)$/.test(name) || kind === "search") return "Searching";
+    if (/^(write_file|file_write|write|edit_file|search_replace|str_replace)$/.test(name) || kind === "edit" || kind === "write") {
       return filePath ? `Editing ${prettyPath(filePath)}` : "Editing file";
     }
-    if (/^(bash|execute|run_command|run_terminal_command|shell|run_bash)$/.test(name) || call.kind === "execute") {
+    if (kind === "delete") return filePath ? `Deleting ${prettyPath(filePath)}` : "Deleting file";
+    if (kind === "fetch") return "Generating";
+    if (/^(bash|execute|run_command|run_terminal_command|shell|run_bash)$/.test(name) || kind === "execute") {
       return "Running command";
     }
-    return name ? `Running ${name}` : "Running tool";
+    // A tool we didn't predict still shows — but never echo a long title verbatim.
+    return name && name.length < 30 ? `Running ${name}` : "Running tool";
   }
 
   function toolLabel(call) {
     const name = toolName(call);
-    const verb = TOOL_VERB[name] ||
-      (call.kind === "read" ? "Read" : call.kind === "edit" ? "Edit" :
-       call.kind === "execute" ? "Run" : null);
+    const kind = toolKind(call);
+    const verb = TOOL_VERB[name] || KIND_VERB[kind] || null;
     const r = call.rawInput || call.input || {};
     const filePath = toolFilePath(call);
     const command = r.command || r.cmd;
+    const pattern = r.glob_pattern || r.pattern || r.query || r.regex || r.search;
 
     let target = "";
-    if (filePath) {
+    if (kind === "search" && pattern) {
+      target = pattern.length > 40 ? pattern.slice(0, 40) + "…" : pattern;
+    } else if (filePath) {
       const base = prettyPath(filePath);
-      const isRead = name === "read_file" || name === "file_read";
+      const isRead = name === "read_file" || name === "file_read" || kind === "read";
       if (isRead && r.offset != null && r.limit != null) {
         const end = Number(r.offset) + Number(r.limit) - 1;
         target = `${base} lines ${r.offset}-${end}`;
@@ -1685,16 +1736,46 @@
       }
     } else if (command) {
       target = command.length > 40 ? command.slice(0, 40) + "…" : command;
-    } else {
-      const fallback = Object.values(r).find(
-        (v) => typeof v === "string" && v.length > 0 && v.length < 120
-      ) || "";
-      target = fallback ? fallback.split("/").pop() || fallback : "";
+    } else if (pattern) {
+      target = pattern.length > 40 ? pattern.slice(0, 40) + "…" : pattern;
     }
+    // Deliberately NO scrape of arbitrary rawInput values: that leaked raw regexes
+    // and globs (e.g. "image_edit|/imagine") as bare labels. For a tool we didn't
+    // predict, fall back to grok's own already-formatted title, which is safe and
+    // human-readable, so the call still shows — just without a synthesized target.
 
     if (verb && target) return `${verb} ${target}`;
     if (verb) return verb;
+    const title = (call.title || "").trim();
+    if (title) return title.length > 50 ? title.slice(0, 47) + "…" : title;
     return name || "tool";
+  }
+
+  // Category icon for a tool row (lucide outline; sized + colored by CSS via
+  // currentColor). One icon per row/group, picked by the strongest action present:
+  // square-terminal (command/delete/generate/other) > pencil (edit/write) >
+  // folder-search (search) > file (read) — so a Read+Generate batch reads as a
+  // terminal action. Mirrors `toolKind`, the same signal the summary uses.
+  const TOOL_ICON = {
+    file: `<svg class="tool-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></svg>`,
+    search: `<svg class="tool-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 20H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H20a2 2 0 0 1 2 2v3.5"/><circle cx="16.5" cy="16.5" r="2.5"/><path d="M21 21l-1.6-1.6"/></svg>`,
+    pencil: `<svg class="tool-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21.17 6.81a1 1 0 0 0-3.98-3.99L3.84 16.17a2 2 0 0 0-.5.83l-1.32 4.35a.5.5 0 0 0 .62.62l4.35-1.32a2 2 0 0 0 .83-.5z"/><path d="M15 5l4 4"/></svg>`,
+    terminal: `<svg class="tool-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="m7 11 2-2-2-2"/><path d="M11 13h4"/></svg>`,
+  };
+  function toolIconRank(call) {
+    const k = toolKind(call);
+    if (k === "execute" || k === "delete" || k === "fetch") return 4;
+    if (k === "edit" || k === "write") return 3;
+    if (k === "search") return 2;
+    if (k === "read") return 1;
+    if (/web.?search|web.?fetch|search_web/i.test(toolName(call))) return 2;
+    return 4; // unpredicted tool → square-terminal catch-all
+  }
+  const TOOL_ICON_BY_RANK = { 1: TOOL_ICON.file, 2: TOOL_ICON.search, 3: TOOL_ICON.pencil, 4: TOOL_ICON.terminal };
+  function toolIconFor(calls) {
+    let rank = 1;
+    for (const c of calls) rank = Math.max(rank, toolIconRank(c));
+    return TOOL_ICON_BY_RANK[rank];
   }
 
   function closeToolGroup() {
@@ -1705,8 +1786,14 @@
     if (calls.length === 1) {
       const flat = document.createElement("div");
       flat.className = "tool-flat";
-      flat.textContent = toolLabel(calls[0]);
+      flat.innerHTML = toolIconFor(calls); // icon first
+      const lbl = document.createElement("span");
+      lbl.className = "tool-label";
+      lbl.textContent = toolLabel(calls[0]);
+      flat.appendChild(lbl);
       el.replaceWith(flat);
+      const fail = calls[0].toolCallId && state.toolFailuresById.get(calls[0].toolCallId);
+      if (fail) applyToolFailure(flat, fail); // a single tool that failed carries its error
     } else {
       el.classList.remove("in-progress");
       const hdr = el.querySelector(".tool-group-header");
@@ -1719,6 +1806,17 @@
     clearWelcome();
     hideGrokking(); // a tool card is the first content of this turn
     if (!state.activeToolGroupEl) {
+      // Starting a fresh batch of tools after some agent narration: detach the
+      // active agent bubble so the NEXT narration opens a new bubble *below* this
+      // group, rather than coalescing back into the bubble above it. grok narrates
+      // each step then runs its tools (narrate → tools → narrate → tools …); this
+      // keeps that order so each summary sits under the sentence that introduced it
+      // instead of all narration piling above N consecutive summaries. Flush first
+      // — agent rendering is deferred to a rAF, so detaching without flushing would
+      // discard the buffered narration (leaving an empty bubble).
+      flushAgent();
+      state.activeAgentEl = null;
+      state.activeAgentRaw = "";
       const el = document.createElement("div");
       el.className = "tool-group in-progress";
       el._calls = [];
@@ -1745,6 +1843,7 @@
     if (call.toolCallId) state.toolItemsByToolCallId.set(call.toolCallId, item);
 
     hdr.innerHTML =
+      toolIconFor(el._calls) +
       `<span class="tool-group-label">${escapeHtml(inProgressLabel(call))}</span>` +
       `<span class="tool-dots" aria-hidden="true"><span>.</span><span>.</span><span>.</span></span>` +
       `<span class="tool-chevron" aria-hidden="true">›</span>`;
@@ -1779,6 +1878,29 @@
     };
     item.appendChild(preview);
     scrollToBottom();
+  }
+
+  // Render a tool failure on its row: the row goes error-colored and the reason
+  // (grok's "image reference not readable: …" etc.) shows beneath it. Idempotent.
+  function applyToolFailure(rowEl, message) {
+    if (!rowEl || rowEl.classList.contains("tool-failed")) return;
+    rowEl.classList.add("tool-failed");
+    const err = document.createElement("div");
+    err.className = "tool-error";
+    err.textContent = message;
+    rowEl.appendChild(err);
+  }
+
+  function markToolFailed(toolCallId, message) {
+    if (!toolCallId) return;
+    state.toolFailuresById.set(toolCallId, message); // so a single-call group carries it onto the flat
+    const item = state.toolItemsByToolCallId.get(toolCallId);
+    if (item) {
+      applyToolFailure(item, message);
+      const group = item.closest && item.closest(".tool-group");
+      if (group) group.classList.add("has-error"); // collapsed group still signals the failure
+      scrollToBottom();
+    }
   }
 
   function addSessionContextBanner() {
@@ -1926,14 +2048,15 @@
       el.className = "msg thinking";
       const hdr = document.createElement("div");
       hdr.className = "thinking-header";
-      hdr.innerHTML = `<span class="thinking-chevron">▶</span><span class="thinking-label loading-dots">Thinking</span>`;
+      // Chevron on the RIGHT (after the label), same glyph as tool groups; expand
+      // state is driven by the `.expanded` class (CSS rotates it), like tools.
+      hdr.innerHTML = `<span class="thinking-label loading-dots">Thinking</span><span class="thinking-chevron" aria-hidden="true">›</span>`;
       const body = document.createElement("div");
       body.className = "thinking-body";
       body.hidden = true;
       hdr.onclick = () => {
-        const open = body.hidden;
-        body.hidden = !open;
-        hdr.querySelector(".thinking-chevron").textContent = open ? "▼" : "▶";
+        body.hidden = !body.hidden;
+        el.classList.toggle("expanded", !body.hidden);
       };
       el.appendChild(hdr);
       el.appendChild(body);
@@ -3223,6 +3346,13 @@
             addRestoredQuestionCard([], t);
             break;
           }
+        }
+        // A failed tool (e.g. `image_to_video failed: image reference not readable`)
+        // — surface the reason on its row instead of silently dropping it.
+        const failure = toolFailureText(msg.call);
+        if (failure) {
+          markToolFailed(msg.call?.toolCallId, failure);
+          break;
         }
         const c = msg.call?.content;
         if (Array.isArray(c)) {

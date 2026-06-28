@@ -47,6 +47,19 @@ export function isPrimerText(text: string): boolean {
   return PRIMER_PATTERN.test(text ?? "");
 }
 
+/** True when a grok-generated session summary/title reads like it was derived from
+ *  the hidden primer (the first message of every extension session), e.g.
+ *  "Grok Build VSCode Primer v4 Plan Mode" or "Hidden Primer v4". grok summarizes
+ *  from message #1, so a primer-only session gets one of these titles. Used as the
+ *  cheap pre-filter for the empty-session sweep (the authoritative check reads the
+ *  chat history); deliberately conservative — it requires "primer" plus a
+ *  product/context word so a real session that merely mentions "primer" won't match. */
+export function isPrimerSummary(summary: string): boolean {
+  const t = (summary ?? "").toLowerCase();
+  if (!t.includes("primer")) return false;
+  return /grok|vs ?code|plan mode|hidden/.test(t);
+}
+
 export const GROK_PRIMER = `${PRIMER_MARKER}
 
 ## HIDDEN PRIMER

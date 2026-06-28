@@ -327,22 +327,31 @@ code {
   white-space: normal;
 }
 .thinking-header {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 5px;
   cursor: pointer;
   color: var(--vscode-descriptionForeground);
   font-size: 11px;
-  padding: 3px 10px;
-  border-radius: 4px;
+  padding: 3px 0;
   user-select: none;
 }
-.thinking-header:hover { background: var(--vscode-toolbar-hoverBackground); }
-.thinking-chevron { font-size: 9px; opacity: 0.7; }
+.thinking-header:hover { color: var(--vscode-foreground); }
+/* Chevron on the right (after the label), same glyph + rotate-on-expand as tool groups. */
+.thinking-chevron {
+  margin-left: 4px;
+  font-size: 13px;
+  line-height: 1;
+  opacity: 0.45;
+  transition: opacity 0.12s, transform 0.12s;
+}
+.thinking-header:hover .thinking-chevron { opacity: 0.8; }
+.msg.thinking.expanded .thinking-chevron { opacity: 0.8; transform: rotate(90deg); }
 .thinking-body {
-  margin-top: 4px;
-  padding: 6px 10px;
-  border-left: 2px solid var(--vscode-editorWidget-border);
+  margin-top: 2px;
+  padding: 2px 0 2px 15px;
+  border-left: 1px solid var(--vscode-panel-border);
+  margin-left: 7px;
   color: var(--vscode-descriptionForeground);
   font-style: italic;
   font-size: 11px;
@@ -384,10 +393,13 @@ code {
 /* ---- tool group ---- */
 
 .tool-flat {
-  font-size: 11px;
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  font-size: var(--vscode-font-size);
   color: var(--vscode-descriptionForeground);
-  padding: 2px var(--pad);
-  font-family: var(--vscode-editor-font-family);
+  padding: 3px 0;
+  font-family: var(--vscode-font-family);
 }
 
 /* Generated media (grok /imagine image, /imagine-video video) */
@@ -403,7 +415,7 @@ code {
      (click / Open in VS Code shows full res). */
   position: relative;
   width: min(100%, 320px);
-  margin: 6px var(--pad);
+  margin: 6px 0;
 }
 .generated-image img,
 .generated-image video {
@@ -461,33 +473,40 @@ code {
 }
 
 .tool-group {
-  font-size: 11px;
+  font-size: var(--vscode-font-size);
 }
 .tool-group-header {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
   cursor: pointer;
   color: var(--vscode-descriptionForeground);
-  padding: 3px 10px;
-  border-radius: 4px;
-  font-family: var(--vscode-editor-font-family);
+  padding: 3px 0;
+  font-family: var(--vscode-font-family);
   user-select: none;
 }
-.tool-group-header:hover { background: var(--vscode-toolbar-hoverBackground); }
+.tool-group-header:hover { color: var(--vscode-foreground); }
+/* Category icon — size + color (currentColor) set here, overriding the SVG's own attrs. */
+.tool-icon { width: 15px; height: 15px; flex: 0 0 auto; margin-top: 1px; opacity: 0.85; }
+.tool-group-header:hover .tool-icon { opacity: 1; }
 .tool-chevron {
-  font-size: 14px;
+  font-size: 13px;
   line-height: 1;
-  opacity: 0;
+  align-self: center;
+  opacity: 0.45;
   margin-left: 4px;
   transition: opacity 0.12s, transform 0.12s;
 }
-.tool-group-header:hover .tool-chevron { opacity: 0.6; }
+.tool-group-header:hover .tool-chevron { opacity: 0.8; }
 .tool-group.expanded .tool-chevron {
-  opacity: 0.6;
+  opacity: 0.8;
   transform: rotate(90deg);
 }
-.tool-group-label { color: var(--vscode-foreground); }
+.tool-group.in-progress .tool-chevron { display: none; } /* can't expand while running */
+/* Live (running) group stays active; it recedes to muted once it completes. */
+.tool-group.in-progress .tool-group-header { color: var(--vscode-foreground); }
+.tool-group.in-progress .tool-icon { opacity: 1; }
+.tool-group-label { color: inherit; }
 .tool-dots { display: none; }
 .tool-group.in-progress .tool-dots {
   display: inline-flex;
@@ -506,17 +525,19 @@ code {
 }
 .tool-group-body {
   margin-top: 2px;
-  padding: 2px 0;
-  border-left: 2px solid var(--vscode-charts-blue, #569cd6);
-  margin-left: 10px;
+  padding-left: 15px;
+  border-left: 1px solid var(--vscode-panel-border);
+  margin-left: 7px;
 }
 .tool-item {
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
+  align-items: flex-start;
   gap: 6px;
-  padding: 3px 10px;
-  font-family: var(--vscode-editor-font-family);
+  padding: 3px 0;
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+  color: var(--vscode-descriptionForeground);
 }
 .tool-item-subtitle {
   font-size: 10px;
@@ -527,13 +548,28 @@ code {
 .tool-item .preview-link {
   background: none;
   border: none;
-  color: var(--vscode-textLink-foreground);
+  color: var(--vscode-descriptionForeground);
   cursor: pointer;
   padding: 0;
   font-size: 11px;
   text-decoration: underline;
   text-align: left;
   flex-basis: 100%;
+}
+.tool-item .preview-link:hover { color: var(--vscode-textLink-foreground); }
+/* Failed tool call — the row goes error-colored and shows grok's reason. */
+.tool-flat.tool-failed,
+.tool-item.tool-failed { color: var(--vscode-errorForeground); }
+.tool-flat.tool-failed .tool-icon,
+.tool-item.tool-failed .tool-icon { opacity: 1; }
+.tool-group.has-error .tool-group-header .tool-icon { color: var(--vscode-errorForeground); opacity: 1; }
+.tool-error {
+  flex-basis: 100%;
+  color: var(--vscode-errorForeground);
+  font-size: 11px;
+  margin-top: 2px;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 .tool-kind {
   font-size: 10px;

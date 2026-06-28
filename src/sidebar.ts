@@ -36,6 +36,7 @@ import { appendPlanEntry, decideRestoreState } from "./plan-restore";
 import { planReviewFileBaseName, sanitizePlanReviewFilePart } from "./plan-review";
 import { GROK_PRIMER, isPrimerText } from "./grok-primer";
 import {
+  EMPTY_PRIMER_MAX_MESSAGES,
   SessionListEntry,
   SessionMetaOverrides,
   carrySessionName,
@@ -44,6 +45,7 @@ import {
   deleteSessionDir,
   fallbackName,
   indexSessions,
+  isEmptyPrimerSession,
   readSessionEntries,
   resolveGrokHome,
   sessionsDirFor,
@@ -180,7 +182,13 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
   private static readonly MAX_LIVE_SESSIONS = 8;
   private static readonly IDLE_TTL_MS = 60 * 60 * 1000; // 1h
   private static readonly REAP_INTERVAL_MS = 5 * 60 * 1000; // sweep every 5 min
+  // The empty-session sweep only scans the newest N by mtime — empty primer
+  // sessions accumulate at the top (a fresh one each open), so this catches them
+  // while keeping the one-shot scan bounded on a large store.
+  private static readonly SWEEP_SCAN_LIMIT = 300;
   private reaper?: ReturnType<typeof setInterval>;
+  /** Guards {@link sweepEmptyPrimerSessions} to one run per activation. */
+  private sweptEmptySessions = false;
   private output: vscode.OutputChannel;
   private chips: FileChip[] = [];
   private editorWatcher?: vscode.Disposable;
@@ -1901,6 +1909,20 @@ See design doc for the full state machine diagram.`;
       }
     }
 
+    // A live, still-empty (primer-only) session must read "New session", never grok's
+    // primer-derived summary — even after grok flushes summary.json. The truth is in
+    // memory (hasHistory), so override the disk-derived name here. This is the single
+    // untitled session the user starts from; abandoning it deletes it (parkFocused).
+    const liveEmpty = new Set<string>();
+    for (const s of this.pool) {
+      if (s.activeSessionId && !s.hasHistory) liveEmpty.add(s.activeSessionId);
+    }
+    if (liveEmpty.size) {
+      for (const e of pageEntries) {
+        if (!e.customName && liveEmpty.has(e.id)) e.displayName = "New session";
+      }
+    }
+
     // Dashboard dot per grok-session-id (live status + persisted unread badge) for the rows we send,
     // plus any live pool member not yet written to disk (a brand-new session has no summary.json).
     const dots: Record<string, Dot> = {};
@@ -2603,7 +2625,9 @@ See design doc for the full state machine diagram.`;
       this.addActiveEditorChip();
     }
     this.postVoiceConfigured();
-    void this.startSession();
+    // Sweep stale empty primer sessions once the first session is live (so the
+    // newly-focused session is excluded from the sweep).
+    void this.startSession().then(() => this.sweepEmptyPrimerSessions());
   }
 
   private postChips(): void {
@@ -2686,7 +2710,96 @@ See design doc for the full state machine diagram.`;
   private parkFocused(): void {
     const cur = this.focused;
     const busy = cur.status === "working" || cur.status === "needs-you";
-    if (!cur.hasHistory && !cur.afterTurn && !busy) this.disposeSession(cur);
+    if (cur.hasHistory || cur.afterTurn || busy) return; // real/active work — keep it parked & alive
+    // Empty (primer-only) session being left behind (New Session, or switching to
+    // another): tear down its process AND delete its on-disk dir so it doesn't pile
+    // up in history (#24). The next focused session becomes the single live "New
+    // session"; abandoning this one removes it entirely.
+    this.disposeSession(cur);
+    this.removeSessionFromDisk(cur.activeSessionId);
+    this.postSessionsList();
+  }
+
+  /** Delete a session's on-disk dir + drop its meta override and read-cache entry.
+   *  Used when an empty (primer-only) session is abandoned or swept. Best-effort —
+   *  a locked/already-gone dir is logged, not thrown. */
+  private removeSessionFromDisk(id: string | undefined): void {
+    if (!id) return;
+    const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+    const grokHome = resolveGrokHome(process.env);
+    try {
+      deleteSessionDir({ fs: defaultFs, grokHome, cwd, id });
+    } catch (e) {
+      this.output.appendLine(`[sessions] could not remove empty session ${id}: ${(e as Error).message}`);
+    }
+    const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    if (overrides[id]) {
+      const next = { ...overrides };
+      delete next[id];
+      void this.context.globalState.update(SESSION_META_KEY, next);
+    }
+    this.sessionCache.delete(id);
+  }
+
+  /** One-shot cleanup (per activation) of empty, primer-only sessions left on disk by
+   *  earlier runs — the "extra sessions I didn't create" of #24. Scans the newest
+   *  slice by mtime (bounded, so it stays cheap on a large store), confirms each
+   *  candidate is genuinely primer-only by reading its chat history, and deletes it.
+   *  Never touches a live session, a renamed one, or a session that isn't ours. */
+  private sweepEmptyPrimerSessions(): void {
+    if (this.sweptEmptySessions) return;
+    this.sweptEmptySessions = true;
+    const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+    const grokHome = resolveGrokHome(process.env);
+    const log = (m: string) => this.output.appendLine(m);
+    const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    const liveIds = new Set<string>();
+    for (const s of this.pool) if (s.activeSessionId) liveIds.add(s.activeSessionId);
+    if (this.focused.activeSessionId) liveIds.add(this.focused.activeSessionId);
+
+    const sessDir = sessionsDirFor(grokHome, cwd);
+    const index = indexSessions({ fs: defaultFs, grokHome, cwd, log });
+    const removed: string[] = [];
+    for (const { id } of index.slice(0, GrokSidebar.SWEEP_SCAN_LIMIT)) {
+      if (liveIds.has(id) || overrides[id]?.customName?.trim()) continue;
+      let raw: any;
+      try {
+        raw = JSON.parse(defaultFs.readFileSync(path.join(sessDir, id, "summary.json"), "utf8"));
+      } catch {
+        continue;
+      }
+      const numMessages = typeof raw?.num_messages === "number" ? raw.num_messages : 0;
+      if (numMessages > EMPTY_PRIMER_MAX_MESSAGES) continue; // real session — skip without reading content
+      let chatHistory: string | undefined;
+      try {
+        chatHistory = defaultFs.readFileSync(path.join(sessDir, id, "chat_history.jsonl"), "utf8");
+      } catch {
+        chatHistory = undefined;
+      }
+      const empty = isEmptyPrimerSession({
+        numMessages,
+        summary: typeof raw?.session_summary === "string" ? raw.session_summary : "",
+        generatedTitle: typeof raw?.generated_title === "string" ? raw.generated_title : "",
+        chatHistory,
+      });
+      if (!empty) continue;
+      try {
+        deleteSessionDir({ fs: defaultFs, grokHome, cwd, id });
+        removed.push(id);
+      } catch (e) {
+        log(`[sessions] could not sweep ${id}: ${(e as Error).message}`);
+      }
+    }
+    if (removed.length) {
+      const next = { ...overrides };
+      for (const id of removed) {
+        delete next[id];
+        this.sessionCache.delete(id);
+      }
+      void this.context.globalState.update(SESSION_META_KEY, next);
+      log(`[sessions] swept ${removed.length} empty primer session(s) from history`);
+      this.postSessionsList();
+    }
   }
 
   /** Tear down one session's live process and drop it from the pool. Bumps its
@@ -2912,8 +3025,8 @@ See design doc for the full state machine diagram.`;
   <main id="messages" class="messages">
     <div class="welcome" id="welcome">
       <span class="welcome-mark" role="img" aria-label="Grok" style="--welcome-mark:url('${resourceUri("grok-icon.svg")}')"></span>
-      <h2>Grok Build (Unofficial)</h2>
-      <p class="welcome-byline muted">by Paweł Huryn (<a href="https://www.productcompass.pm/" class="muted-link">The Product Compass</a>), <a href="#" id="welcome-about-link" class="muted-link">about</a></p>
+      <h2>Grok Build (Community)</h2>
+      <p class="welcome-byline muted">by Paweł Huryn (<a href="https://www.productcompass.pm/" class="muted-link">The Product Compass Newsletter</a>)</p>
       <p id="welcome-version" class="muted loading-dots">Starting</p>
       <div id="welcome-onboarding"></div>
     </div>

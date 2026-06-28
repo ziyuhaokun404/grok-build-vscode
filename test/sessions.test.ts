@@ -4,14 +4,101 @@ import {
   FsLike,
   SessionMetaOverrides,
   carrySessionName,
+  classifyUserQueries,
   clearSessions,
   deleteSessionDir,
+  extractUserQueries,
   fallbackName,
   indexSessions,
+  isEmptyPrimerSession,
   listSessions,
   readSessionEntries,
   sessionsDirFor,
 } from "../src/sessions";
+
+// Real grok chat_history.jsonl shape: role keyed on `type`, content is an array of
+// {type:"text",text}, injected context (<user_info>/<system-reminder>) carries a
+// `synthetic_reason`, and the user's prompt is wrapped in <user_query>. The primer
+// is always the first real query.
+const userMsg = (text: string, synthetic?: string) =>
+  JSON.stringify({ type: "user", content: [{ type: "text", text }], ...(synthetic ? { synthetic_reason: synthetic } : {}) });
+const PRIMER_LINE = userMsg("<user_query>\n[grok-build-vscode primer v4]\n\n## HIDDEN PRIMER\nstuff\n</user_query>");
+const SYSTEM_LINE = JSON.stringify({ type: "system", content: [{ type: "text", text: "You are an AI coding assistant…" }] });
+const USERINFO_LINE = userMsg("<user_info>\nOS: darwin\n</user_info>");
+const REMINDER_LINE = userMsg("<system-reminder>\nbackground task X completed\n</system-reminder>", "system_reminder");
+const ASSISTANT_LINE = JSON.stringify({ type: "assistant", content: [{ type: "text", text: "ok" }] });
+const realQuery = (q: string) => userMsg(`<user_query>\n${q}\n</user_query>`);
+// grok/composer sends some prompts (notably slash commands) UNWRAPPED — a plain
+// user message with no <user_query>. These must still count as real queries.
+const unwrappedQuery = (q: string) => userMsg(q);
+
+describe("extractUserQueries / classifyUserQueries (empty-session detection)", () => {
+  it("pulls only <user_query> text, skipping system / <user_info> / <system-reminder> / assistant", () => {
+    const jsonl = [SYSTEM_LINE, USERINFO_LINE, REMINDER_LINE, PRIMER_LINE, ASSISTANT_LINE].join("\n");
+    const qs = extractUserQueries(jsonl);
+    expect(qs).toHaveLength(1);
+    expect(qs[0]).toMatch(/^\[grok-build-vscode primer v4\]/);
+  });
+
+  it("classifies a primer-only history (with injected context turns) as primer:1 real:0", () => {
+    const jsonl = [SYSTEM_LINE, USERINFO_LINE, REMINDER_LINE, PRIMER_LINE, ASSISTANT_LINE].join("\n");
+    expect(classifyUserQueries(jsonl)).toEqual({ primer: 1, real: 0 });
+  });
+
+  it("counts a real follow-up as real:1", () => {
+    const jsonl = [SYSTEM_LINE, USERINFO_LINE, PRIMER_LINE, realQuery("fix the login bug")].join("\n");
+    expect(classifyUserQueries(jsonl)).toEqual({ primer: 1, real: 1 });
+  });
+
+  it("counts an UNWRAPPED prompt (composer slash command, no <user_query>) as real", () => {
+    // The composer-format session that exposed the bug: the real query is a plain
+    // user message, only the primer is wrapped. Must read as a real session.
+    const jsonl = [SYSTEM_LINE, USERINFO_LINE, unwrappedQuery("/imagine-video Elon Musk celebrating"), REMINDER_LINE, PRIMER_LINE].join("\n");
+    expect(classifyUserQueries(jsonl)).toEqual({ primer: 1, real: 1 });
+  });
+
+  it("tolerates blank and unparseable lines", () => {
+    const jsonl = ["", "not json", PRIMER_LINE, "  "].join("\n");
+    expect(classifyUserQueries(jsonl)).toEqual({ primer: 1, real: 0 });
+  });
+});
+
+describe("isEmptyPrimerSession", () => {
+  const primerOnly = [SYSTEM_LINE, USERINFO_LINE, PRIMER_LINE, ASSISTANT_LINE].join("\n");
+  const withRealTurn = [SYSTEM_LINE, USERINFO_LINE, PRIMER_LINE, realQuery("do the thing")].join("\n");
+
+  it("content is authoritative: primer-only ⇒ empty", () => {
+    expect(isEmptyPrimerSession({ numMessages: 4, chatHistory: primerOnly })).toBe(true);
+  });
+
+  it("content is authoritative: any real query ⇒ NOT empty, even at low message count", () => {
+    expect(isEmptyPrimerSession({ numMessages: 6, chatHistory: withRealTurn })).toBe(false);
+  });
+
+  it("never flags a session the user renamed", () => {
+    expect(isEmptyPrimerSession({ numMessages: 4, customName: "My work", chatHistory: primerOnly })).toBe(false);
+  });
+
+  it("never flags a session that isn't ours (no primer in its history)", () => {
+    const foreign = [SYSTEM_LINE, USERINFO_LINE, realQuery("hello from the CLI")].join("\n");
+    expect(isEmptyPrimerSession({ numMessages: 3, chatHistory: foreign })).toBe(false);
+  });
+
+  it("never flags a composer session whose real prompt is UNWRAPPED (the #24 composer near-miss)", () => {
+    const composer = [SYSTEM_LINE, USERINFO_LINE, unwrappedQuery("/imagine a desert scene"), REMINDER_LINE, PRIMER_LINE].join("\n");
+    expect(isEmptyPrimerSession({ numMessages: 8, chatHistory: composer })).toBe(false);
+  });
+
+  it("skips large sessions cheaply (above the message gate, no content read)", () => {
+    expect(isEmptyPrimerSession({ numMessages: 999, chatHistory: primerOnly })).toBe(false);
+  });
+
+  it("falls back to the title heuristic when no chat history is available", () => {
+    expect(isEmptyPrimerSession({ numMessages: 4, summary: "Grok Build VSCode Primer v4 Plan Mode" })).toBe(true);
+    expect(isEmptyPrimerSession({ numMessages: 4, generatedTitle: "Hidden Primer v4" })).toBe(true);
+    expect(isEmptyPrimerSession({ numMessages: 4, summary: "Fix the login bug" })).toBe(false);
+  });
+});
 
 interface FileEntry {
   isDir: boolean;

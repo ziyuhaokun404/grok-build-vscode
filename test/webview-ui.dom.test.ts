@@ -454,16 +454,19 @@ describe("reasoning trace (regression: thinking traces no longer expandable)", (
     const body = block.querySelector(".thinking-body") as HTMLElement;
     const chevron = block.querySelector(".thinking-chevron") as HTMLElement;
 
+    // Chevron is the same glyph as tool groups; the body's open state is driven by
+    // the `.expanded` class on the block (CSS rotates the chevron), not a text swap.
     expect(body.hidden).toBe(true);
-    expect(chevron.textContent).toBe("▶");
+    expect(chevron.textContent).toBe("›");
+    expect(block.classList.contains("expanded")).toBe(false);
 
     click(window, hdr);
     expect(body.hidden).toBe(false);
-    expect(chevron.textContent).toBe("▼");
+    expect(block.classList.contains("expanded")).toBe(true);
 
     click(window, hdr);
     expect(body.hidden).toBe(true);
-    expect(chevron.textContent).toBe("▶");
+    expect(block.classList.contains("expanded")).toBe(false);
   });
 });
 

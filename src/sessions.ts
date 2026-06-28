@@ -1,5 +1,11 @@
 import * as nodeFs from "node:fs";
 import * as path from "node:path";
+import { isPrimerText, isPrimerSummary } from "./grok-primer";
+
+/** A session with at most this many recorded messages is cheap to confirm as empty
+ *  (a primer-only session has ~4). The sweep only reads `chat_history.jsonl` for
+ *  sessions under this bound, so it never touches large real sessions. */
+export const EMPTY_PRIMER_MAX_MESSAGES = 20;
 
 export interface SessionListEntry {
   id: string;
@@ -227,6 +233,92 @@ export function listSessions(deps: ListDeps): SessionListEntry[] {
   });
   out.sort((a, b) => b.updatedAt - a.updatedAt);
   return out;
+}
+
+/** Pull the user-visible queries out of a grok `chat_history.jsonl`. grok wraps the
+ *  user's actual prompt in `<user_query>…</user_query>` inside a `role:"user"`
+ *  message; the separate `role:"user"` `<user_info>` context block carries no
+ *  `<user_query>` and is naturally skipped. Non-user roles (system/assistant/
+ *  reasoning) are ignored. Unparseable lines are skipped. Pure. */
+export function extractUserQueries(chatHistoryJsonl: string): string[] {
+  const out: string[] = [];
+  for (const line of (chatHistoryJsonl ?? "").split(/\r?\n/)) {
+    const s = line.trim();
+    if (!s) continue;
+    let o: any;
+    try { o = JSON.parse(s); } catch { continue; }
+    // grok keys the role on `type` (string like "system"/"user"/"reasoning"); some
+    // builds use `role`. Either way we want only user turns.
+    const role = o?.type ?? o?.role;
+    if (role !== "user") continue;
+    // Synthetic user turns — injected <system-reminder> / project-instructions /
+    // background-task results — are not real queries; grok tags them `synthetic_reason`.
+    if (o?.synthetic_reason) continue;
+    const content = o?.content;
+    const text = (
+      typeof content === "string"
+        ? content
+        : Array.isArray(content)
+          ? content.map((c: any) => (typeof c === "string" ? c : c?.text ?? "")).join("")
+          : ""
+    ).trim();
+    if (!text) continue;
+    // Skip the environment-context block (carries no user prompt) and any stray
+    // reminder that wasn't flagged synthetic.
+    if (/^<user_info>/.test(text) || /^<system-reminder>/.test(text)) continue;
+    // The prompt is usually wrapped in <user_query>…</user_query>, but NOT always —
+    // grok/composer sends some prompts (notably slash commands like `/imagine`) as a
+    // plain user message with no wrapper. Counting only wrapped queries made those
+    // sessions look primer-only, so a real one could be swept. Unwrap when present,
+    // otherwise take the message verbatim. (Tolerate a missing closing tag.)
+    const m = text.match(/<user_query>([\s\S]*?)(?:<\/user_query>|$)/);
+    out.push((m ? m[1] : text).trim());
+  }
+  return out;
+}
+
+/** Split a session's user queries into primer vs. real. A session is "empty" when
+ *  it received our hidden primer and never a real (non-primer) query. Pure. */
+export function classifyUserQueries(chatHistoryJsonl: string): { primer: number; real: number } {
+  let primer = 0;
+  let real = 0;
+  for (const q of extractUserQueries(chatHistoryJsonl)) {
+    if (isPrimerText(q)) primer++;
+    else real++;
+  }
+  return { primer, real };
+}
+
+export interface EmptyPrimerInput {
+  /** A user rename means the session matters — never empty, whatever its content. */
+  customName?: string;
+  /** `num_messages` from summary.json (the cheap gate; a primer-only session is ~4). */
+  numMessages: number;
+  /** `session_summary` from summary.json (fallback signal when no chat history). */
+  summary?: string;
+  /** `generated_title` from summary.json (fallback signal when no chat history). */
+  generatedTitle?: string;
+  /** `chat_history.jsonl` contents — the authoritative signal when provided. */
+  chatHistory?: string;
+}
+
+/** Decide whether a session is an empty, primer-only extension session safe to
+ *  delete. Bulletproof when `chatHistory` is supplied: true iff the session got our
+ *  primer and zero real user queries — so a session we didn't start (no primer) or
+ *  one with any real turn is never flagged. Without chat history it falls back to
+ *  the conservative title heuristic ({@link isPrimerSummary}) gated on a low message
+ *  count. Pure. */
+export function isEmptyPrimerSession(
+  inp: EmptyPrimerInput,
+  maxMessages = EMPTY_PRIMER_MAX_MESSAGES,
+): boolean {
+  if (inp.customName?.trim()) return false;
+  if (inp.numMessages > maxMessages) return false;
+  if (typeof inp.chatHistory === "string") {
+    const { primer, real } = classifyUserQueries(inp.chatHistory);
+    return primer > 0 && real === 0;
+  }
+  return isPrimerSummary(`${inp.summary ?? ""} ${inp.generatedTitle ?? ""}`);
 }
 
 /** Remove the on-disk session directory. No-op if missing. */

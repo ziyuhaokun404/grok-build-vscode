@@ -269,6 +269,16 @@ the steady-state fix.
   rename onto the fresh session so the chosen name survives. The same cleanup runs on
   the effort-change empty-session branch, guarded so a dead client on a session *with*
   history keeps its history.
+- **Empty primer sessions never accumulate (#24).** Beyond the model/effort restart
+  case above, *any* time you leave an empty (primer-only, `hasHistory === false`)
+  session — New Session or switching to another — `parkFocused` deletes its on-disk
+  dir, so at most one untitled **New session** exists at a time. A one-shot startup
+  sweep (`sweepEmptyPrimerSessions`) clears empties left by earlier runs, each
+  confirmed by reading `chat_history.jsonl` (`isEmptyPrimerSession`): swept only if
+  the session received our primer and **zero real user queries**. Detection is
+  content-based and agent-agnostic — `extractUserQueries` counts both
+  `<user_query>`-wrapped prompts and the unwrapped ones grok/composer sends for slash
+  commands — so it's safe for the `grok-build` and `cursor` (composer) agents alike.
 - **Generated media is path-based, not an ACP image block.** `/imagine` and
   `/imagine-video` write a file into the session dir and report its *path* as
   JSON-in-text on the completed tool result. The host parses the path, classifies

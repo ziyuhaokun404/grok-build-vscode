@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.4.20 — 2026-06-28
+
+> A chat-readability overhaul plus housekeeping: tool and thinking rows get Codex-style category icons and a muted-until-hover look, failed tools finally show *why*, each narration sits above the tools it describes, and the empty "primer" sessions stop cluttering history (#24). Also renamed **Unofficial → Community**.
+
+### Changed
+
+- **Tool-call summaries are categorized by what the tool actually did.** Reads, globs, and greps were all rolled up as "Ran N commands"; they're now bucketed by ACP kind into "Explored N items" / "Edited N files" / "Deleted N files" / "searched web" / "Ran N commands" — so a turn that read five files reads "Explored 5 items", not "Ran 5 commands". Works on resumed sessions too: when the wire form omits `kind`, the category is recovered from the tool's title. ([media/chat.js](media/chat.js))
+- **A turn's narration now interleaves with its tool groups instead of piling above them.** grok narrates each step then runs its tools (narrate → tools → narrate → tools); the narration used to coalesce into one bubble with the tool summaries stacked consecutively below it, so the summaries looked arbitrary. Each narration sentence now renders directly above the tool group it introduced, preserving grok's actual order. ([media/chat.js](media/chat.js))
+- **Tool and thinking rows restyled (Codex-aligned).** Each tool row (single or group) now leads with one **lucide category icon** — `file` (read) / `folder-search` (search) / `pencil` (edit) / `square-terminal` (command, and the catch-all), picked by the strongest action in a group. Rows are flush-left in the standard font, **muted by default and brighten on hover** (no background highlight); a running group stays "active" until it completes. Expanded bodies use a thin secondary border (not blue). Thinking blocks now share the tool rows' chevron — same glyph, on the **right**, after the label — and the same expand border. ([media/chat.js](media/chat.js), [media/chat.css](media/chat.css))
+- **Generated images/videos align with the message text** — dropped the extra horizontal inset they carried. ([media/chat.css](media/chat.css))
+- **Renamed "Unofficial" → "Community".** The chat header, extension title, and README now read **Grok Build (Community)** / **Grok Build for VS Code (Community)**; the About fine print still notes it's unofficial, community-built, and not affiliated with xAI. ([package.json](package.json), [README.md](README.md), [src/sidebar.ts](src/sidebar.ts), [media/chat.js](media/chat.js))
+
+### Fixed
+
+- **Tool-call labels no longer leak raw regex/glob patterns.** A search tool used to render its bare pattern (e.g. `image_edit|/imagine`) as the whole label; it now shows `Search <pattern>`, and any tool we didn't predict falls back to grok's own formatted title instead of scraping arbitrary raw input. ([media/chat.js](media/chat.js))
+- **Failed tool calls now show their reason instead of being silently dropped.** A `status: "failed"` tool update (e.g. *"Tool `image_to_video` failed: image reference not readable: …"* — grok occasionally malforms an image argument) used to render as nothing, so grok just looked like it gave up. The row now goes error-colored with the failure message beneath it (and a collapsed group with a failed child tints its icon red). ([media/webview-helpers.js](media/webview-helpers.js), [media/chat.js](media/chat.js), [media/chat.css](media/chat.css))
+- **Empty "primer" sessions stop piling up in history (#24).** Each time the extension opened it left behind an empty, primer-only session (the ones titled "… Primer v4 Plan Mode …"). Now abandoning an empty session — New Session, or switching to another — deletes it on the spot, so at most one untitled **New session** ever exists; and a one-shot startup sweep clears the empties earlier runs left behind, each confirmed primer-only by **reading its chat history** so a real or non-extension session is never touched. Detection is content-based and agent-agnostic — it counts both `<user_query>`-wrapped prompts and the **unwrapped** ones grok/composer sends for slash commands like `/imagine` (so a real composer session is never mistaken for empty) — verified against real on-disk sessions from both the `grok-build` and `cursor` (composer) agents. The live untitled session always shows as **New session**, never grok's primer-derived title. ([src/sidebar.ts](src/sidebar.ts), [src/sessions.ts](src/sessions.ts), [src/grok-primer.ts](src/grok-primer.ts))
+
+### Tests — 582
+
+- New: tool-call categorization rebuilt from real Grok + Composer transcripts, the raw-pattern-leak fix, the unpredicted-tool fallback, narration↔tool-group interleaving, plan/permission cards landing below the interleaved lead-up, the per-row **category icons** (strongest-action pick), and **failed-tool surfacing**, driving the real `media/chat.js` ([test/tool-summary.dom.test.ts](test/tool-summary.dom.test.ts)); the thinking↔tool **chevron unification** ([test/webview-ui.dom.test.ts](test/webview-ui.dom.test.ts)); empty-primer-session detection incl. unwrapped composer prompts — `extractUserQueries` / `classifyUserQueries` / `isEmptyPrimerSession` ([test/sessions.test.ts](test/sessions.test.ts)) and `isPrimerSummary` ([test/grok-primer.test.ts](test/grok-primer.test.ts)).
+
 ## 1.4.19 — 2026-06-28
 
 > Card-UX polish from a live image-generation session: permission cards read in order and minimize once answered, restored plans start collapsed, and background-task notices stop polluting the chat.

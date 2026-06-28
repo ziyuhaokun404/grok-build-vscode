@@ -1,5 +1,26 @@
 import { describe, it, expect } from "vitest";
-import { GROK_PRIMER, PRIMER_MARKER, isPrimerText } from "../src/grok-primer";
+import { GROK_PRIMER, PRIMER_MARKER, isPrimerText, isPrimerSummary } from "../src/grok-primer";
+
+describe("isPrimerSummary (empty-session sweep pre-filter)", () => {
+  it("matches grok's primer-derived summaries/titles", () => {
+    for (const s of [
+      "Grok-Build-VSCode Primer V4 Plan Mode Handling",
+      "Grok Build VSCode Hidden Primer v4",
+      "Grok VSCode Build Primer v4 Plan Mode Instructions",
+      "Grok Build VSCode v4 Primer Plan Mode Setup",
+    ]) {
+      expect(isPrimerSummary(s)).toBe(true);
+    }
+  });
+
+  it("does not match real session summaries or empties", () => {
+    expect(isPrimerSummary("Generate Elon Musk Desert Image Using Reference")).toBe(false);
+    expect(isPrimerSummary("Fix the login bug")).toBe(false);
+    expect(isPrimerSummary("")).toBe(false);
+    // "primer" alone, without a product/context word, is not enough.
+    expect(isPrimerSummary("A primer on CSS grid")).toBe(false);
+  });
+});
 
 describe("isPrimerText (host-side replay detection)", () => {
   it("matches the current primer message", () => {

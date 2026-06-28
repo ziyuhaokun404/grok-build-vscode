@@ -13,3 +13,4 @@ node_modules/**
 **/*.map
 **/*.ts
 !out/**/*.js
+grok-session-preview.html

@@ -208,7 +208,29 @@
     return (tex == null ? "" : String(tex)).replace(/\\label\s*\{[^}]*\}/g, "");
   }
 
-  const api = { FILE_EXTS, looksLikeFileRef, formatRelativeTime, modelDisplayName, MIC_STATES, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, shouldStickToBottom, splitMath, stripUnsupportedTex };
+  // Error text for a failed tool_call_update (status "failed"/"error"), else null.
+  // grok reports the reason in rawOutput.message and/or a content[].content.text
+  // blob (e.g. "Tool `image_to_video` failed: image reference not readable: …").
+  // The extension never surfaced these, so a failed tool just looked like grok
+  // giving up — this is what the chat renders on the row instead.
+  function toolFailureText(call) {
+    if (!call) return null;
+    const status = String(call.status || "").toLowerCase();
+    if (status !== "failed" && status !== "error") return null;
+    const raw = call.rawOutput || {};
+    if (typeof raw.message === "string" && raw.message.trim()) return raw.message.trim();
+    const content = call.content;
+    if (Array.isArray(content)) {
+      for (const c of content) {
+        const t = (c && c.content && c.content.text) || (c && c.text);
+        if (typeof t === "string" && t.trim()) return t.trim();
+      }
+    }
+    if (typeof raw.error === "string" && raw.error.trim()) return raw.error.trim();
+    return "Tool call failed.";
+  }
+
+  const api = { FILE_EXTS, looksLikeFileRef, formatRelativeTime, modelDisplayName, MIC_STATES, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText };
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;
   } else {

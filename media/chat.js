@@ -45,7 +45,10 @@
     useCtrlEnter: false,
     commands: [],
     chips: [],
-    busy: false,
+    // Start busy+locked: opening the view immediately spins up a session
+    // (ready → startSession), so the send button shows the spinner from the
+    // first paint until the host posts setBusy:false once the session is live.
+    busy: true,
     // Voice-input button: "idle" | "listening" | "transcribing" (see nextMicState).
     mic: "idle",
     // Whether the host found a voice API key. Optimistic until the host says
@@ -135,7 +138,8 @@
     // send button shows a spinner and is disabled. When false, busy is
     // "stoppable" (regular prompts, verdict afterTurn) and the send button
     // shows a stop icon that the user can click to cancel grok mid-stream.
-    busyLocked: false,
+    // Starts true so the very first paint is the disabled spinner (see `busy`).
+    busyLocked: true,
     // grok CLI version from the ACP `initialized` handshake, plus a flag marking
     // the session-start window: while startingPhase is true the welcome line
     // shows "starting…"; it flips to "connected · v<cliVersion>" only when the
@@ -210,7 +214,6 @@
     square: `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="1.5"/></svg>`,
     spinner: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>`,
     gear: `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>`,
-    sparkle: `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/></svg>`,
     shield: `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/></svg>`,
     bot: `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg>`,
     listTree: `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12h-8"/><path d="M21 6H8"/><path d="M21 18h-8"/><path d="M3 6v4c0 1.1.9 2 2 2h3"/><path d="M3 10v6c0 1.1.9 2 2 2h3"/></svg>`,
@@ -292,7 +295,7 @@
 
   newBtn.innerHTML = ICON.squarePen;
   historyBtn.innerHTML = ICON.clock;
-  sendBtn.innerHTML = ICON.arrowUp;
+  updateSendButton(); // spinner by default — session is starting up (busy+locked)
   gearBtn.innerHTML = ICON.gear;
   addBtn.innerHTML = ICON.plus;
   scrollBottomBtn.innerHTML = `${ICON.arrowDown}<span class="scroll-bottom-label">Scroll to bottom</span>`;
@@ -1654,7 +1657,10 @@
   }
   function toolFilePath(call) {
     const r = call.rawInput || call.input || {};
+    // `target_directory` is list_dir's path field (verified against real sessions);
+    // without it, "List" rendered with no target.
     return r.target_file || r.filePath || r.file_path || r.path ||
+      r.target_directory || r.directory || r.dir ||
       (Array.isArray(r.paths) ? r.paths[0] : "");
   }
   function prettyPath(p) {
@@ -1751,10 +1757,20 @@
     const filePath = toolFilePath(call);
     const command = r.command || r.cmd;
     const pattern = r.glob_pattern || r.pattern || r.query || r.regex || r.search;
+    const url = r.url || r.uri;
+    const clamp = (s) => (s && s.length > 40 ? s.slice(0, 40) + "…" : s);
+    // A search tool's *pattern* is the useful target — prefer it over the path it
+    // searched (grep ships both `pattern` and `path:"."`, which would otherwise
+    // render the unhelpful "root folder"). Match by kind OR name so it still wins
+    // when the first tool_call arrives before grok finalizes `kind`.
+    const isSearch =
+      kind === "search" || /\b(grep|glob|ripgrep|search_files|web_search|search_web)\b/i.test(name);
 
     let target = "";
-    if (kind === "search" && pattern) {
-      target = pattern.length > 40 ? pattern.slice(0, 40) + "…" : pattern;
+    if (isSearch && pattern) {
+      target = clamp(pattern);
+    } else if (url) {
+      target = clamp(url.replace(/^https?:\/\//i, ""));
     } else if (filePath) {
       const base = prettyPath(filePath);
       const isRead = name === "read_file" || name === "file_read" || kind === "read";
@@ -1765,9 +1781,9 @@
         target = base;
       }
     } else if (command) {
-      target = command.length > 40 ? command.slice(0, 40) + "…" : command;
+      target = clamp(command);
     } else if (pattern) {
-      target = pattern.length > 40 ? pattern.slice(0, 40) + "…" : pattern;
+      target = clamp(pattern);
     }
     // Deliberately NO scrape of arbitrary rawInput values: that leaked raw regexes
     // and globs (e.g. "image_edit|/imagine") as bare labels. For a tool we didn't
@@ -1897,7 +1913,7 @@
     item.appendChild(sub);
     const preview = document.createElement("button");
     preview.className = "preview-link";
-    preview.textContent = "open diff preview →";
+    preview.textContent = "open diff →";
     preview.onclick = (e) => {
       e.stopPropagation(); // don't toggle the tool-group expand/collapse
       vscode.postMessage({

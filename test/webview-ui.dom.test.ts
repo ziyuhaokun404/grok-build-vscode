@@ -653,6 +653,24 @@ describe("welcome version line (session-start lifecycle)", () => {
   });
 });
 
+describe("send button startup state (spinner by default until the session is ready)", () => {
+  const sendBtn = (doc: Document) => $(doc, "send-btn") as HTMLButtonElement;
+
+  it("shows the disabled spinner from the first paint, before the host says ready", () => {
+    const { doc } = bootWebview({ ready: false });
+    expect(sendBtn(doc).classList.contains("initializing")).toBe(true);
+    expect(sendBtn(doc).disabled).toBe(true);
+    expect(sendBtn(doc).classList.contains("stop")).toBe(false);
+  });
+
+  it("switches to the enabled send arrow once the host posts setBusy:false", () => {
+    const { window, doc } = bootWebview({ ready: false });
+    dispatch(window, { type: "setBusy", value: false });
+    expect(sendBtn(doc).classList.contains("initializing")).toBe(false);
+    expect(sendBtn(doc).disabled).toBe(false);
+  });
+});
+
 describe("gear menu — Other group + About / Config & debug sub-views", () => {
   function boot() {
     const h = bootWebview();

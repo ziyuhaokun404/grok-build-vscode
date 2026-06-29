@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.4.25 — 2026-06-30
+
+### Fixed
+
+- **Empty primer-only sessions are cleaned up even when large.** A hidden-primer turn can balloon to dozens of agentic tool/reasoning messages with no real user message; the startup sweep skipped those (`num_messages` over the gate) so they lingered in history with a primer-derived title. The chat-history content check is now authoritative regardless of message count — a session with our primer and zero real user queries is swept (real and renamed sessions are still never touched). ([src/sessions.ts](src/sessions.ts), [src/sidebar.ts](src/sidebar.ts))
+- **The send button now shows the spinner from the moment the panel opens.** During the initial session spin-up it briefly showed neither the send arrow nor the spinner; it now defaults to the disabled spinner until the session is live. ([media/chat.js](media/chat.js))
+- **Tool rows now show the detail again for List / Search / Fetch.** A directory listing shows the folder (`List docs`), a read shows the file and line range (`Read README.md lines 1-30`), a search shows the pattern, and a web fetch shows the page URL — these had regressed to a bare verb because the rawInput field names (`target_directory`, `url`) weren't being read. Verified against real on-disk sessions. ([media/chat.js](media/chat.js))
+
+### Changed
+
+- **The diff-preview edit row is now a single line** — `Edit chat.js  9 → 10 lines  open diff →` instead of three stacked lines. ([media/chat.js](media/chat.js), [media/chat.css](media/chat.css))
+- **Table cells no longer break mid-word.** Long header/cell words were chopped between letters, making columns look cramped and arbitrarily narrow; cells now wrap only at spaces and hyphens (an unbreakable run falls back to the table's horizontal scroll). ([media/chat.css](media/chat.css))
+- **The Grokking indicator spins the other way.** ([media/chat.css](media/chat.css))
+- **The scroll-to-bottom button sits slightly higher**, so its gap above the composer's top border matches the border-to-textarea gap. ([media/chat.css](media/chat.css))
+- **Trimmed the README privacy section** to a short privacy-by-design summary; the full detail moved to [docs/privacy.md](docs/privacy.md). ([README.md](README.md), [docs/privacy.md](docs/privacy.md))
+
 ## 1.4.24 — 2026-06-29
 
 > Privacy-first, opt-out anonymous usage telemetry.

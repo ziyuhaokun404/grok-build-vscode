@@ -89,14 +89,23 @@ describe("isEmptyPrimerSession", () => {
     expect(isEmptyPrimerSession({ numMessages: 8, chatHistory: composer })).toBe(false);
   });
 
-  it("skips large sessions cheaply (above the message gate, no content read)", () => {
-    expect(isEmptyPrimerSession({ numMessages: 999, chatHistory: primerOnly })).toBe(false);
+  it("content stays authoritative ABOVE the message gate (agentic primer-only turn)", () => {
+    // Regression: a primer turn can balloon to dozens of tool/reasoning messages with
+    // NO real user query (and grok re-primes on restore/compact). num_messages must
+    // not veto the content signal, or such a session (the real 74-message one) lingers.
+    expect(isEmptyPrimerSession({ numMessages: 999, chatHistory: primerOnly })).toBe(true);
   });
 
   it("falls back to the title heuristic when no chat history is available", () => {
     expect(isEmptyPrimerSession({ numMessages: 4, summary: "Grok Build VSCode Primer v4 Plan Mode" })).toBe(true);
     expect(isEmptyPrimerSession({ numMessages: 4, generatedTitle: "Hidden Primer v4" })).toBe(true);
     expect(isEmptyPrimerSession({ numMessages: 4, summary: "Fix the login bug" })).toBe(false);
+  });
+
+  it("without chat history, the message gate still guards the title heuristic", () => {
+    // The numMessages gate only applies on the no-content fallback path: a large
+    // session with a primer-ish title but no readable history is NOT flagged.
+    expect(isEmptyPrimerSession({ numMessages: 999, summary: "Grok Build VSCode Primer v4 Plan Mode" })).toBe(false);
   });
 });
 

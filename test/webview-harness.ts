@@ -57,7 +57,7 @@ export interface Harness {
   doc: Document;
 }
 
-export function bootWebview(): Harness {
+export function bootWebview(opts: { ready?: boolean } = {}): Harness {
   const window = new Window({ url: "https://localhost/" });
   const posted: Posted[] = [];
   (window as any).acquireVsCodeApi = () => ({
@@ -69,6 +69,13 @@ export function bootWebview(): Harness {
   doc.body.innerHTML = BODY;
   (window as any).eval(helperSrc);
   (window as any).eval(chatSrc);
+  // The webview now boots busy+locked (startup spinner) and only goes idle once
+  // the host posts setBusy:false after the session is live. Most tests exercise
+  // that ready state, so simulate it by default; pass { ready: false } to assert
+  // the startup spinner itself.
+  if (opts.ready !== false) {
+    dispatch(window, { type: "setBusy", value: false });
+  }
   posted.length = 0; // drop chat.js's startup {type:"ready"} so tests see only their own messages
   return { window, posted, doc };
 }

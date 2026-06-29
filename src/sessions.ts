@@ -313,11 +313,19 @@ export function isEmptyPrimerSession(
   maxMessages = EMPTY_PRIMER_MAX_MESSAGES,
 ): boolean {
   if (inp.customName?.trim()) return false;
-  if (inp.numMessages > maxMessages) return false;
+  // Chat history is authoritative: a session is empty iff it got our primer and
+  // ZERO real user queries — regardless of message count. An *agentic* primer turn
+  // can balloon to dozens of tool/reasoning messages with no real user query (and
+  // grok re-primes on restore/compact), so `num_messages` must NOT veto the content
+  // signal — that false-negative left such sessions (e.g. a 74-message primer-only
+  // session) in history forever.
   if (typeof inp.chatHistory === "string") {
     const { primer, real } = classifyUserQueries(inp.chatHistory);
     return primer > 0 && real === 0;
   }
+  // No chat history available — fall back to the conservative title heuristic, gated
+  // on a low message count so a large real session can't be flagged on its title.
+  if (inp.numMessages > maxMessages) return false;
   return isPrimerSummary(`${inp.summary ?? ""} ${inp.generatedTitle ?? ""}`);
 }
 

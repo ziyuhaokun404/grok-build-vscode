@@ -45,7 +45,6 @@ import { appendPlanEntry, decideRestoreState } from "./plan-restore";
 import { planReviewFileBaseName, sanitizePlanReviewFilePart } from "./plan-review";
 import { GROK_PRIMER, isPrimerText } from "./grok-primer";
 import {
-  EMPTY_PRIMER_MAX_MESSAGES,
   SessionListEntry,
   SessionMetaOverrides,
   carrySessionName,
@@ -2880,7 +2879,10 @@ See design doc for the full state machine diagram.`;
         continue;
       }
       const numMessages = typeof raw?.num_messages === "number" ? raw.num_messages : 0;
-      if (numMessages > EMPTY_PRIMER_MAX_MESSAGES) continue; // real session — skip without reading content
+      // Read the chat history and let the content check decide — do NOT skip on a high
+      // num_messages. A primer-only session whose agentic primer turn ballooned past
+      // the gate (e.g. 74 messages, zero real queries) would otherwise survive forever.
+      // Real sessions are already cheaply skipped above via their customName override.
       let chatHistory: string | undefined;
       try {
         chatHistory = defaultFs.readFileSync(path.join(sessDir, id, "chat_history.jsonl"), "utf8");

@@ -331,12 +331,9 @@ npm run package  # → grok-vscode-phuryn-<version>.vsix
 
 ## Privacy
 
-The extension sends **anonymous, privacy-first usage telemetry** ([Aptabase](https://aptabase.com)) so we can gauge how many people use it and which models/modes are popular. It is deliberately minimal:
+**Privacy by design** — no message content, no code, no file paths, and no account/email/login identity ever leave your machine. The only thing sent is an anonymous, opt-out usage count. Turn it off anytime with `grok.telemetry.enabled: false` or VS Code's global `telemetry.telemetryLevel`.
 
-- **One event** — `session_start`, fired on the **first real message** of a session (never the hidden primer, never empty/abandoned sessions).
-- **What it contains:** an anonymous **install id** (a random GUID generated once on your machine — not your account, email, or grok login), the **mode / model / effort** you used, your **OS** and the extension **version**. Country is inferred by Aptabase from your IP, which is then **discarded** — the IP is never stored.
-- **What it never contains:** any message content, code, file names/paths, or personal information.
-- **Opt out** anytime: set `grok.telemetry.enabled` to `false`, or disable VS Code's global telemetry (`telemetry.telemetryLevel`) — either one stops all sending.
+More: [docs/privacy.md](docs/privacy.md).
 
 ---
 

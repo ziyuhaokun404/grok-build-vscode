@@ -70,6 +70,36 @@ describe("tool-call labels (single-call flat line)", () => {
     close(window);
     expect(flatLabel(doc)).toBe("FrobnicateWidget");
   });
+
+  // The live first tool_call carries title = raw tool name + the parsed rawInput;
+  // these field names are verified against real on-disk sessions.
+  it("list_dir shows the folder via target_directory ('List <dir>')", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, tc({ toolCallId: "1", title: "list_dir", rawInput: { target_directory: "docs" } }));
+    close(window);
+    expect(flatLabel(doc)).toBe("List docs");
+  });
+
+  it("list_dir on '.' reads as 'List root folder'", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, tc({ toolCallId: "1", title: "list_dir", rawInput: { target_directory: "." } }));
+    close(window);
+    expect(flatLabel(doc)).toBe("List root folder");
+  });
+
+  it("read_file with a line range shows 'Read <file> lines a-b'", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, tc({ toolCallId: "1", kind: "read", title: "read_file", rawInput: { target_file: "README.md", offset: 1, limit: 30 } }));
+    close(window);
+    expect(flatLabel(doc)).toBe("Read README.md lines 1-30");
+  });
+
+  it("web_fetch shows the page URL ('Fetch <host/path>'), protocol stripped", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, tc({ toolCallId: "1", title: "web_fetch", rawInput: { url: "https://example.com/page" } }));
+    close(window);
+    expect(flatLabel(doc)).toBe("Fetch example.com/page");
+  });
 });
 
 describe("works on resumed sessions (kind absent, title-only)", () => {

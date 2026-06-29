@@ -420,7 +420,7 @@ body.thinking-hidden .msg.thinking { display: none; }
   transform-origin: center;
   animation: grokking-orbit 3.5s linear infinite;
 }
-@keyframes grokking-orbit { to { transform: rotate(360deg); } }
+@keyframes grokking-orbit { to { transform: rotate(-360deg); } }
 @media (prefers-reduced-motion: reduce) {
   .grokking-icon svg { animation: none; }
 }
@@ -599,18 +599,19 @@ body.thinking-hidden .msg.thinking { display: none; }
 .tool-item {
   display: flex;
   flex-wrap: wrap;
-  align-items: flex-start;
+  align-items: baseline;
   gap: 6px;
   padding: 3px 0;
   font-family: var(--vscode-font-family);
   font-size: var(--vscode-font-size);
   color: var(--vscode-descriptionForeground);
 }
+/* The line-count + "open diff" sit inline after the label on one row (they used
+   to each take a full-width line via flex-basis:100%). A failure message
+   (.tool-error) still keeps its own line. */
 .tool-item-subtitle {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--vscode-descriptionForeground);
-  flex-basis: 100%;
-  margin-left: 0;
 }
 .tool-item .preview-link {
   background: none;
@@ -621,7 +622,6 @@ body.thinking-hidden .msg.thinking { display: none; }
   font-size: 11px;
   text-decoration: underline;
   text-align: left;
-  flex-basis: 100%;
 }
 .tool-item .preview-link:hover { color: var(--vscode-textLink-foreground); }
 /* Failed tool call — the row goes error-colored and shows grok's reason. */
@@ -768,7 +768,11 @@ body.thinking-hidden .msg.thinking { display: none; }
   text-align: left;
   vertical-align: top;
   line-height: 1.45;
-  word-break: break-word;
+  /* Never break inside a word (headers looked cramped/narrow when long words
+     were chopped mid-letter); still break at spaces and after hyphens. A run
+     with no break opportunity overflows into the wrapper's horizontal scroll. */
+  word-break: normal;
+  overflow-wrap: normal;
 }
 .msg.agent .body th {
   background: var(--vscode-textBlockQuote-background, var(--vscode-editorWidget-background));
@@ -792,7 +796,9 @@ body.thinking-hidden .msg.thinking { display: none; }
    pointer events) until the user scrolls away from the bottom. */
 .scroll-bottom-btn {
   position: absolute;
-  bottom: calc(100% + 6px);
+  /* Sit above the composer's top border by the same gap the border sits above
+     the textarea (the composer's top padding, --pad) — symmetric spacing. */
+  bottom: calc(100% + var(--pad));
   left: 50%;
   transform: translate(-50%, 4px);
   z-index: 6;

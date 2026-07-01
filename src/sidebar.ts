@@ -448,6 +448,10 @@ See design doc for the full state machine diagram.`;
     // Plan which also tells the CLI to plan instead of act. The mode button only
     // ever drives the focused session.
     const session = this.focused;
+    // Ignore mode changes until the session exists: before session/new the CLI
+    // setMode throws "no session" (and for Plan that error is surfaced to the user).
+    // The mode button is disabled while busy; this backstops the toggle-mode command.
+    if (!session.client || !session.client.sessionId || session.priming) return;
     // Remember the user's last non-plan mode so new sessions start in it (#25).
     // setMode is only ever called from the webview (user action), so this
     // captures intent, not restore/replay bookkeeping (those use client.setMode

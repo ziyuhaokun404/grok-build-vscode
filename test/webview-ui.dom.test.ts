@@ -373,6 +373,28 @@ describe("mode picker (the plan-gate entry path)", () => {
     click(window, $(doc, "mode-btn"));
     expect((pop as any).hidden).toBe(true);
   });
+
+  // Regression: switching mode during session start called setMode before the
+  // session existed → "Couldn't switch mode: no session". The button is now
+  // disabled while busy (like send), and busy always clears so it can't get stuck.
+  it("disables the mode button while starting/busy and won't open the picker or post setMode", () => {
+    const { window, posted, doc } = bootWebview({ ready: false }); // startup: busy + locked
+    const modeBtn = $(doc, "mode-btn") as HTMLButtonElement;
+    expect(modeBtn.disabled).toBe(true);
+    expect(modeBtn.className).toContain("disabled");
+
+    click(window, modeBtn);
+    expect(($(doc, "mode-popover") as any).hidden).toBe(true); // picker never opened
+    expect(types(posted)).not.toContain("setMode");
+  });
+
+  it("enables the mode button once the session is ready", () => {
+    const { window, doc } = bootWebview(); // ready → busy cleared
+    const modeBtn = $(doc, "mode-btn") as HTMLButtonElement;
+    expect(modeBtn.disabled).toBe(false);
+    click(window, modeBtn);
+    expect(($(doc, "mode-popover") as any).hidden).toBe(false); // opens normally
+  });
 });
 
 describe("gear settings lock (model + effort disabled while busy / priming)", () => {

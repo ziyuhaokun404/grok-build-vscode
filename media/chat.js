@@ -3154,6 +3154,14 @@
     //  - busy + stoppable: stop icon, enabled, click → cancel grok mid-stream.
     //    Used for regular prompts and the verdict afterTurn flow.
     sendBtn.classList.remove("stop", "initializing");
+    // The mode switch (Agent/Plan/Auto-accept) restarts the gate and calls the CLI,
+    // so it's locked whenever busy — like the model/effort controls. Crucially this
+    // covers the session-start window (busy is true through spawn → session/new),
+    // where a setMode would otherwise throw "no session". Unlike a separate
+    // readiness flag, `busy` always clears, so the control can never get stuck.
+    modeBtn.disabled = state.busy;
+    modeBtn.classList.toggle("disabled", state.busy);
+    modeBtn.title = state.busy ? "Mode — available once the session is ready" : "Pick mode";
     if (!state.busy) {
       sendBtn.innerHTML = ICON.arrowUp;
       sendBtn.title = "Send";
@@ -3823,7 +3831,7 @@
     resetForNewSession();
     vscode.postMessage({ type: "newSession" });
   };
-  modeBtn.onclick = (e) => { e.stopPropagation(); openModePopover(); };
+  modeBtn.onclick = (e) => { e.stopPropagation(); if (state.busy) return; openModePopover(); };
   gearBtn.onclick = (e) => { e.stopPropagation(); openGearPopover(); };
 
   // Welcome screen's "about" link → open the gear popover's Version & about panel.

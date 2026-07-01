@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.4.28 — 2026-07-01
+
+### Fixed
+
+- **The mode switch (Agent / Plan / Auto-accept) is now disabled while the session is starting.** Picking a mode before the session existed called `setMode` too early and surfaced *"Couldn't switch mode: no session."* The mode button is greyed out and unclickable until the session is ready — like the send button — and the toggle-mode command is guarded server-side too. ([media/chat.js](media/chat.js), [media/chat.css](media/chat.css), [src/sidebar.ts](src/sidebar.ts))
+
 ## 1.4.27 — 2026-07-01
 
 ### Added

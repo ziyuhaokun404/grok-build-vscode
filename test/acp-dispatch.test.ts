@@ -14,6 +14,7 @@ import {
   makeRequest,
   parseAcpLine,
   permissionOutcomeFor,
+  resolveModelId,
   routeSessionUpdate,
   summarizeBackgroundCommand,
 } from "../src/acp-dispatch";
@@ -320,6 +321,39 @@ describe("isIncompatibleAgentError", () => {
     expect(isIncompatibleAgentError({ data: { code: "SOMETHING_ELSE" } })).toBe(false);
     expect(isIncompatibleAgentError(undefined)).toBe(false);
     expect(isIncompatibleAgentError(new Error("network timeout"))).toBe(false);
+  });
+});
+
+describe("resolveModelId (grok's versioned set_model id vs availableModels)", () => {
+  const models = [
+    { modelId: "grok-composer-2.5-fast" },
+    { modelId: "grok-build" },
+  ];
+
+  it("maps the versioned id grok echoes back onto the availableModels base id", () => {
+    // set_model("grok-build") resolves to "grok-build-0.1", which isn't in the list.
+    expect(resolveModelId("grok-build-0.1", models)).toBe("grok-build");
+  });
+
+  it("returns an exact match unchanged", () => {
+    expect(resolveModelId("grok-build", models)).toBe("grok-build");
+    expect(resolveModelId("grok-composer-2.5-fast", models)).toBe("grok-composer-2.5-fast");
+  });
+
+  it("returns the input when nothing matches", () => {
+    expect(resolveModelId("some-other-model", models)).toBe("some-other-model");
+  });
+
+  it("prefers the most specific base id when models share a prefix", () => {
+    const colliding = [{ modelId: "grok-build" }, { modelId: "grok-build-mini" }];
+    expect(resolveModelId("grok-build-mini-0.1", colliding)).toBe("grok-build-mini");
+    expect(resolveModelId("grok-build-0.1", colliding)).toBe("grok-build");
+  });
+
+  it("passes through when the id or list is empty", () => {
+    expect(resolveModelId(undefined, models)).toBeUndefined();
+    expect(resolveModelId("grok-build-0.1", [])).toBe("grok-build-0.1");
+    expect(resolveModelId("grok-build-0.1", undefined)).toBe("grok-build-0.1");
   });
 });
 

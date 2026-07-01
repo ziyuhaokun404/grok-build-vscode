@@ -888,9 +888,12 @@ textarea#input {
 /* ---- mic / voice-input button (top-right corner of the textbox) ---- */
 
 .mic-btn {
+  /* Anchored inside .composer-input-wrap (position:relative) so it tracks the
+     textarea's top-right corner — not the composer, which grows when the
+     attachments row appears above the input (that made the mic "jump"). */
   position: absolute;
-  top: calc(var(--pad) + 5px);
-  right: calc(var(--pad) + 6px);
+  top: 5px;
+  right: 6px;
   /* Above the textarea (z-index:1) so its top-right padding doesn't swallow the
      hover/click — the textarea was lifted for the highlight overlay. */
   z-index: 2;
@@ -1183,6 +1186,55 @@ textarea#input {
   opacity: 0.5;
   color: var(--vscode-descriptionForeground);
   background: transparent;
+}
+
+/* Uploaded attachments live on their own line at the top of the composer (an
+   extra row that grows the input area), separate from the active-editor chip
+   that stays in the toolbar. Each carries a remove (×) — not a hide toggle. */
+.attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 1px;
+}
+.attachments:empty { display: none; }
+.attachment {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 2px 4px 2px 7px;
+  background: var(--vscode-editorWidget-background);
+  color: var(--vscode-foreground);
+  border: 1px solid var(--vscode-editorWidget-border);
+  border-radius: 4px;
+  font-size: 11px;
+  font-family: var(--vscode-editor-font-family);
+}
+.attachment > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.attachment-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 15px;
+  height: 15px;
+  padding: 0;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--vscode-descriptionForeground);
+  cursor: pointer;
+  font-family: inherit;
+}
+.attachment-remove:hover {
+  background: var(--vscode-toolbar-hoverBackground);
+  color: var(--vscode-foreground);
 }
 
 /* ---- send button ---- */

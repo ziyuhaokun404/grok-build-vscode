@@ -553,6 +553,28 @@ describe("Grokking… indicator (waiting placeholder)", () => {
     expect(user.compareDocumentPosition(el!) & 4 /* DOCUMENT_POSITION_FOLLOWING */).toBeTruthy();
   });
 
+  it("renders sent-message attachment chips by filename, full path on hover for external files", () => {
+    const { window, doc } = bootWebview();
+    const external = "c:\\Users\\Dell\\Downloads\\2025-07-14_12-15-44.png";
+    dispatch(window, {
+      type: "userMessage",
+      text: "test",
+      chips: [
+        { id: "explicit:1", path: "c:\\GitHub\\grok-build-vscode\\CLAUDE.md", relPath: "CLAUDE.md" },
+        { id: "explicit:2", path: external, relPath: external },
+      ],
+    });
+    const chips = Array.from(doc.querySelectorAll(".msg.user .msg-chip")) as HTMLElement[];
+    const texts = chips.map((c) => c.querySelector("span")!.textContent);
+    expect(texts).toContain("CLAUDE.md");
+    const ext = chips.find((c) => c.title === external)!; // full path preserved on hover
+    expect(ext).toBeTruthy();
+    const extText = ext.querySelector("span")!.textContent!;
+    expect(extText.startsWith("2025-07-14")).toBe(true); // filename, not the path
+    expect(extText).not.toContain("\\");
+    expect(extText).not.toContain("Downloads");
+  });
+
   it("is mutually exclusive with the plan-processing indicator (one waiting indicator at a time)", () => {
     const { window, doc } = bootWebview();
     // planProcessing then agentStart → Grokking wins, plan-processing is gone.

@@ -44,5 +44,12 @@ export function toggleChip(chips: FileChip[], id: string): FileChip[] {
 }
 
 export function clearImplicitChips(chips: FileChip[]): FileChip[] {
-  return chips.filter((c) => !c.id.startsWith("implicit:"));
+  return chips.filter((c) => !isImplicitChip(c));
+}
+
+/** An implicit chip is the active-editor file auto-added for ambient context
+ *  (vs. a file the user explicitly attached). The id prefix is the source of
+ *  truth — set by makeImplicitChip / makeExplicitChip. */
+export function isImplicitChip(chip: FileChip): boolean {
+  return chip.id.startsWith("implicit:");
 }

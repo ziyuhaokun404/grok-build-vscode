@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.4.27 — 2026-07-01
+
+### Added
+
+- **Context files now tell Grok how they got there.** A file you explicitly attach is listed as **"Attached file(s)"** (strong intent); the file that's auto-included because it's open in your editor is listed separately as **"Currently open in the editor (for context)"** (weaker, ambient) — so Grok doesn't treat a file you're just looking at as one you asked it to act on. ([src/prompt-builder.ts](src/prompt-builder.ts))
+- **Uploaded attachments now have their own row above the input**, each with a remove (×) button. The active-editor file stays in the bottom toolbar as before. ([media/chat.js](media/chat.js), [media/chat.css](media/chat.css), [src/sidebar.ts](src/sidebar.ts))
+
+### Fixed
+
+- **grok-build now shows its real name and 512K context window.** grok resolves a `set_model("grok-build")` to a *versioned* id (`grok-build-0.1`) that isn't in the model list, so the toolbar showed the raw id and the context donut fell back to the 200K default (percentage read ~2.5× too high). The id is now normalized back to the list entry, and the window recomputes on every model change. ([src/acp.ts](src/acp.ts), [src/acp-dispatch.ts](src/acp-dispatch.ts), [media/chat.js](media/chat.js))
+- **The voice/mic button no longer jumps when attachments appear.** It's now anchored to the input box instead of the composer, so the new attachments row above the input doesn't shove it out of place. ([media/chat.css](media/chat.css), [src/sidebar.ts](src/sidebar.ts))
+- **Attachment chips show just the filename** — in the composer, the sent-message bubble, *and* restored sessions — for files outside the workspace (Windows absolute paths were previously shown in full); the full path stays on the hover tooltip, and Grok still receives the full path. The file-path context is sent in a machine-readable `<vscode-context>` envelope so the webview can parse it back deterministically on restore instead of showing the raw replayed paths. ([media/chat.js](media/chat.js), [media/webview-helpers.js](media/webview-helpers.js), [src/prompt-builder.ts](src/prompt-builder.ts))
+- **Code blocks no longer render with a doubled blank line around them.** A fenced code block was wrapped in `<br><br>` on top of its own margin (the model sends just one blank line), so it looked double-spaced; code blocks are now emitted as their own block, like tables and math. ([media/chat.js](media/chat.js))
+
 ## 1.4.26 — 2026-06-30
 
 ### Fixed

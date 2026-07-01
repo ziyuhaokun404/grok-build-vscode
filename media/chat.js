@@ -13,6 +13,7 @@
   const gearBtn = $("gear-btn");
   const addBtn = $("add-btn");
   const chipsEl = $("chips");
+  const attachmentsEl = $("attachments");
   const donutArc = $("donut-arc");
   const donutLabel = $("donut-label");
   const slashPopover = $("slash-popover");
@@ -42,6 +43,7 @@
     effort: "",
     cwd: "",
     contextWindow: 200000,
+    usedTokens: 0,
     useCtrlEnter: false,
     commands: [],
     chips: [],
@@ -303,7 +305,7 @@
 
   // ---------- markdown ----------
 
-  const { looksLikeFileRef, formatRelativeTime, modelDisplayName, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText } = globalThis.GrokWebviewHelpers;
+  const { looksLikeFileRef, formatRelativeTime, modelDisplayName, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, parseAttachmentContext } = globalThis.GrokWebviewHelpers;
 
   function escapeAttr(s) {
     return String(s == null ? "" : s)
@@ -1589,6 +1591,19 @@
     };
   }
 
+  // A file chip for a user message bubble: basename only (split on both separators
+  // so a file outside the workspace shows its name, not its full Windows path),
+  // with the full path on the tooltip. Shared by the live bubble (addMessage) and
+  // the restore path (appendUserChunk, reconstructed from the parsed prompt).
+  function makeMsgChipTag(pathStr) {
+    const tag = document.createElement("span");
+    tag.className = "msg-chip";
+    const fileName = pathStr.split(/[\\/]/).pop() || pathStr;
+    tag.innerHTML = ICON.file + `<span>${escapeHtml(truncate(fileName, 20))}</span>`;
+    tag.title = pathStr;
+    return tag;
+  }
+
   function addMessage(role, text, chips) {
     clearWelcome();
     const el = document.createElement("div");
@@ -1611,14 +1626,7 @@
     if (role === "user" && chips && chips.length > 0) {
       const chipsRow = document.createElement("div");
       chipsRow.className = "msg-chips";
-      for (const chip of chips) {
-        const tag = document.createElement("span");
-        tag.className = "msg-chip";
-        const fileName = chip.relPath.split("/").pop() || chip.relPath;
-        tag.innerHTML = ICON.file + `<span>${escapeHtml(truncate(fileName, 20))}</span>`;
-        tag.title = chip.relPath;
-        chipsRow.appendChild(tag);
-      }
+      for (const chip of chips) chipsRow.appendChild(makeMsgChipTag(chip.relPath));
       contentParent.appendChild(chipsRow);
     }
 
@@ -2275,7 +2283,17 @@
     if (state.skipUserBubble) return; // marker-only verdict: no user bubble
     if (state.suppressReplayTurn) return; // still inside the primer's user message
     state.activeUserRaw += text;
-    state.activeUserEl.innerHTML = renderMarkdown(state.activeUserRaw);
+    // The replayed prompt carries the <vscode-context> envelope we sent; strip it
+    // back out so the bubble shows the user's own words + filename-only chips (with
+    // the full path on hover), matching the live send — not the raw paths inline.
+    const parsed = parseAttachmentContext(state.activeUserRaw);
+    state.activeUserEl.innerHTML = renderMarkdown(parsed.body);
+    if (parsed.files.length) {
+      const chipsRow = document.createElement("div");
+      chipsRow.className = "msg-chips";
+      for (const f of parsed.files) chipsRow.appendChild(makeMsgChipTag(f));
+      state.activeUserEl.appendChild(chipsRow);
+    }
     scrollToBottom();
   }
 
@@ -3024,11 +3042,37 @@
 
   function renderChips() {
     chipsEl.innerHTML = "";
+    attachmentsEl.innerHTML = "";
     for (const chip of state.chips) {
+      // Split on both separators — a file outside the workspace has an absolute
+      // relPath (Windows backslashes), so split("/") alone would show the whole
+      // path instead of just the name. The full path stays on the tooltip below.
+      const fileName = (chip.relPath.split(/[\\/]/).pop() || chip.relPath);
+      // A file the user explicitly uploaded (explicit chip, no selection range) gets
+      // its own removable row at the top. The active-editor file (implicit) and
+      // selection snippets stay in the toolbar with the hide/eye toggle.
+      const isUpload = !chip.id.startsWith("implicit:") && !chip.selectionStart;
+      if (isUpload) {
+        const el = document.createElement("div");
+        el.className = "attachment";
+        el.title = chip.path;
+        el.innerHTML = ICON.file;
+        const label = document.createElement("span");
+        label.textContent = fileName;
+        el.appendChild(label);
+        const rm = document.createElement("button");
+        rm.type = "button";
+        rm.className = "attachment-remove";
+        rm.title = "Remove";
+        rm.textContent = "×";
+        rm.onclick = () => vscode.postMessage({ type: "removeChip", id: chip.id });
+        el.appendChild(rm);
+        attachmentsEl.appendChild(el);
+        continue;
+      }
       const el = document.createElement("div");
       el.className = "chip" + (chip.hidden ? " chip-hidden" : "");
       el.title = chip.path;
-      const fileName = (chip.relPath.split("/").pop() || chip.relPath);
       el.innerHTML = (chip.hidden ? ICON.eyeOff : ICON.file) +
         `<span>${truncate(fileName, 10)}</span>`;
       el.onclick = () => vscode.postMessage({ type: "toggleChip", id: chip.id });
@@ -3039,6 +3083,10 @@
   // ---------- donut ----------
 
   function updateDonut(used) {
+    // Remember the last usage so a later redraw (e.g. the context window changing
+    // when the model switches) keeps the same "used" and just rescales the max.
+    if (used != null) state.usedTokens = used;
+    used = state.usedTokens || 0;
     const max = state.contextWindow;
     const pct = Math.min(100, Math.round((used / max) * 100));
     const circumference = 2 * Math.PI * 5;
@@ -3345,9 +3393,16 @@
         updateDonut(0);
         break;
       }
-      case "modelChanged":
+      case "modelChanged": {
         state.currentModelId = msg.modelId;
+        // The context window is model-specific (grok-build 512K vs Composer 200K).
+        // The initial `session` event carries grok's *default* model, so when we
+        // switch (e.g. to the configured default) recompute the max — otherwise the
+        // donut keeps showing the wrong ceiling and an inflated percentage.
+        const m = state.availableModels.find((x) => x.modelId === msg.modelId);
+        if (m && m.totalContextTokens) { state.contextWindow = m.totalContextTokens; updateDonut(); }
         break;
+      }
       case "modeChanged":
         state.currentModeId = msg.modeId;
         updateModeBtn(msg.modeId);

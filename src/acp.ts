@@ -13,6 +13,7 @@ import {
   makeQuestionResponse,
   makeRequest,
   parseAcpLine,
+  resolveModelId,
   routeSessionUpdate,
 } from "./acp-dispatch";
 import {
@@ -225,13 +226,13 @@ export class AcpClient extends EventEmitter {
       mcpServers: [],
     });
     this.sessionId = res.sessionId;
-    this.currentModelId = res.models?.currentModelId;
     this.availableModels = (res.models?.availableModels ?? []).map((m: any) => ({
       modelId: m.modelId,
       name: m.name,
       description: m.description,
       totalContextTokens: m._meta?.totalContextTokens,
     }));
+    this.currentModelId = resolveModelId(res.models?.currentModelId, this.availableModels);
     this.emit("session", res);
 
     if (modelId && modelId !== this.currentModelId) {
@@ -247,7 +248,6 @@ export class AcpClient extends EventEmitter {
       mcpServers: [],
     });
     this.sessionId = sessionId;
-    this.currentModelId = res?.models?.currentModelId ?? this.currentModelId;
     if (res?.models?.availableModels) {
       this.availableModels = res.models.availableModels.map((m: any) => ({
         modelId: m.modelId,
@@ -256,6 +256,8 @@ export class AcpClient extends EventEmitter {
         totalContextTokens: m._meta?.totalContextTokens,
       }));
     }
+    this.currentModelId =
+      resolveModelId(res?.models?.currentModelId, this.availableModels) ?? this.currentModelId;
     this.emit("session", { sessionId, ...(res ?? {}) });
     this.emit("sessionLoaded", { sessionId });
     if (modelId && modelId !== this.currentModelId) {
@@ -272,8 +274,17 @@ export class AcpClient extends EventEmitter {
     });
     const ok = res?._meta?.model?.Ok;
     if (ok) {
-      this.currentModelId = ok;
-      this.emit("modelChanged", ok);
+      // grok's set_model echoes a *versioned* id ("grok-build-0.1") that carries no
+      // name or context size and isn't in availableModels ("grok-build"). We
+      // requested a list id (the picker only ever offers list ids), so anchor to
+      // that — it always resolves to a name + context window. Only if the requested
+      // id somehow isn't in the list (e.g. a stale grok.defaultModel) do we fall
+      // back to normalizing grok's echo.
+      const requestedInList = this.availableModels.some((m) => m.modelId === modelId);
+      this.currentModelId = requestedInList
+        ? modelId
+        : (resolveModelId(ok, this.availableModels) ?? ok);
+      this.emit("modelChanged", this.currentModelId);
     }
   }
 

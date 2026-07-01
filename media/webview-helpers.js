@@ -230,7 +230,30 @@
     return "Tool call failed.";
   }
 
-  const api = { FILE_EXTS, looksLikeFileRef, formatRelativeTime, modelDisplayName, MIC_STATES, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText };
+  // Parse the <vscode-context> envelope that prompt-builder.ts wraps around the
+  // file-path context (attached files + the open-editor file). On session restore
+  // grok replays the full prompt text; pulling the block back out lets us re-render
+  // filename-only chips + the user's own text, instead of showing raw paths inline.
+  // Must stay in sync with buildPrompt's format (src/prompt-builder.ts). Returns
+  // { files: string[], body: string } — body is the prompt minus the block. When
+  // there's no block (a plain message) files is empty and body is the input.
+  function parseAttachmentContext(text) {
+    if (typeof text !== "string") return { files: [], body: text || "" };
+    const m = text.match(/<vscode-context[^>]*>\n?([\s\S]*?)\n?<\/vscode-context>\s*/);
+    if (!m) return { files: [], body: text };
+    const files = [];
+    for (const raw of m[1].split("\n")) {
+      const line = raw.trim();
+      let mm;
+      if ((mm = line.match(/^- (.+)$/))) files.push(mm[1]);
+      else if ((mm = line.match(/^Attached file: (.+)$/))) files.push(mm[1]);
+      else if ((mm = line.match(/^Currently open in the editor \(for context\): (.+)$/))) files.push(mm[1]);
+    }
+    const body = (text.slice(0, m.index) + text.slice(m.index + m[0].length)).trim();
+    return { files, body };
+  }
+
+  const api = { FILE_EXTS, looksLikeFileRef, formatRelativeTime, modelDisplayName, MIC_STATES, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, parseAttachmentContext };
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;
   } else {

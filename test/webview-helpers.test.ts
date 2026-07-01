@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
 // @ts-expect-error — plain JS module, no types
-import { looksLikeFileRef, formatRelativeTime, FILE_EXTS, modelDisplayName, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, shouldStickToBottom, splitMath, stripUnsupportedTex } from "../media/webview-helpers.js";
+import { looksLikeFileRef, formatRelativeTime, FILE_EXTS, modelDisplayName, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, shouldStickToBottom, splitMath, stripUnsupportedTex, parseAttachmentContext } from "../media/webview-helpers.js";
+import { buildPrompt } from "../src/prompt-builder";
+import { makeExplicitChip, makeImplicitChip } from "../src/chips";
 
 describe("looksLikeFileRef", () => {
   it("accepts a bare filename with a known extension", () => {
@@ -136,6 +138,46 @@ describe("modelDisplayName", () => {
   it("returns '' for a falsy model ID", () => {
     expect(modelDisplayName("", models)).toBe("");
     expect(modelDisplayName(undefined, models)).toBe("");
+  });
+});
+
+describe("parseAttachmentContext", () => {
+  const deps = { readFile: () => "", extName: (p: string) => (p.includes(".") ? p.slice(p.lastIndexOf(".")) : "") };
+
+  it("returns the input as body with no files when there's no envelope", () => {
+    expect(parseAttachmentContext("just a message")).toEqual({ files: [], body: "just a message" });
+  });
+
+  it("round-trips a single attached file from buildPrompt", () => {
+    const prompt = buildPrompt("fix it", [makeExplicitChip("/x/CLAUDE.md", "CLAUDE.md")], deps);
+    expect(parseAttachmentContext(prompt)).toEqual({ files: ["CLAUDE.md"], body: "fix it" });
+  });
+
+  it("round-trips multiple attached files + an open-editor file", () => {
+    const prompt = buildPrompt(
+      "compare these",
+      [
+        makeExplicitChip("/x/CLAUDE.md", "CLAUDE.md"),
+        makeExplicitChip("/d/pic.png", "c:\\Users\\Dell\\Downloads\\pic.png"),
+        makeImplicitChip("/x/src/foo.ts", "src/foo.ts"),
+      ],
+      deps,
+    );
+    expect(parseAttachmentContext(prompt)).toEqual({
+      files: ["CLAUDE.md", "c:\\Users\\Dell\\Downloads\\pic.png", "src/foo.ts"],
+      body: "compare these",
+    });
+  });
+
+  it("keeps a fenced selection block in the body (it's not part of the envelope)", () => {
+    const prompt = buildPrompt("what is this", [makeExplicitChip("/x/a.ts", "a.ts", 1, 1)], {
+      readFile: () => "const x = 1;",
+      extName: () => ".ts",
+    });
+    const { files, body } = parseAttachmentContext(prompt);
+    expect(files).toEqual([]);
+    expect(body).toContain("```ts");
+    expect(body).toContain("what is this");
   });
 });
 

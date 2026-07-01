@@ -348,3 +348,31 @@ export function isIncompatibleAgentError(err: any): boolean {
   // Fallback if a future CLI keeps the message but drops the structured code.
   return /requires agent .+ but the active agent/i.test(err?.message ?? "");
 }
+
+/**
+ * Map a model id reported by grok onto the id present in `availableModels`.
+ * grok's `session/set_model` (and, on some builds, session load) echoes a
+ * **versioned** id — e.g. it resolves a request for `grok-build` to
+ * `grok-build-0.1` — but the model *list* still uses the base `grok-build`.
+ * Left unreconciled, `currentModelId` matches nothing, so the toolbar shows the
+ * raw id instead of "Grok Build" and the context-window lookup falls back to the
+ * default (200K instead of grok-build's 512K). Exact match wins; otherwise a
+ * base-id prefix match (`grok-build-0.1` → `grok-build`); otherwise the input is
+ * returned unchanged. The prefix match prefers the **longest** (most specific)
+ * candidate, so a future `grok-build-mini-0.1` resolves to `grok-build-mini`, not
+ * `grok-build`. Pure.
+ */
+export function resolveModelId(
+  id: string | undefined,
+  availableModels: { modelId: string }[] | undefined,
+): string | undefined {
+  if (!id || !availableModels?.length) return id;
+  if (availableModels.some((m) => m.modelId === id)) return id;
+  let best: string | undefined;
+  for (const m of availableModels) {
+    if (id.startsWith(m.modelId) || m.modelId.startsWith(id)) {
+      if (!best || m.modelId.length > best.length) best = m.modelId;
+    }
+  }
+  return best ?? id;
+}

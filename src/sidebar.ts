@@ -3174,11 +3174,12 @@ See design doc for the full state machine diagram.`;
 
   <footer class="composer">
     <button id="scroll-bottom-btn" class="scroll-bottom-btn" type="button" title="Scroll to bottom"></button>
+    <div id="attachments" class="attachments"></div>
     <div class="composer-input-wrap">
       <div id="input-highlight" class="input-highlight" aria-hidden="true"></div>
       <textarea id="input" placeholder="Ask Grok..." rows="3"></textarea>
+      <button id="mic-btn" class="mic-btn" title="Voice control"></button>
     </div>
-    <button id="mic-btn" class="mic-btn" title="Voice control"></button>
     <div class="composer-toolbar">
       <div class="toolbar-left">
         <button id="add-btn" class="toolbar-btn" title="Add context"></button>

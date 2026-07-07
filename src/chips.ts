@@ -131,6 +131,15 @@ export function clearImplicitChips(chips: FileChip[]): FileChip[] {
   return chips.filter((c) => !isImplicitChip(c));
 }
 
+/** Drop exactly the chips a send consumed. The implicit context chip stays
+ *  (it mirrors IDE state, not a one-shot attachment) — and so does anything
+ *  NOT in the send's snapshot: a chip staged while the send was pre-reading
+ *  images belongs to the next turn, not the bin. */
+export function consumeChips(current: FileChip[], sent: FileChip[]): FileChip[] {
+  const sentIds = new Set(sent.map((c) => c.id));
+  return current.filter((c) => isImplicitChip(c) || !sentIds.has(c.id));
+}
+
 /** An implicit chip is the active-editor file auto-added for ambient context
  *  (vs. a file the user explicitly attached). The id prefix is the source of
  *  truth — set by makeImplicitChip / makeExplicitChip. */

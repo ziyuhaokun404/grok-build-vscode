@@ -35,6 +35,7 @@ import {
   FileChip,
   MAX_VISION_IMAGE_BYTES,
   clearImplicitChips,
+  consumeChips,
   extFromMime,
   isImageChip,
   isImplicitChip,
@@ -213,6 +214,8 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
   private sweptEmptySessions = false;
   private output: vscode.OutputChannel;
   private chips: FileChip[] = [];
+  /** Attachment-staging ops still in flight — see trackAttach. */
+  private readonly pendingAttach = new Set<Promise<void>>();
   private editorWatcher?: vscode.Disposable;
   private terminalManager = new TerminalManager();
   private voiceRecorder = new VoiceRecorder();
@@ -1781,10 +1784,10 @@ See design doc for the full state machine diagram.`;
         await this.exportExpr(msg);
         break;
       case "dropFile":
-        await this.addDroppedFile(msg.path, msg.shift);
+        await this.trackAttach(this.addDroppedFile(msg.path, msg.shift));
         break;
       case "pasteImage":
-        await this.addPastedImage(msg.data, msg.mimeType);
+        await this.trackAttach(this.addPastedImage(msg.data, msg.mimeType));
         break;
       case "permissionAnswer":
         this.focused.client?.respondPermission(msg.requestId, msg.optionId);
@@ -1937,7 +1940,7 @@ See design doc for the full state machine diagram.`;
         await this.clearAllSessions();
         break;
       case "pickFile":
-        await this.pickFileFromComputer();
+        await this.trackAttach(this.pickFileFromComputer());
         break;
       case "voiceStart":
         await this.handleVoiceStart();
@@ -2687,6 +2690,19 @@ See design doc for the full state machine diagram.`;
     return vscode.Uri.joinPath(dir, `${stem}-${Date.now()}${ext}`);
   }
 
+  /** Track an in-flight attachment-staging op (paste / drop / pick). Message
+   *  ordering only guarantees an op posted before send has STARTED handling —
+   *  its fs awaits can still be mid-flight when handleSend runs (VS Code does
+   *  not serialize async onDidReceiveMessage handlers), so handleSend settles
+   *  this set before snapshotting chips: the chip must make THIS send, not the
+   *  next one. */
+  private trackAttach(op: Promise<void>): Promise<void> {
+    this.pendingAttach.add(op);
+    const done = () => { this.pendingAttach.delete(op); };
+    void op.then(done, done);
+    return op;
+  }
+
   /**
    * Session-NEUTRAL staging dir for images waiting in the composer. Deliberately
    * NOT the grok session dir: composer chips are provider-level state that
@@ -2815,9 +2831,19 @@ See design doc for the full state machine diagram.`;
     const session = this.focused;
     const gen = session.gen;
 
+    // An attachment posted before send has started staging (message ordering),
+    // but its fs awaits can still be mid-flight — a paste is ms, a 20MiB drop
+    // import is tens of ms. Settle the in-flight set so its chip makes THIS
+    // send. One-shot snapshot on purpose: an op starting during this await was
+    // posted after send, so it belongs to the next turn.
+    const staging = [...this.pendingAttach];
+    if (staging.length) {
+      await Promise.allSettled(staging);
+      if (gen !== session.gen) return;
+    }
+
     // Snapshot the HOST's chips — the webview copy is a render mirror of these
-    // (every mutation routes through us + postChips), and message ordering
-    // guarantees a pasteImage posted before send has already landed here.
+    // (every mutation routes through us + postChips).
     // `bare` sends (gear-menu /compact) deliberately carry no attachments.
     const chips = bare ? [] : [...this.chips];
 
@@ -2846,6 +2872,10 @@ See design doc for the full state machine diagram.`;
         return;
       }
     }
+    // Mirror the failure path's guard: if the client was torn down during the
+    // pre-read awaits, bail BEFORE consuming chips / unlinking staged files —
+    // the composer keeps its attachments for the session that replaced us.
+    if (gen !== session.gen) return;
 
     // A leading context envelope knocks a slash command off position 0 of the
     // text block, and the CLI then routes it to the LLM instead of dispatching
@@ -2875,7 +2905,9 @@ See design doc for the full state machine diagram.`;
       // chip mirrors IDE state and stays resident (like Claude Code's). Keep
       // it through the clear so refreshImplicitChip sees `prev` — preserving
       // the user's eye-off choice and no-op-diffing against the live editor.
-      this.chips = this.chips.filter(isImplicitChip);
+      // Consume by id, not wholesale: a chip staged after the snapshot (while
+      // images were pre-reading) belongs to the next turn and must survive.
+      this.chips = consumeChips(this.chips, chips);
       this.refreshImplicitChip(true);
     }
     // Staged files are one-shot: their bytes ride the prompt inline now.

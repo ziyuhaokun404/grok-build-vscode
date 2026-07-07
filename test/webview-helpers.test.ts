@@ -297,6 +297,29 @@ describe("parseImageTags", () => {
     expect(out.images).toEqual([{ index: 2, path: "assets/hero.png" }]);
   });
 
+  it("round-trips a disk-import tag whose filename contains parentheses", () => {
+    // Browser-download dedup names — `screenshot (1).png` — put a `)` inside
+    // the path; the tag's close paren must resolve to the LAST one on the line.
+    const origin = "shots/screenshot (1).png";
+    const img = makeImageChip("/staging/s.png", 1, "image/png", origin);
+    const { text } = buildPromptWithImages(
+      "describe it",
+      [img],
+      [{ index: 1, mimeType: "image/png", data: "AA", relPath: origin }],
+      deps,
+    );
+    expect(parseImageTags(text)).toEqual({
+      body: "describe it",
+      images: [{ index: 1, path: origin }],
+    });
+  });
+
+  it("leaves a literal empty-parens tag shape in the body", () => {
+    // buildPromptWithImages never emits `()` — that's the user's own text.
+    const body = "describe\n\n[Image #1] ()";
+    expect(parseImageTags(body)).toEqual({ body, images: [] });
+  });
+
   it("collects multiple trailing tag lines in order", () => {
     const out = parseImageTags("compare\n\n[Image #1]\n[Image #3] (a b/c.png)");
     expect(out.body).toBe("compare");

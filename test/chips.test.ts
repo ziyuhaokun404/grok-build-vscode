@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   MAX_VISION_IMAGE_BYTES,
   clearImplicitChips,
+  consumeChips,
   extFromMime,
   isVisionImagePath,
   isVisionMime,
@@ -67,6 +68,18 @@ describe("chips", () => {
     const exp = makeExplicitChip("/b", "b");
     const result = clearImplicitChips([imp, exp]);
     expect(result).toEqual([exp]);
+  });
+
+  it("consumeChips drops exactly what the send snapshotted, keeps the implicit chip", () => {
+    const imp = makeImplicitChip("/abs/open.ts", "open.ts");
+    const sent = makeExplicitChip("/abs/a.txt", "a.txt");
+    expect(consumeChips([imp, sent], [imp, sent])).toEqual([imp]);
+  });
+
+  it("consumeChips keeps a chip staged after the send snapshot (next-turn attachment)", () => {
+    const sent = makeImageChip("/staging/a.png", 1, "image/png");
+    const late = makeImageChip("/staging/b.png", 2, "image/png");
+    expect(consumeChips([sent, late], [sent])).toEqual([late]);
   });
 
   it("isVisionImagePath accepts raster vision formats only", () => {

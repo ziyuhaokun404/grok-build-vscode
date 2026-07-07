@@ -311,7 +311,11 @@
     if (typeof body !== "string" || body.indexOf("[Image #") === -1) {
       return { body: typeof body === "string" ? body : body || "", images: [] };
     }
-    const TAG_LINE = /^\[Image #(\d+)\](?: \(([^)]*)\))?$/;
+    // Path capture is greedy + $-anchored so a parenthesized filename parses —
+    // `shots/screenshot (1).png`, the browser-download dedup shape: backtracking
+    // puts the close on the LAST `)`. A literal empty `()` no longer matches
+    // (buildPromptWithImages never emits one), so that stays user text.
+    const TAG_LINE = /^\[Image #(\d+)\](?: \((.+)\))?$/;
     const lines = body.split("\n");
     const trailing = [];
     let end = lines.length;

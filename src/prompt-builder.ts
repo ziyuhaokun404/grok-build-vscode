@@ -47,12 +47,22 @@ export const CONTEXT_TAG_CLOSE = "</vscode-context>";
  *   auto-included for ambient context is the weaker "this is what I'm looking at"
  *   signal ("Currently open in the editor (for context)"). Keeping them apart stops
  *   grok treating a file you happen to have open as one you asked it to work on.
- * - The user's text follows after a blank line.
+ * - The user's text follows after a blank line — EXCEPT for confirmed slash
+ *   commands (`slashCommand: true`), where the order flips and the context
+ *   trails the text instead. The CLI dispatches a slash command only when it
+ *   sits at position 0 of the text block; a leading envelope silently degrades
+ *   `/compact` into an ordinary LLM turn that ballooned context 6x in testing
+ *   (research/compact-probe.cjs, grok 0.2.87 — trailing context verified to
+ *   keep native dispatch). Restore still strips a trailing envelope
+ *   (parseAttachmentContext matches anywhere), but selection snippets are only
+ *   peeled from the body's start, so a slash+selection send replays its
+ *   snippet inline — acceptable for that rare combination.
  */
 export function buildPrompt(
   text: string,
   chips: FileChip[],
   deps: PromptBuilderDeps,
+  slashCommand = false,
 ): string {
   const attached: string[] = []; // explicitly attached whole files → bare paths, grok decides how to read
   const openInEditor: string[] = []; // implicit active-editor file → ambient context only
@@ -96,13 +106,13 @@ export function buildPrompt(
     );
   }
 
-  const parts: string[] = [];
+  const context: string[] = [];
   if (contextSections.length) {
-    parts.push(`${CONTEXT_TAG_OPEN}\n${contextSections.join("\n\n")}\n${CONTEXT_TAG_CLOSE}`);
+    context.push(`${CONTEXT_TAG_OPEN}\n${contextSections.join("\n\n")}\n${CONTEXT_TAG_CLOSE}`);
   }
-  parts.push(...blocks);
-  if (text) parts.push(text);
-  return parts.join("\n\n");
+  context.push(...blocks);
+  const parts = slashCommand ? [text, ...context] : [...context, text];
+  return parts.filter(Boolean).join("\n\n");
 }
 
 /**
@@ -119,6 +129,12 @@ export function buildPrompt(
  *   position 0 and break CLI slash dispatch), and each tag sits on its own
  *   trailing line, carrying the origin workspace path when there is one so
  *   grok can act on the real file, not just the pixels.
+ * - Confirmed slash commands (`slashCommand: true`) flip the envelope too:
+ *   `<text>\n\n<envelope>\n\n<tags>` — the same position-0 rule the tag
+ *   placement already honors also applies to the envelope itself (that was
+ *   the missed half: a leading envelope broke dispatch exactly like a
+ *   leading tag would). Tags stay trailing in both orders, so
+ *   `parseImageTags`'s strip-from-the-end assumption holds.
  * - `blocks[0]` is always the text block; image blocks follow in tag order.
  *   The restore side parses tags back out via `parseImageTags` in
  *   media/webview-helpers.js — keep the tag format in sync with it.
@@ -128,10 +144,11 @@ export function buildPromptWithImages(
   chips: FileChip[],
   images: PromptImageInput[],
   deps: PromptBuilderDeps,
+  slashCommand = false,
 ): { text: string; blocks: PromptContentBlock[] } {
   const fileChips = chips.filter((c) => !isImageChip(c));
   if (images.length === 0) {
-    const plain = buildPrompt(text, fileChips, deps);
+    const plain = buildPrompt(text, fileChips, deps, slashCommand);
     return { text: plain, blocks: [{ type: "text", text: plain }] };
   }
   const sorted = [...images].sort((a, b) => a.index - b.index);
@@ -139,7 +156,8 @@ export function buildPromptWithImages(
     .map((im) => (im.relPath ? `[Image #${im.index}] (${im.relPath})` : `[Image #${im.index}]`))
     .join("\n");
   const filePrompt = buildPrompt("", fileChips, deps);
-  const promptText = [filePrompt, text, tagLines].filter(Boolean).join("\n\n");
+  const ordered = slashCommand ? [text, filePrompt, tagLines] : [filePrompt, text, tagLines];
+  const promptText = ordered.filter(Boolean).join("\n\n");
   const blocks: PromptContentBlock[] = [{ type: "text", text: promptText }];
   for (const im of sorted) {
     blocks.push({ type: "image", mimeType: im.mimeType, data: im.data });

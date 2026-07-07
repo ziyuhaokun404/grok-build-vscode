@@ -48,6 +48,7 @@ import {
   toggleChip,
 } from "./chips";
 import { buildPromptWithImages, type PromptImageInput } from "./prompt-builder";
+import { matchSlashCommand } from "./slash-filter";
 import { parseFileRef, shouldReadFileInline } from "./file-ref";
 import { pickRejectOption, shouldRejectPermission } from "./plan-gate";
 import { appendPlanEntry, decideRestoreState } from "./plan-restore";
@@ -2846,10 +2847,26 @@ See design doc for the full state machine diagram.`;
       }
     }
 
-    const { blocks: promptBlocks } = buildPromptWithImages(text, chips, images, {
-      readFile: (p) => fs.readFileSync(p, "utf8"),
-      extName: (p) => path.extname(p),
-    });
+    // A leading context envelope knocks a slash command off position 0 of the
+    // text block, and the CLI then routes it to the LLM instead of dispatching
+    // it (a /compact that *grew* the context 6x in testing — see
+    // research/compact.md). Confirmed commands flip the prompt order so the
+    // command keeps position 0 and the context trails it.
+    const slashCommand = matchSlashCommand(
+      text,
+      client.availableCommands.map((c) => c.name),
+    );
+
+    const { blocks: promptBlocks } = buildPromptWithImages(
+      text,
+      chips,
+      images,
+      {
+        readFile: (p) => fs.readFileSync(p, "utf8"),
+        extName: (p) => path.extname(p),
+      },
+      slashCommand != null,
+    );
 
     if (bare) {
       this.postChips();
@@ -2903,6 +2920,18 @@ See design doc for the full state machine diagram.`;
         this.setStatus(session, "done");
       }
       this.maybeGenerateTitle(session);
+      if (slashCommand === "compact") {
+        // A native compact rewrites the history around a summary, which can fold
+        // the hidden primer away with everything else — silently breaking the
+        // plan-verdict protocol for the rest of the session. Re-prime eagerly
+        // (non-blocking, same as session start); this must run AFTER the compact
+        // turn's own agentEnd above, or the primer's suppressContent window
+        // would swallow it. Both flags reset: a settled primingPromise would
+        // otherwise short-circuit ensurePrimed without sending anything.
+        session.primed = false;
+        session.primingPromise = undefined;
+        void this.ensurePrimed(client, session, gen);
+      }
     } catch (err) {
       if (gen !== session.gen) return; // prompt rejected because we disposed the old client — don't leak the error into the new session
       const e = err as any;

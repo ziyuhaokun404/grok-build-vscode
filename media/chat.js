@@ -3748,7 +3748,11 @@
         // turn ends emitting promptComplete; afterTurn's follow-up turn then
         // runs and emits its own agentEnd at the end, which clears busy).
         commitAgentTurn();
-        if (msg.meta?.totalTokens) updateDonut(msg.meta.totalTokens);
+        // != null, not truthy: a native /compact reports totalTokens 0 (context
+        // reset). Swallowing the 0 froze the donut at the pre-compact value —
+        // the "did /compact even work?" report. Zero renders an empty ring
+        // until the next turn reports the real post-compact size.
+        if (msg.meta?.totalTokens != null) updateDonut(msg.meta.totalTokens);
         break;
       case "agentReset": {
         hidePlanProcessing(); // turn is being reset, indicator no longer applies

@@ -106,6 +106,34 @@ describe("buildPrompt", () => {
     });
     expect(out).toContain("```\nall:");
   });
+
+  // Slash commands only dispatch when they sit at position 0 of the text block
+  // (research/compact.md) — a confirmed command flips the order so the context
+  // trails the text.
+  it("keeps the legacy context-first order when slashCommand is false", () => {
+    const out = buildPrompt("/compact", [makeImplicitChip("/a.ts", "src/a.ts")], deps, false);
+    expect(out).toBe(ctx("Currently open in the editor (for context): src/a.ts") + "\n\n/compact");
+  });
+
+  it("trails the envelope behind a confirmed slash command", () => {
+    const out = buildPrompt("/compact", [makeImplicitChip("/a.ts", "src/a.ts")], deps, true);
+    expect(out).toBe("/compact\n\n" + ctx("Currently open in the editor (for context): src/a.ts"));
+  });
+
+  it("trails selection snippets behind a confirmed slash command too", () => {
+    const sel = makeExplicitChip("/b.ts", "b.ts", 1, 2);
+    const out = buildPrompt("/compact", [sel], deps, true);
+    expect(out).toBe("/compact\n\n`b.ts` (lines 1-2):\n```ts\nX\nY\n```");
+  });
+
+  it("keeps envelope-then-snippet order inside the trailing context", () => {
+    const attached = makeExplicitChip("/a.ts", "a.ts");
+    const sel = makeExplicitChip("/b.ts", "b.ts", 1, 2);
+    const out = buildPrompt("/compact", [attached, sel], deps, true);
+    expect(out).toBe(
+      "/compact\n\n" + ctx("Attached file: a.ts") + "\n\n`b.ts` (lines 1-2):\n```ts\nX\nY\n```",
+    );
+  });
 });
 
 describe("buildPromptWithImages", () => {
@@ -116,6 +144,29 @@ describe("buildPromptWithImages", () => {
     const out = buildPromptWithImages("do it", [file], [], deps);
     expect(out.text).toBe(buildPrompt("do it", [file], deps));
     expect(out.blocks).toEqual([{ type: "text", text: out.text }]);
+
+    const slash = buildPromptWithImages("/compact", [file], [], deps, true);
+    expect(slash.text).toBe(buildPrompt("/compact", [file], deps, true));
+    expect(slash.blocks).toEqual([{ type: "text", text: slash.text }]);
+  });
+
+  it("keeps a confirmed slash command ahead of both envelope and image tags", () => {
+    const file = makeExplicitChip("/a.ts", "src/a.ts");
+    const img = makeImageChip("/staging/img.png", 1, "image/png");
+    const out = buildPromptWithImages(
+      "/imagine make it watercolor",
+      [file, img],
+      [{ index: 1, mimeType: "image/png", data: b64 }],
+      deps,
+      true,
+    );
+    expect(out.text).toBe(
+      "/imagine make it watercolor\n\n" +
+        `${CONTEXT_TAG_OPEN}\nAttached file: src/a.ts\n${CONTEXT_TAG_CLOSE}` +
+        "\n\n[Image #1]",
+    );
+    expect(out.blocks[0]).toEqual({ type: "text", text: out.text });
+    expect(out.blocks[1]).toEqual({ type: "image", mimeType: "image/png", data: b64 });
   });
 
   it("keeps user text first and puts tags on trailing lines", () => {

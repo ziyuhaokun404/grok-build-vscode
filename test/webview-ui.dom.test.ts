@@ -397,6 +397,38 @@ describe("mode picker (the plan-gate entry path)", () => {
   });
 });
 
+describe("context donut (token usage)", () => {
+  const boot = () => {
+    const h = bootWebview();
+    dispatch(h.window, {
+      type: "session",
+      sessionId: "s1",
+      currentModelId: "grok-build",
+      models: [{ modelId: "grok-build", name: "Grok Build", totalContextTokens: 100000 }],
+    });
+    return h;
+  };
+
+  it("accepts totalTokens 0 — a native /compact resets the count, the donut must not freeze", () => {
+    const { window, doc } = boot();
+    dispatch(window, { type: "promptComplete", meta: { totalTokens: 32000 } });
+    expect($(doc, "donut-label").textContent).toBe("32K/100K");
+    // The compact turn's response reports totalTokens: 0 (verified against grok
+    // 0.2.87 in research/compact.md). The old truthy gate swallowed it and the
+    // donut kept showing the pre-compact value — "did /compact even work?".
+    dispatch(window, { type: "promptComplete", meta: { totalTokens: 0 } });
+    expect($(doc, "donut-label").textContent).toBe("0K/100K");
+  });
+
+  it("still ignores a promptComplete that carries no totalTokens at all", () => {
+    const { window, doc } = boot();
+    dispatch(window, { type: "promptComplete", meta: { totalTokens: 32000 } });
+    dispatch(window, { type: "promptComplete", meta: {} });
+    dispatch(window, { type: "promptComplete" });
+    expect($(doc, "donut-label").textContent).toBe("32K/100K");
+  });
+});
+
 describe("gear settings lock (model + effort disabled while busy / priming)", () => {
   const models = [
     { modelId: "grok-build", name: "Grok Build" },

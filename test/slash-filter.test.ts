@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { applySlashPick, filterCommands, getSlashQuery } from "../src/slash-filter";
+import { applySlashPick, filterCommands, getSlashQuery, matchSlashCommand } from "../src/slash-filter";
 
 describe("getSlashQuery", () => {
   it("returns null when no slash at line start", () => {
@@ -72,5 +72,39 @@ describe("applySlashPick", () => {
     const r = applySlashPick("hi\n/pla", 7, "plan");
     expect(r.text).toBe("hi\n/plan ");
     expect(r.caret).toBe(9);
+  });
+});
+
+describe("matchSlashCommand", () => {
+  const commands = ["compact", "context", "imagine-video", "user:code-review"];
+
+  it("matches an advertised command at position 0, with or without args", () => {
+    expect(matchSlashCommand("/compact", commands)).toBe("compact");
+    expect(matchSlashCommand("/compact focus on the tests", commands)).toBe("compact");
+    expect(matchSlashCommand("/imagine-video a red cube", commands)).toBe("imagine-video");
+    expect(matchSlashCommand("/user:code-review src/a.ts", commands)).toBe("user:code-review");
+  });
+
+  it("matches a multi-line prompt whose first line is the command", () => {
+    expect(matchSlashCommand("/compact\n\nkeep the recent work", commands)).toBe("compact");
+  });
+
+  it("rejects prose that merely starts with a slash", () => {
+    // Unix paths have no token boundary: `tmp` is followed by `/`, not whitespace.
+    expect(matchSlashCommand("/tmp/foo is broken", commands)).toBeNull();
+    expect(matchSlashCommand("/tmp/foo", ["tmp"])).toBeNull();
+    expect(matchSlashCommand("please /compact", commands)).toBeNull();
+    expect(matchSlashCommand("/", commands)).toBeNull();
+    expect(matchSlashCommand("/ compact", commands)).toBeNull();
+  });
+
+  it("rejects unknown commands once the CLI has advertised its list", () => {
+    expect(matchSlashCommand("/notacommand do it", commands)).toBeNull();
+    expect(matchSlashCommand("/compact-ish", commands)).toBeNull();
+  });
+
+  it("falls back to shape alone before available_commands arrives", () => {
+    expect(matchSlashCommand("/compact", [])).toBe("compact");
+    expect(matchSlashCommand("/tmp/foo is broken", [])).toBeNull();
   });
 });

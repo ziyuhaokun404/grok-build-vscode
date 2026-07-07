@@ -253,6 +253,51 @@
     return { files, body };
   }
 
+  // Parse the leading fenced selection snippets buildPrompt (src/prompt-builder.ts)
+  // emits for chips carrying a selection range, so restore re-renders them as
+  // ranged chips (`a.ts:2-4`) instead of inline code blocks — matching the live
+  // bubble. Must stay in sync with buildPrompt's block format:
+  //
+  //   `src/a.ts` (lines 2-4):
+  //   ```ts
+  //   …the selected lines…
+  //   ```
+  //
+  // On the wire the snippets sit between the <vscode-context> envelope and the
+  // user's own text, blank-line separated. Only complete blocks anchored at the
+  // START of the body are peeled: a selection-shaped block in the middle of the
+  // user's words stays put, and a half-streamed block (replay re-parses the whole
+  // bubble on every chunk) stays in the body until its closing fence arrives.
+  // buildPrompt does no fence escaping, so selected code containing a bare ```
+  // line is ambiguous on the wire — we stop at the first standalone closing
+  // fence, exactly as a markdown renderer would. Returns
+  // { body, selections: [{path, start, end}] } with selections in block order.
+  function parseSelectionBlocks(body) {
+    const input = typeof body === "string" ? body : body || "";
+    if (input.indexOf("(lines ") === -1 || input.indexOf("```") === -1) {
+      return { body: input, selections: [] };
+    }
+    const HEADER = /^`([^`\n]+)` \(lines ([1-9]\d*)-([1-9]\d*)\):\n```[^\n]*\n/;
+    const CLOSE = /(?:^|\n)```[ \t]*(?:\n|$)/;
+    const selections = [];
+    let rest = input;
+    for (;;) {
+      rest = rest.replace(/^\n+/, "");
+      const header = rest.match(HEADER);
+      if (!header) break;
+      const start = Number(header[2]);
+      const end = Number(header[3]);
+      if (end < start) break; // not a shape buildPrompt produces
+      const afterHeader = rest.slice(header[0].length);
+      const close = afterHeader.match(CLOSE);
+      if (!close) break; // half-streamed block — leave it for the next chunk
+      selections.push({ path: header[1], start, end });
+      rest = afterHeader.slice(close.index + close[0].length);
+    }
+    if (!selections.length) return { body: input, selections: [] };
+    return { body: rest.trim(), selections };
+  }
+
   // Parse the `[Image #N]` tags that buildPromptWithImages (src/prompt-builder.ts)
   // puts in the prompt text back out of a replayed body, so restore re-renders
   // image chips instead of raw tags. Must stay in sync with that format.
@@ -297,7 +342,7 @@
     return { body: rest.trim(), images: [...leading, ...trailing] };
   }
 
-  const api = { FILE_EXTS, looksLikeFileRef, formatRelativeTime, modelDisplayName, MIC_STATES, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, parseAttachmentContext, parseImageTags };
+  const api = { FILE_EXTS, looksLikeFileRef, formatRelativeTime, modelDisplayName, MIC_STATES, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, parseAttachmentContext, parseSelectionBlocks, parseImageTags };
 
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;

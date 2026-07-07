@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 // @ts-expect-error — plain JS module, no types
-import { looksLikeFileRef, formatRelativeTime, FILE_EXTS, modelDisplayName, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, shouldStickToBottom, splitMath, stripUnsupportedTex, parseAttachmentContext, parseImageTags } from "../media/webview-helpers.js";
+import { looksLikeFileRef, formatRelativeTime, FILE_EXTS, modelDisplayName, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, shouldStickToBottom, splitMath, stripUnsupportedTex, parseAttachmentContext, parseSelectionBlocks, parseImageTags } from "../media/webview-helpers.js";
 import { buildPrompt, buildPromptWithImages } from "../src/prompt-builder";
 import { makeExplicitChip, makeImplicitChip, makeImageChip } from "../src/chips";
 
@@ -169,15 +169,104 @@ describe("parseAttachmentContext", () => {
     });
   });
 
-  it("keeps a fenced selection block in the body (it's not part of the envelope)", () => {
+  it("leaves a fenced selection block in the body (parseSelectionBlocks owns it)", () => {
     const prompt = buildPrompt("what is this", [makeExplicitChip("/x/a.ts", "a.ts", 1, 1)], {
       readFile: () => "const x = 1;",
       extName: () => ".ts",
     });
     const { files, body } = parseAttachmentContext(prompt);
     expect(files).toEqual([]);
-    expect(body).toContain("```ts");
+    expect(body).toContain("`a.ts` (lines 1-1):");
     expect(body).toContain("what is this");
+  });
+});
+
+describe("parseSelectionBlocks", () => {
+  const deps = {
+    readFile: () => "line1\nline2\nline3\nline4\nline5",
+    extName: () => ".ts",
+  };
+
+  it("passes plain text through untouched", () => {
+    expect(parseSelectionBlocks("just a message")).toEqual({ body: "just a message", selections: [] });
+  });
+
+  it("round-trips a buildPrompt selection snippet back into path + range", () => {
+    const prompt = buildPrompt("what is this", [makeExplicitChip("/x/a.ts", "src/a.ts", 2, 4)], deps);
+    const { body } = parseAttachmentContext(prompt);
+    expect(parseSelectionBlocks(body)).toEqual({
+      body: "what is this",
+      selections: [{ path: "src/a.ts", start: 2, end: 4 }],
+    });
+  });
+
+  it("round-trips multiple leading snippets, including a single-line one", () => {
+    const prompt = buildPrompt(
+      "compare",
+      [makeExplicitChip("/x/a.ts", "src/a.ts", 2, 4), makeImplicitChip("/x/b.ts", "src/b.ts", 5, 5)],
+      deps,
+    );
+    expect(parseSelectionBlocks(prompt)).toEqual({
+      body: "compare",
+      selections: [
+        { path: "src/a.ts", start: 2, end: 4 },
+        { path: "src/b.ts", start: 5, end: 5 },
+      ],
+    });
+  });
+
+  it("survives an envelope + snippet + text prompt end to end", () => {
+    const prompt = buildPrompt(
+      "explain",
+      [makeExplicitChip("/x/CLAUDE.md", "CLAUDE.md"), makeExplicitChip("/x/a.ts", "src/a.ts", 2, 4)],
+      deps,
+    );
+    const env = parseAttachmentContext(prompt);
+    expect(env.files).toEqual(["CLAUDE.md"]);
+    expect(parseSelectionBlocks(env.body)).toEqual({
+      body: "explain",
+      selections: [{ path: "src/a.ts", start: 2, end: 4 }],
+    });
+  });
+
+  it("leaves a half-streamed block alone until the closing fence arrives", () => {
+    const partial = "`src/a.ts` (lines 2-4):\n```ts\nline2\nline3";
+    expect(parseSelectionBlocks(partial)).toEqual({ body: partial, selections: [] });
+  });
+
+  it("does not strip a selection-shaped block in the middle of the user's own words", () => {
+    const body =
+      "please explain this\n\n`src/a.ts` (lines 2-4):\n```ts\nline2\n```";
+    expect(parseSelectionBlocks(body)).toEqual({ body, selections: [] });
+  });
+
+  it("stops at the first standalone closing fence when the snippet contains ``` itself", () => {
+    // buildPrompt does no fence escaping, so a selection containing a bare ```
+    // line produces an ambiguous wire — match short, exactly like markdown would.
+    const body = "`a.md` (lines 1-3):\n```md\nsome\n```\n\nrest of message";
+    expect(parseSelectionBlocks(body)).toEqual({
+      body: "rest of message",
+      selections: [{ path: "a.md", start: 1, end: 3 }],
+    });
+  });
+
+  it("chains with the envelope and image parsers over a full buildPromptWithImages wire", () => {
+    // envelope → selection snippet → user text → trailing [Image #N] tag: each
+    // parser peels exactly its own layer of the real combined wire.
+    const { text } = buildPromptWithImages(
+      "explain",
+      [makeExplicitChip("/x/CLAUDE.md", "CLAUDE.md"), makeExplicitChip("/x/a.ts", "src/a.ts", 2, 4)],
+      [{ index: 1, mimeType: "image/png", data: "AA" }],
+      deps,
+    );
+    const env = parseAttachmentContext(text);
+    expect(env.files).toEqual(["CLAUDE.md"]);
+    const sel = parseSelectionBlocks(env.body);
+    expect(sel.selections).toEqual([{ path: "src/a.ts", start: 2, end: 4 }]);
+    expect(parseImageTags(sel.body)).toEqual({
+      body: "explain",
+      images: [{ index: 1, path: undefined }],
+    });
   });
 });
 

@@ -310,7 +310,7 @@
 
   // ---------- markdown ----------
 
-  const { looksLikeFileRef, formatRelativeTime, modelDisplayName, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, parseAttachmentContext, parseImageTags } = globalThis.GrokWebviewHelpers;
+  const { looksLikeFileRef, formatRelativeTime, modelDisplayName, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, parseAttachmentContext, parseSelectionBlocks, parseImageTags } = globalThis.GrokWebviewHelpers;
 
   function escapeAttr(s) {
     return String(s == null ? "" : s)
@@ -1598,15 +1598,28 @@
 
   // A file chip for a user message bubble: basename only (split on both separators
   // so a file outside the workspace shows its name, not its full Windows path),
-  // with the full path on the tooltip. Shared by the live bubble (addMessage) and
-  // the restore path (appendUserChunk, reconstructed from the parsed prompt).
+  // with the full path on the tooltip. A selection range rides the label in the
+  // composer chip's format (`name:8-15`, single line `name:8`) — full text kept,
+  // overflow is CSS ellipsis. Shared by the live bubble (addMessage) and the
+  // restore path (appendUserChunk, reconstructed from the parsed prompt).
   function makeMsgChipTag(pathStr, chip) {
     const tag = document.createElement("span");
     tag.className = "msg-chip";
-    const label = chip?.imageIndex != null ? `Image #${chip.imageIndex}` : (pathStr.split(/[\\/]/).pop() || pathStr);
+    const name = chip?.imageIndex != null ? `Image #${chip.imageIndex}` : (pathStr.split(/[\\/]/).pop() || pathStr);
     const icon = chip?.imageIndex != null ? ICON.image : ICON.file;
-    tag.innerHTML = icon + `<span>${escapeHtml(truncate(label, 20))}</span>`;
-    tag.title = chip?.originRelPath || chip?.path || pathStr;
+    const hasSel = chip?.selectionStart && chip?.selectionEnd;
+    const range = hasSel
+      ? chip.selectionStart === chip.selectionEnd
+        ? `:${chip.selectionStart}`
+        : `:${chip.selectionStart}-${chip.selectionEnd}`
+      : "";
+    const lineNote = hasSel
+      ? chip.selectionStart === chip.selectionEnd
+        ? ` (line ${chip.selectionStart})`
+        : ` (lines ${chip.selectionStart}-${chip.selectionEnd})`
+      : "";
+    tag.innerHTML = icon + `<span>${escapeHtml(name + range)}</span>`;
+    tag.title = (chip?.originRelPath || chip?.path || pathStr) + lineNote;
     return tag;
   }
 
@@ -2320,14 +2333,22 @@
     // The replayed prompt carries the <vscode-context> envelope we sent; strip it
     // back out so the bubble shows the user's own words + filename-only chips (with
     // the full path on hover), matching the live send — not the raw paths inline.
-    // Same for the [Image #N] tag lines buildPromptWithImages appended — the
-    // shared parser only strips the leading/trailing tag shapes we produce, so a
-    // tag-looking string in the middle of the user's own words stays put.
+    // Fenced selection snippets (buildPrompt's output for ranged chips) become
+    // ranged chips (`a.ts:2-4`) the same way, and the [Image #N] tag lines
+    // buildPromptWithImages appended become image chips — each parser only strips
+    // the exact leading/trailing shapes we produce, so a look-alike string in the
+    // middle of the user's own words stays put. The stripped body is also what
+    // the copy button yields: the user's words, not the context plumbing.
     const parsed = parseAttachmentContext(state.activeUserRaw);
-    const imageTags = parseImageTags(parsed.body);
+    const selBlocks = parseSelectionBlocks(parsed.body);
+    const imageTags = parseImageTags(selBlocks.body);
     state.activeUserEl.innerHTML = renderMarkdown(imageTags.body);
+    const msgEl = state.activeUserEl.closest(".msg");
+    if (msgEl) msgEl._copyText = imageTags.body;
     const chipTags = [
       ...parsed.files.map((f) => makeMsgChipTag(f)),
+      ...selBlocks.selections.map((s) =>
+        makeMsgChipTag(s.path, { selectionStart: s.start, selectionEnd: s.end })),
       ...imageTags.images.map((im) =>
         makeMsgChipTag(`Image #${im.index}`, { imageIndex: im.index, path: im.path })),
     ];

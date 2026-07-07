@@ -457,6 +457,15 @@ body.thinking-hidden .msg.thinking { display: none; }
   color: var(--vscode-descriptionForeground);
   opacity: 0.8;
 }
+/* Full name + line range in the DOM (tests and hover need it); a long one
+   ellipsizes here instead of being cut in JS. nowrap is required — .msg-chip
+   doesn't inherit one (unlike .chip, which sets its own). */
+.msg-chip span {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 /* ---- tool group ---- */
 

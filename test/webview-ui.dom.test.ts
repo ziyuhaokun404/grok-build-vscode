@@ -597,6 +597,71 @@ describe("Grokking… indicator (waiting placeholder)", () => {
     expect(extText).not.toContain("Downloads");
   });
 
+  it("shows the selected line range on a sent-message chip, like the composer chip", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, {
+      type: "userMessage",
+      text: "explain these lines",
+      chips: [
+        {
+          id: "implicit:/repo/src/prompt-builder.ts",
+          path: "/repo/src/prompt-builder.ts",
+          relPath: "src/prompt-builder.ts",
+          selectionStart: 60,
+          selectionEnd: 82,
+        },
+        { id: "explicit:1", path: "/repo/src/a.ts", relPath: "src/a.ts", selectionStart: 8, selectionEnd: 8 },
+      ],
+    });
+    const chips = Array.from(doc.querySelectorAll(".msg.user .msg-chip")) as HTMLElement[];
+    const texts = chips.map((c) => c.querySelector("span")!.textContent);
+    // No 20-char JS truncation — the full name + range must survive (ellipsis is CSS).
+    expect(texts).toContain("prompt-builder.ts:60-82");
+    expect(texts).toContain("a.ts:8");
+    const ranged = chips.find((c) => c.querySelector("span")!.textContent === "prompt-builder.ts:60-82")!;
+    expect(ranged.title).toBe("/repo/src/prompt-builder.ts (lines 60-82)");
+    const single = chips.find((c) => c.querySelector("span")!.textContent === "a.ts:8")!;
+    expect(single.title).toBe("/repo/src/a.ts (line 8)");
+  });
+
+  it("rebuilds a replayed selection snippet as a ranged chip, not an inline code block", () => {
+    const { window, doc } = bootWebview();
+    const replayed =
+      "<vscode-context note=\"added by the editor, not typed by the user\">\n" +
+      "Attached file: CLAUDE.md\n" +
+      "</vscode-context>\n\n" +
+      "`src/a.ts` (lines 2-4):\n```ts\nline2\nline3\nline4\n```\n\n" +
+      "what is this";
+
+    dispatch(window, { type: "historyReplay", active: true });
+    dispatch(window, { type: "userMessageChunk", text: replayed });
+    dispatch(window, { type: "historyReplay", active: false });
+
+    const bubble = doc.querySelector(".msg.user") as HTMLElement;
+    expect(bubble.textContent).toContain("what is this");
+    expect(bubble.textContent).not.toContain("line2"); // snippet body → chip, not a code block
+    const texts = Array.from(bubble.querySelectorAll(".msg-chip span")).map((s) => s.textContent);
+    expect(texts).toContain("CLAUDE.md");
+    expect(texts).toContain("a.ts:2-4");
+    const ranged = Array.from(bubble.querySelectorAll(".msg-chip")).find(
+      (c) => c.querySelector("span")!.textContent === "a.ts:2-4",
+    ) as HTMLElement;
+    expect(ranged.title).toBe("src/a.ts (lines 2-4)");
+  });
+
+  it("copies only the user's own words from a restored message, not the context plumbing", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, { type: "historyReplay", active: true });
+    dispatch(window, {
+      type: "userMessageChunk",
+      text: "`a.ts` (lines 1-1):\n```ts\nconst x = 1;\n```\n\nexplain this",
+    });
+    dispatch(window, { type: "historyReplay", active: false });
+
+    const msg = doc.querySelector(".msg.user") as HTMLElement & { _copyText?: string };
+    expect(msg._copyText).toBe("explain this");
+  });
+
   it("is mutually exclusive with the plan-processing indicator (one waiting indicator at a time)", () => {
     const { window, doc } = bootWebview();
     // planProcessing then agentStart → Grokking wins, plan-processing is gone.

@@ -56,7 +56,7 @@ export function buildPrompt(
 ): string {
   const attached: string[] = []; // explicitly attached whole files → bare paths, grok decides how to read
   const openInEditor: string[] = []; // implicit active-editor file → ambient context only
-  const blocks: string[] = []; // explicit selections → fenced snippet of exactly those lines
+  const blocks: string[] = []; // selection-range chips (explicit or the live editor selection) → fenced snippet of exactly those lines
   for (const chip of chips) {
     if (chip.hidden) continue;
     if (chip.selectionStart && chip.selectionEnd) {

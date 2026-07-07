@@ -21,6 +21,15 @@ describe("chips", () => {
     expect(c.selectionStart).toBeUndefined();
   });
 
+  it("makeImplicitChip carries the editor selection while keeping the id stable", () => {
+    const sel = makeImplicitChip("/abs/path/foo.ts", "foo.ts", 8, 15);
+    // Same identity with or without a selection — the chip tracks ONE active
+    // editor, so a selection change must update it in place, not add a sibling.
+    expect(sel.id).toBe("implicit:/abs/path/foo.ts");
+    expect(sel.selectionStart).toBe(8);
+    expect(sel.selectionEnd).toBe(15);
+  });
+
   it("creates an explicit chip with a unique id and selection range", () => {
     const c1 = makeExplicitChip("/a.ts", "a.ts", 1, 10);
     const c2 = makeExplicitChip("/a.ts", "a.ts", 1, 10);

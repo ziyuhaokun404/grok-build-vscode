@@ -66,11 +66,18 @@ export function extFromMime(mime: string): string {
   return ".png";
 }
 
-export function makeImplicitChip(absPath: string, relPath: string): FileChip {
+export function makeImplicitChip(
+  absPath: string,
+  relPath: string,
+  selectionStart?: number,
+  selectionEnd?: number,
+): FileChip {
   return {
     id: `implicit:${absPath}`,
     path: absPath,
     relPath,
+    selectionStart,
+    selectionEnd,
     hidden: false,
   };
 }

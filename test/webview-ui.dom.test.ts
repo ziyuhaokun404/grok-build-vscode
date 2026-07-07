@@ -1234,3 +1234,50 @@ describe("math / diagram export actions (step b)", () => {
     expect(msg!.svgDark as string).not.toContain("background:");
   });
 });
+
+// The composer's active-editor context chip mirrors Claude Code's: full file
+// name (CSS ellipsis handles pathological lengths — no JS truncation), plus a
+// live `:start-end` line-range suffix while the user has an editor selection.
+describe("active-editor context chip in the composer", () => {
+  const implicitChip = (over: Record<string, unknown> = {}) => ({
+    id: "implicit:/ws/vitest.perf.config.ts",
+    path: "/ws/vitest.perf.config.ts",
+    relPath: "vitest.perf.config.ts",
+    hidden: false,
+    ...over,
+  });
+
+  it("shows the full file name — no 10-char JS truncation", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, { type: "chips", chips: [implicitChip()] });
+    const span = doc.querySelector("#chips .chip span")!;
+    expect(span.textContent).toBe("vitest.perf.config.ts");
+  });
+
+  it("appends the selected line range to the label and tooltip", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, { type: "chips", chips: [implicitChip({ selectionStart: 8, selectionEnd: 15 })] });
+    const chip = doc.querySelector("#chips .chip") as HTMLElement;
+    expect(chip.querySelector("span")!.textContent).toBe("vitest.perf.config.ts:8-15");
+    expect(chip.getAttribute("title")).toBe("/ws/vitest.perf.config.ts (lines 8-15)");
+  });
+
+  it("labels a single-line selection with one line number", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, { type: "chips", chips: [implicitChip({ selectionStart: 8, selectionEnd: 8 })] });
+    const chip = doc.querySelector("#chips .chip") as HTMLElement;
+    expect(chip.querySelector("span")!.textContent).toBe("vitest.perf.config.ts:8");
+    expect(chip.getAttribute("title")).toBe("/ws/vitest.perf.config.ts (line 8)");
+  });
+
+  it("escapes HTML in the file name instead of injecting it", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, {
+      type: "chips",
+      chips: [implicitChip({ relPath: "<img src=x>.ts", path: "/ws/<img src=x>.ts", id: "implicit:/ws/x" })],
+    });
+    const chip = doc.querySelector("#chips .chip") as HTMLElement;
+    expect(chip.querySelector("span")!.textContent).toBe("<img src=x>.ts");
+    expect(chip.querySelector("img")).toBeNull();
+  });
+});

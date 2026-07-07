@@ -3117,9 +3117,21 @@
       }
       const el = document.createElement("div");
       el.className = "chip" + (chip.hidden ? " chip-hidden" : "");
-      el.title = chip.path;
+      // Mirror the live editor selection on the label (`name:8-15`) — the full
+      // name is kept (CSS ellipsis handles pathological lengths, no JS cut).
+      const hasSel = chip.selectionStart && chip.selectionEnd;
+      const range = hasSel
+        ? chip.selectionStart === chip.selectionEnd
+          ? `${chip.selectionStart}`
+          : `${chip.selectionStart}-${chip.selectionEnd}`
+        : "";
+      el.title = chip.path + (hasSel
+        ? (chip.selectionStart === chip.selectionEnd
+          ? ` (line ${chip.selectionStart})`
+          : ` (lines ${chip.selectionStart}-${chip.selectionEnd})`)
+        : "");
       el.innerHTML = (chip.hidden ? ICON.eyeOff : ICON.file) +
-        `<span>${truncate(fileName, 10)}</span>`;
+        `<span>${escapeHtml(range ? `${fileName}:${range}` : fileName)}</span>`;
       el.onclick = () => vscode.postMessage({ type: "toggleChip", id: chip.id });
       chipsEl.appendChild(el);
     }

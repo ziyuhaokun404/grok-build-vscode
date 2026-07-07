@@ -67,6 +67,17 @@ describe("buildPrompt", () => {
     );
   });
 
+  it("renders the active-editor file as fenced code once it carries a live selection", () => {
+    // The implicit chip mirrors the editor selection in real time; selected
+    // lines are a strong signal, so it upgrades from the ambient "Currently
+    // open" path line to the same fenced snippet an explicit selection gets.
+    const chip = makeImplicitChip("/a.ts", "src/a.ts", 2, 4);
+    const out = buildPrompt("what is this", [chip], deps);
+    expect(out).toBe(
+      "`src/a.ts` (lines 2-4):\n```ts\nline2\nline3\nline4\n```\n\nwhat is this",
+    );
+  });
+
   it("skips hidden chips", () => {
     const visible = makeExplicitChip("/a.ts", "a.ts");
     const hidden = { ...makeExplicitChip("/b.ts", "b.ts"), hidden: true };

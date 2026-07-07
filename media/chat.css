@@ -1183,6 +1183,13 @@ textarea#input {
   user-select: none;
 }
 .chip:hover { background: var(--vscode-list-hoverBackground); }
+/* Full file name up to a sane cap — a pathological name ellipsizes instead of
+   growing the chip unbounded (the JS side no longer truncates). */
+.chip span {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .chip.chip-hidden {
   opacity: 0.5;
   color: var(--vscode-descriptionForeground);

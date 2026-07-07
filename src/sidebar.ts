@@ -37,6 +37,7 @@ import {
   clearImplicitChips,
   extFromMime,
   isImageChip,
+  isImplicitChip,
   isVisionImagePath,
   isVisionMime,
   makeExplicitChip,
@@ -301,6 +302,11 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
       }
       if (e.affectsConfiguration("grok.showThinking")) {
         this.postShowThinking();
+      }
+      if (e.affectsConfiguration("grok.includeActiveFileByDefault")) {
+        // Apply the toggle immediately: disabling removes a visible context
+        // chip right away (not on the next editor event), enabling shows it.
+        this.refreshImplicitChip(true);
       }
     });
   }
@@ -2845,8 +2851,16 @@ See design doc for the full state machine diagram.`;
       extName: (p) => path.extname(p),
     });
 
-    this.chips = bare ? this.chips : [];
-    this.postChips();
+    if (bare) {
+      this.postChips();
+    } else {
+      // One-shot attachments are consumed by the send; the implicit context
+      // chip mirrors IDE state and stays resident (like Claude Code's). Keep
+      // it through the clear so refreshImplicitChip sees `prev` — preserving
+      // the user's eye-off choice and no-op-diffing against the live editor.
+      this.chips = this.chips.filter(isImplicitChip);
+      this.refreshImplicitChip(true);
+    }
     // Staged files are one-shot: their bytes ride the prompt inline now.
     for (const chip of chips) {
       if (isImageChip(chip)) void fs.promises.unlink(chip.path).catch(() => {});
@@ -2932,9 +2946,9 @@ See design doc for the full state machine diagram.`;
       extVersion: (this.context.extension.packageJSON as { version?: string })?.version ?? "",
       showThinking: cfg.get("showThinking", false),
     });
-    if (cfg.get<boolean>("includeActiveFileByDefault", true)) {
-      this.addActiveEditorChip();
-    }
+    // Sync the active-editor context chip into the fresh webview (the config
+    // gate + no-editor case live inside refreshImplicitChip).
+    this.refreshImplicitChip(true);
     this.postVoiceConfigured();
     // Sweep stale empty primer sessions once the first session is live (so the
     // newly-focused session is excluded from the sweep).
@@ -3265,21 +3279,64 @@ See design doc for the full state machine diagram.`;
 
   private watchActiveEditor(): void {
     this.editorWatcher?.dispose();
-    this.editorWatcher = vscode.window.onDidChangeActiveTextEditor(() => {
-      const includeActive = vscode.workspace
-        .getConfiguration("grok")
-        .get<boolean>("includeActiveFileByDefault", true);
-      if (!includeActive) return;
-      this.chips = clearImplicitChips(this.chips);
-      this.addActiveEditorChip();
-    });
+    this.editorWatcher = vscode.Disposable.from(
+      vscode.window.onDidChangeActiveTextEditor(() => this.refreshImplicitChip()),
+      vscode.window.onDidChangeTextEditorSelection((e) => {
+        // Split editors can hold several TextEditors on one document — only the
+        // active one's selection drives the context chip.
+        if (e.textEditor !== vscode.window.activeTextEditor) return;
+        this.refreshImplicitChip();
+      }),
+    );
   }
 
-  private addActiveEditorChip(): void {
+  /** Mirror the active editor (file + live selection line range) onto the
+   *  implicit context chip. No-op diffing keeps this silent for plain cursor
+   *  movement — selection events fire on every caret change, but an empty
+   *  selection compares equal to the previous empty one, so nothing is posted.
+   *  `forcePost` is for a fresh webview, which needs the current state even
+   *  when it hasn't changed. */
+  private refreshImplicitChip(forcePost = false): void {
+    const includeActive = vscode.workspace
+      .getConfiguration("grok")
+      .get<boolean>("includeActiveFileByDefault", true);
+    const prev = this.chips.find(isImplicitChip);
     const editor = vscode.window.activeTextEditor;
-    if (!editor || editor.document.uri.scheme !== "file") return;
+
+    if (!includeActive || !editor || editor.document.uri.scheme !== "file") {
+      // No chip to show — and if one is lingering, the webview must hear about
+      // its removal (the old code cleared host-side but never posted).
+      this.chips = clearImplicitChips(this.chips);
+      if (prev || forcePost) this.postChips();
+      return;
+    }
+
+    const absPath = editor.document.uri.fsPath;
     const relPath = vscode.workspace.asRelativePath(editor.document.uri);
-    this.chips.push(makeImplicitChip(editor.document.uri.fsPath, relPath));
+    let selStart: number | undefined;
+    let selEnd: number | undefined;
+    if (!editor.selection.isEmpty) {
+      selStart = editor.selection.start.line + 1;
+      selEnd = editor.selection.end.line + 1;
+    }
+
+    if (
+      prev &&
+      prev.path === absPath &&
+      prev.relPath === relPath &&
+      prev.selectionStart === selStart &&
+      prev.selectionEnd === selEnd
+    ) {
+      if (forcePost) this.postChips();
+      return;
+    }
+
+    const next = makeImplicitChip(absPath, relPath, selStart, selEnd);
+    // A selection change on the SAME file keeps the user's eye-off choice;
+    // switching files resets it (new file, fresh default).
+    if (prev && prev.path === absPath) next.hidden = prev.hidden;
+    this.chips = clearImplicitChips(this.chips);
+    this.chips.push(next);
     this.postChips();
   }
 

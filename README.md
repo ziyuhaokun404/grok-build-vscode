@@ -124,6 +124,13 @@ Type `/imagine <prompt>` (or `/imagine-video <prompt>`) and the result renders *
 </details>
 
 <details>
+<summary><strong>Paste or attach images</strong> — Grok sees the pixels, not just a path</summary>
+
+**Ctrl+V a screenshot**, drag-drop an image, or attach one with the **+** picker (png/jpg/gif/webp, up to 20 MiB) — it's sent inline as vision input, so you can ask *"what's wrong with this UI?"* about an error dialog you just captured. Each image gets an `[Image #N]` tag in the message (disk imports keep their file path so Grok can also act on the real file), image chips restore when you reopen the session, and an unreadable image blocks the send instead of silently vanishing. SVG deliberately stays a *path* attachment — you usually want Grok to edit the source, not look at it. Wire details: [research/vision-input.md](research/vision-input.md).
+
+</details>
+
+<details>
 <summary><strong>Voice control</strong> — hands-free dictation with live transcription</summary>
 
 The **microphone button** in the composer dictates speech, transcribed by [xAI's Speech-to-Text API](https://docs.x.ai/developers/model-capabilities/audio/voice). Click it, wait for the blue listening waves, and speak — words appear live as you talk. Say **"grok send"** to submit hands-free and keep listening for the next message (dictate while Grok responds; those messages queue and flush when it finishes). Click the mic to stop and keep any in-progress text.

@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.5.0 — 2026-07-09
+
+### Added
+
+- **Paste or attach images — Grok now sees the pixels.** Ctrl+V a screenshot, drag-drop, or attach a png/jpg/gif/webp and it rides the prompt as an inline vision block (validated at send, 20 MiB cap, session-scoped `[Image #N]` tags that restore as chips; SVG stays a path chip so Grok can edit the source). Thanks @cpulxb! (#32) ([src/chips.ts](src/chips.ts), [src/prompt-builder.ts](src/prompt-builder.ts), [src/sidebar.ts](src/sidebar.ts), [media/chat.js](media/chat.js))
+- **The active-editor context chip tracks your live selection** (`file.ts:8-15`), and selection snippets restore as ranged chips when a session is reopened. Thanks @cpulxb! (#32) ([src/sidebar.ts](src/sidebar.ts), [media/webview-helpers.js](media/webview-helpers.js))
+
+### Fixed
+
+- **`/compact` actually compacts again — and says so.** A leading context envelope silently degraded it into an ordinary LLM turn that *grew* context ~6x; confirmed slash commands now lead the text block, the context donut accepts the post-compact reset, the hidden plan-mode primer is re-sent afterwards (thanks @cpulxb! #32), and the turn now ends with a visible **"Compacted."** confirmation. ([src/prompt-builder.ts](src/prompt-builder.ts), [src/slash-filter.ts](src/slash-filter.ts), [src/sidebar.ts](src/sidebar.ts))
+- **Plan mode no longer blocks safe chained commands.** `cd repo && git status` was rejected outright, which crashed grok-4.5's planning phase; chains (`&&`, `||`, `;`) now pass when **every** segment is read-only — one mutating segment still blocks the whole command. (#36) ([src/plan-gate.ts](src/plan-gate.ts))
+
+### Changed
+
+- **Composer polish:** one focusable card, VS Code-style webview scrollbars, and the caret lands in the input on panel open, window refocus, new session, and session switches (thanks @cpulxb! #32); pasted images that can't be read block the send instead of silently dropping, and inline images carry a do-not-read-from-disk hint so Grok stops noisily `Read`-attempting its own copy. ([media/chat.js](media/chat.js), [media/chat.css](media/chat.css))
+
 ## 1.4.31 — 2026-07-09
 
 ### Added

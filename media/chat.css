@@ -1168,6 +1168,9 @@ textarea#input {
 .popover-muted { color: var(--vscode-descriptionForeground); }
 .popover-gh { display: inline-flex; align-items: center; gap: 6px; }
 .popover-fineprint { padding: 6px 10px; font-size: 11px; line-height: 1.45; color: var(--vscode-descriptionForeground); }
+/* Leading icon + label inside a popover row (gear -> Move view). */
+.popover-icon-label { display: inline-flex; align-items: center; gap: 7px; }
+.popover-icon-label svg { flex: none; opacity: 0.9; }
 
 .mode-item-icon {
   flex-shrink: 0;

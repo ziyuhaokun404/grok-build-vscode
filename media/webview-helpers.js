@@ -28,7 +28,8 @@
   const WEBVIEW_MESSAGE_TYPES = [
     "ready", "send", "newSession", "cancel", "pickModel", "setMode", "removeChip",
     "toggleChip", "openFile", "openUrl", "openDiff", "exportExpr", "setEffort",
-    "openGlobalConfig", "openProjectConfig", "runMcpList", "showLogs", "setShowThinking",
+    "openGlobalConfig", "openProjectConfig", "runMcpList", "showLogs", "moveView",
+    "setShowThinking",
     "dropFile", "permissionAnswer", "exitPlanAnswer", "questionAnswer", "questionCancel",
     "setModel", "runInstallCmd", "runGrokLogin", "logout", "checkGrokUpdate", "updateGrok",
     "recheckConnection", "listSessions", "resumeSession", "renameSession", "deleteSession",

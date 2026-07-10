@@ -2,7 +2,7 @@
   "name": "grok-vscode-phuryn",
   "displayName": "Grok Build for VS Code (Community)",
   "description": "VS Code client for xAI's Grok Build CLI — review edits in a diff before approving, @-mention files, resumable history, inline image/video, and voice. Requires the Grok Build CLI plus a SuperGrok or X Premium+ subscription (or an xAI API key). MIT, open-source. Not affiliated with or endorsed by xAI.",
-  "version": "1.5.1",
+  "version": "1.5.2",
   "publisher": "PawelHuryn",
   "author": {
     "name": "Paweł Huryn",
@@ -18,7 +18,7 @@
     "url": "https://github.com/phuryn/grok-build-vscode"
   },
   "engines": {
-    "vscode": "^1.94.0"
+    "vscode": "^1.106.0"
   },
   "categories": [
     "AI",
@@ -43,9 +43,23 @@
   "main": "./out/extension.js",
   "contributes": {
     "viewsContainers": {
-      "activitybar": [
+      "secondarySidebar": [
         {
           "id": "grokSidebar",
+          "title": "Grok",
+          "icon": "resources/grok-icon.svg"
+        }
+      ],
+      "activitybar": [
+        {
+          "id": "grokPrimary",
+          "title": "Grok",
+          "icon": "resources/grok-icon.svg"
+        }
+      ],
+      "panel": [
+        {
+          "id": "grokPanel",
           "title": "Grok",
           "icon": "resources/grok-icon.svg"
         }

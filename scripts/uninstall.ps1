@@ -1,15 +1,15 @@
 # Uninstall the Grok VS Code extension on Windows.
 # Usage:  pwsh scripts\uninstall.ps1 [-Cli name-or-path]
-#   -Cli - a code-compatible CLI to uninstall from (e.g. code-insiders, antigravity,
-#          C:\path\to\code.cmd); also settable via $env:CODE_CLI.
-#          Default: auto-detect code -> code-insiders -> antigravity-ide -> antigravity.
+#   -Cli - a code-compatible CLI to uninstall from (e.g. code-insiders, cursor,
+#          antigravity, C:\path\to\code.cmd); also settable via $env:CODE_CLI.
+#          Default: auto-detect code -> code-insiders -> cursor -> antigravity-ide -> antigravity.
 
 param(
     [string]$Cli
 )
 
 $ErrorActionPreference = "Stop"
-$knownClis = @("code", "code-insiders", "antigravity-ide", "antigravity")
+$knownClis = @("code", "code-insiders", "cursor", "antigravity-ide", "antigravity")
 if (-not $Cli -and $env:CODE_CLI) { $Cli = $env:CODE_CLI }
 
 function Find-CodeCli {
@@ -26,6 +26,8 @@ function Find-CodeCli {
     $fallback = "$env:LOCALAPPDATA\Programs\Microsoft VS Code\bin\code.cmd"
     if (Test-Path $fallback) { return $fallback }
     $fallback = "$env:LOCALAPPDATA\Programs\Microsoft VS Code Insiders\bin\code-insiders.cmd"
+    if (Test-Path $fallback) { return $fallback }
+    $fallback = "$env:LOCALAPPDATA\Programs\cursor\resources\app\bin\cursor.cmd"
     if (Test-Path $fallback) { return $fallback }
     throw "Could not find a code-compatible CLI. Pass one: pwsh scripts\uninstall.ps1 -Cli <name-or-path>"
 }

@@ -26,7 +26,7 @@ A short tour of how the extension is wired (and the one place it's deliberately 
 
 ## Requirements
 
-- **VS Code** 1.94+ (or a compatible editor — Cursor, Windsurf, VSCodium).
+- **VS Code** 1.106+ (or a compatible editor on the same base — Cursor 3.x qualifies; Antigravity is still on base 1.104 and keeps the last compatible extension version).
 - **The Grok Build CLI** (`grok`) on macOS, Linux, or Windows. The CLI ships a native Windows build, so the extension runs natively on all three — no WSL required (WSL2 + Remote-WSL still works if you prefer it).
 - **A login:** either a **SuperGrok or X Premium+** subscription (`grok login`) or an xAI API key. Either subscription unlocks **Grok Build**; with an API key you also get the **grok-4.x** models and **grok-imagine**. (Grok's free tier does **not** include the CLI agent.)
 - **For voice control only** (optional): [`ffmpeg`](https://ffmpeg.org) on `PATH`, and a *separate* xAI API key for Speech-to-Text (pay-as-you-go, ~$0.10/hr — your CLI login does **not** cover it). See **Voice control** under [Features & capabilities](#features--capabilities).
@@ -70,13 +70,11 @@ npm install
 ./scripts/install.sh        # Windows: pwsh scripts\install.ps1
 ```
 
-The install script auto-detects your IDE's CLI (`code` → `code-insiders` → Antigravity's `antigravity-ide`/`antigravity`). To target a specific code-compatible IDE, pass its CLI name or path — `./scripts/install.sh antigravity-ide` (Windows: `pwsh scripts\install.ps1 -Cli antigravity`) — or set `CODE_CLI=…`. The uninstall scripts take the same argument.
+The install script auto-detects your IDE's CLI (`code` → `code-insiders` → `cursor` → Antigravity's `antigravity-ide`/`antigravity`). To target a specific code-compatible IDE, pass its CLI name or path — `./scripts/install.sh cursor` (Windows: `pwsh scripts\install.ps1 -Cli cursor`) — or set `CODE_CLI=…`. To install into **every** detected IDE in one run, pass `--all` (Windows: `-All`). The uninstall scripts take the same CLI argument.
 
-Reload VS Code (**Ctrl+Shift+P → Developer: Reload Window**) and click the Grok icon in the activity bar.
+Reload VS Code (**Ctrl+Shift+P → Developer: Reload Window**). Grok opens in the **Secondary Side Bar** (right side, next to other AI tools) — or press `Ctrl/Cmd+;`.
 
-> **Tip:** Right-click the Grok icon → **Move To → Secondary Side Bar** to park Grok on the right, next to other AI tools.
->
-> ![Right-click the Grok icon → Move To → Secondary Side Bar](docs/screenshots/side.png)
+> **Tip:** Prefer it elsewhere? Gear → **Config & debug** → **Move view** relocates Grok to the Panel, Primary Side Bar, or back to the Secondary Side Bar in one click.
 
 **Uninstall:** `./scripts/uninstall.sh [cli]` (Windows: `pwsh scripts\uninstall.ps1 [-Cli name]`) or `code --uninstall-extension PawelHuryn.grok-vscode-phuryn`.
 
@@ -84,7 +82,7 @@ Reload VS Code (**Ctrl+Shift+P → Developer: Reload Window**) and click the Gro
 
 ## Quick start
 
-1. **Open** the Grok sidebar (activity bar icon, or `Ctrl/Cmd+;`).
+1. **Open** the Grok view (`Ctrl/Cmd+;`, or **Grok: Open** from the command palette) — it lives in the Secondary Side Bar by default.
 2. **Type a prompt** and press **Enter**. Grok streams its answer, showing a *Thinking…* line while it reasons. Want the full reasoning inline? Turn on **Show thinking traces** in the gear menu → *Config & debug*.
 3. **Approve actions.** When Grok wants to write a file or run a command it may raise a permission card — preview an edit in the native **diff editor**, then *Allow once / always / Reject*.
 4. **Pick your mode** (Agent / Plan / Auto accept), **model**, and **reasoning effort** from the bottom toolbar and gear menu.
@@ -335,7 +333,7 @@ npm run package  # → grok-vscode-phuryn-<version>.vsix
 
 - **Diff preview semantics.** The diff editor compares the proposed old vs. new text against each other, not against the file on disk at preview time. The write happens via `fs/write_text_file` after approval. This is an ACP constraint — `tool_call_update` carries the diff before the file is touched.
 - **No worktree UI.** `Grok: New Worktree Session` is planned but not yet implemented.
-- **View placement.** The view defaults to the left activity bar; drag it to the secondary side bar manually if you want it on the right.
+- **View placement.** The view defaults to the **Secondary Side Bar** (requires VS Code 1.106+, the extension's engine floor). Relocate it anytime via gear → **Config & debug** → **Move view** (one click: Panel / Primary Side Bar / Secondary Side Bar) — useful in Cursor, whose side-bar context menu hides the built-in "Move To" entry.
 
 ---
 

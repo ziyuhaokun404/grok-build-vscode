@@ -12,6 +12,7 @@ import { VoiceRecorder, transcribeAudio, resolveWindowsAudioDevice } from "./voi
 import { VoiceStreamer } from "./voice-streamer";
 import { MediaRef, isIncompatibleAgentError, permissionOutcomeFor, summarizeBackgroundCommand } from "./acp-dispatch";
 import { modeToRemember, startsInYolo } from "./mode-prefs";
+import { GROK_VIEW_ID, moveViewContainerFor } from "./view-move";
 import {
   APTABASE_APP_KEY_PROD,
   buildSessionStartEvent,
@@ -1909,6 +1910,24 @@ See design doc for the full state machine diagram.`;
       case "showLogs":
         this.output.show();
         break;
+      case "moveView": {
+        // Gear -> Config & debug -> Move view. Each destination targets an
+        // extension-owned container, so the move is direct — no quickpick. An
+        // unknown location falls back to the built-in destination picker
+        // preselected on our view (the view-id argument also sidesteps the
+        // focusedView context, which Cursor never sets for webview views).
+        const containerId = moveViewContainerFor(msg.location);
+        if (containerId) {
+          await vscode.commands.executeCommand("vscode.moveViews", {
+            viewIds: [GROK_VIEW_ID],
+            destinationId: containerId,
+          });
+          await vscode.commands.executeCommand(`${GROK_VIEW_ID}.focus`);
+        } else {
+          await vscode.commands.executeCommand("workbench.action.moveFocusedView", GROK_VIEW_ID);
+        }
+        break;
+      }
       case "setShowThinking":
         // Persist globally (like the other display prefs); the config watcher
         // re-posts the value, keeping every open webview in sync.

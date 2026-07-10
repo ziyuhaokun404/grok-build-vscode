@@ -121,6 +121,7 @@ export type WebviewMsg =
   | { type: "openProjectConfig" }
   | { type: "runMcpList" }
   | { type: "showLogs" }
+  | { type: "moveView"; location: "panel" | "sidebar" | "auxiliarybar" }
   | { type: "setShowThinking"; value: boolean }
   | { type: "dropFile"; path: string; shift: boolean }
   | { type: "permissionAnswer"; requestId: number | string; optionId: string }
@@ -168,7 +169,8 @@ const WEBVIEW_MESSAGE_TYPE_MAP: Record<WebviewMsg["type"], true> = {
   ready: true, send: true, newSession: true, cancel: true, pickModel: true,
   setMode: true, removeChip: true, toggleChip: true, openFile: true, openUrl: true,
   openDiff: true, exportExpr: true, setEffort: true, openGlobalConfig: true,
-  openProjectConfig: true, runMcpList: true, showLogs: true, setShowThinking: true,
+  openProjectConfig: true, runMcpList: true, showLogs: true, moveView: true,
+  setShowThinking: true,
   dropFile: true, permissionAnswer: true, exitPlanAnswer: true, questionAnswer: true,
   questionCancel: true, setModel: true, runInstallCmd: true, runGrokLogin: true,
   logout: true, checkGrokUpdate: true, updateGrok: true, recheckConnection: true,

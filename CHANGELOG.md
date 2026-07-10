@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.5.2 — 2026-07-10
+
+### Added
+
+- **One-click "Move view" in the gear menu.** Gear → **Config & debug → Move view** relocates the chat to the Secondary Side Bar, Primary Side Bar, or Panel instantly — direct moves into per-location view containers, no picker — each with a matching panel icon. Especially handy in Cursor, whose side-bar context menu hides the built-in "Move To" entry. ([src/view-move.ts](src/view-move.ts), [media/chat.js](media/chat.js))
+- **Install scripts detect Cursor and can target every IDE at once.** `cursor` joins the auto-detect chain, and `--all` (Windows: `-All`) builds once and installs into every detected IDE. ([scripts/](scripts/))
+
+### Changed
+
+- **The view now opens in the Secondary Side Bar by default** (`viewsContainers.secondarySidebar`), next to your other AI tools. This raises the minimum VS Code to **1.106** — older hosts (e.g. Antigravity, currently on base 1.104) keep the last compatible version. A placement you set yourself still wins; use the gear mover or *Reset Location* to adopt the new default.
+
 ## 1.5.1 — 2026-07-09
 
 ### Fixed

@@ -24,6 +24,11 @@ suite("grok-build extension smoke", () => {
     for (const id of ["grok.open", "grok.newSession", "grok.showLogs", "grok.logout"]) {
       assert.ok(all.includes(id), `command not registered: ${id}`);
     }
+    // The gear-menu "Move view" items depend on these workbench commands
+    // (vscode.moveViews is internal but stable — GitLens relies on it too).
+    for (const id of ["vscode.moveViews", "workbench.action.moveFocusedView"]) {
+      assert.ok(all.includes(id), `workbench command missing: ${id}`);
+    }
   });
 
   test("resolving the webview view does not crash (missing-CLI onboarding path)", async () => {

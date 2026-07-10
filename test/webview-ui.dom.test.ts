@@ -1425,3 +1425,33 @@ describe("composer input focus (caret ready on open)", () => {
     expect(doc.activeElement).toBe($(doc, "input"));
   });
 });
+
+describe("gear entry: Move view (Config & debug)", () => {
+  function openConfigDebug(window: Window, doc: Document) {
+    click(window, $(doc, "gear-btn"));
+    const item = [...doc.querySelectorAll("#gear-popover .toolbar-popover-item")].find((el) =>
+      el.textContent!.includes("Config & debug"),
+    ) as HTMLElement;
+    click(window, item);
+  }
+  const itemByLabel = (doc: Document, label: string) =>
+    [...doc.querySelectorAll("#gear-popover .toolbar-popover-item")].find((el) =>
+      el.textContent!.includes(label),
+    ) as HTMLElement | undefined;
+
+  it("offers the three destinations, each posting moveView with its location", () => {
+    const { window, posted, doc } = bootWebview();
+    const destinations: Array<[string, string]> = [
+      ["To Secondary Side Bar", "auxiliarybar"],
+      ["To Primary Side Bar", "sidebar"],
+      ["To Panel", "panel"],
+    ];
+    for (const [label, location] of destinations) {
+      openConfigDebug(window, doc); // clicking an item closes the popover — reopen each time
+      const item = itemByLabel(doc, label);
+      expect(item, label).toBeTruthy();
+      click(window, item!);
+      expect(posted).toContainEqual({ type: "moveView", location });
+    }
+  });
+});

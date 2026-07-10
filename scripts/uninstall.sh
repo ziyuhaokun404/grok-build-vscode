@@ -2,12 +2,12 @@
 # Uninstall the Grok VS Code extension on macOS / Linux / WSL.
 # Usage:  ./scripts/uninstall.sh [cli]
 #   [cli] — a code-compatible CLI name or path to uninstall from (e.g. code-insiders,
-#           antigravity-ide, /path/to/code); also settable via CODE_CLI=…
-#           Default: auto-detect code → code-insiders → antigravity-ide → antigravity.
+#           cursor, antigravity-ide, /path/to/code); also settable via CODE_CLI=…
+#           Default: auto-detect code → code-insiders → cursor → antigravity-ide → antigravity.
 
 set -euo pipefail
 
-known_clis="code code-insiders antigravity-ide antigravity"
+known_clis="code code-insiders cursor antigravity-ide antigravity"
 cli_override="${1:-${CODE_CLI:-}}"
 
 find_code_cli() {
@@ -26,6 +26,7 @@ find_code_cli() {
     for path in \
         "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code" \
         "/Applications/Visual Studio Code - Insiders.app/Contents/Resources/app/bin/code-insiders" \
+        "/Applications/Cursor.app/Contents/Resources/app/bin/cursor" \
         "/Applications/Antigravity IDE.app/Contents/Resources/app/bin/antigravity-ide" \
     ; do
         [ -x "$path" ] && { echo "$path"; return 0; }

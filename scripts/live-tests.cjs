@@ -107,6 +107,7 @@ class Acp {
     this.subagentCalls = []; // tool calls the real isSubagentToolCall matched (genuine spawn_subagent shape)
     this.bgTasks = [];       // background tasks grok spawned (its real subagent mechanism)
     this.taskOutputCalls = []; // get_command_or_subagent_output poller tool_calls
+    this.lifecycle = [];     // subagent_spawned/subagent_finished (method _x.ai/session/update)
     this.onWrite = onWrite;  // optional per-test hook (path) => "write" | "ack"
     this.buf = "";
     const win = process.platform === "win32";
@@ -143,6 +144,15 @@ class Acp {
     if (m.method === "session/update") {
       const u = m.params && m.params.update;
       if (u) { this.updates.push(u); this._inspectUpdate(u); }
+      return;
+    }
+    if (m.method === "_x.ai/session/update" || m.method === "x.ai/session/update") {
+      // Subagent lifecycle stream — the extension routes this for durations +
+      // completion (subagentLifecycle → subagentUpdate). Record it so the
+      // subagent tests can assert the events still flow.
+      const u = m.params && m.params.update;
+      if (u) this.lifecycle.push(u);
+      if (m.id != null) this._respond(m.id, {});
       return;
     }
     if (m.method && m.id != null) this._serverRequest(m);  // server→client request
@@ -724,10 +734,65 @@ async function testSubagent() {
     }
     if (acp.subagentCalls.length > 0) {
       const labels = [...new Set(acp.subagentCalls.map(subagentLabel))];
-      return `genuine spawn_subagent card(s): ${labels.join(", ")}; poller correctly not carded`;
+      const finished = acp.lifecycle.filter((u) => u.sessionUpdate === "subagent_finished").length;
+      return `genuine spawn_subagent card(s): ${labels.join(", ")}; poller correctly not carded; lifecycle finished=${finished}`;
     }
     return `delegated via background task (${bgIds.size} bg spawn, ${pollIds.size} output-poll); ` +
       `poller correctly NOT carded — grok's real subagent = background shell, see research/subagents.md`;
+  } finally { acp.kill(); }
+}
+
+// Composer-agent variant: the Composer wire differs from grok-build's in every
+// subagent-relevant way — the delegation tool is named "Task" (not
+// spawn_subagent), its completion is an UNTITLED tool_call_update with
+// rawOutput {type:"Text"} and NO duration, and the duration/output ride the
+// subagent_spawned/subagent_finished lifecycle events instead (wire capture:
+// test/fixtures/composer-subagent-session.jsonl). Pin both shapes so agent-side
+// drift fails the gate, not the user's chat. Selects the first *composer* model
+// right after session/new — the agent is rebindable until the first turn.
+async function testSubagentComposer() {
+  const cwd = mkTmp("subc");
+  fs.writeFileSync(path.join(cwd, "app.js"), "const {add}=require('./math');\nconsole.log(add(2,3));\n");
+  fs.writeFileSync(path.join(cwd, "math.js"), "function add(a,b){return a+b}\nmodule.exports={add};\n");
+  const acp = new Acp(cwd, { extraArgs: ["--always-approve"] });
+  try {
+    await withTimeout(acp.send("initialize", INIT), 30000, "init");
+    const ns = await withTimeout(acp.send("session/new", { cwd, mcpServers: [] }), 30000, "new");
+    assert(ns.result && ns.result.sessionId, "session/new failed");
+    const models = (ns.result.models && ns.result.models.availableModels) || [];
+    const composer = models.find((m) => /composer/i.test(String(m.modelId || "")));
+    if (!composer) throw new Skip("no Composer model available on this account/build");
+    const sm = await withTimeout(
+      acp.send("session/set_model", { sessionId: ns.result.sessionId, modelId: composer.modelId }),
+      30000, "set_model");
+    if (sm.error) throw new Skip(`set_model(${composer.modelId}) rejected: ${JSON.stringify(sm.error).slice(0, 120)}`);
+    await withTimeout(
+      acp.send("session/prompt", { sessionId: ns.result.sessionId, prompt: [{ type: "text", text: "Use a subagent to read math.js and report in one sentence what add() does. Delegate to a subagent." }] }),
+      300000, "composer subagent prompt");
+
+    const misfired = acp.taskOutputCalls.filter((u) => isSubagentToolCall(u));
+    assert(misfired.length === 0, `isSubagentToolCall wrongly matched ${misfired.length} poller(s)`);
+    if (acp.subagentCalls.length === 0 && acp.bgTasks.length === 0) {
+      throw new Skip("composer did not delegate this run (non-deterministic)");
+    }
+    // Composer's completion is an UNTITLED tool_call_update (status completed,
+    // no _meta) on the SAME toolCallId as the Task call — the shape the card
+    // relies on. Its absence after a real delegation is wire drift.
+    const subIds = new Set(acp.subagentCalls.map((u) => u.toolCallId));
+    const completed = acp.updates.filter((u) =>
+      u.sessionUpdate === "tool_call_update" &&
+      subIds.has(u.toolCallId) &&
+      String(u.status || "").toLowerCase() === "completed");
+    assert(completed.length > 0, "Task delegation never completed on the tool channel — the card would spin forever (wire drift)");
+    // Lifecycle events are informational: grok 0.2.93 LOGS subagent_spawned/
+    // subagent_finished in updates.jsonl but does NOT transmit them over ACP
+    // (verified live). The extension routes them if that ever changes.
+    const spawned = acp.lifecycle.filter((u) => u.sessionUpdate === "subagent_spawned").length;
+    const finished = acp.lifecycle.filter((u) => u.sessionUpdate === "subagent_finished").length;
+    const labels = [...new Set(acp.subagentCalls.map(subagentLabel))];
+    return `composer(${composer.modelId}) delegated: ${labels.join(", ") || "(bg)"}; ` +
+      `${completed.length} tool-channel completion(s); lifecycle transmitted: spawned=${spawned}, finished=${finished}` +
+      (spawned > 0 ? " — CLI now TRANSMITS lifecycle events (durations will light up)" : " (logged-only on this build)");
   } finally { acp.kill(); }
 }
 
@@ -751,6 +816,7 @@ const TESTS = [
   // interactively. See the testVideo comment + the SKIP-on-timeout handling.
   { name: "video-gen", fn: testVideo, slow: true, optIn: true },
   { name: "subagent", fn: testSubagent, slow: true },
+  { name: "subagent-composer", fn: testSubagentComposer, slow: true },
 ];
 
 function selected() {

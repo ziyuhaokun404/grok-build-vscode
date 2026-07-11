@@ -555,6 +555,35 @@ describe("carrySessionName", () => {
   });
 });
 
+describe("subagent child sessions (session_kind)", () => {
+  const dir = sessionsDirFor(grokHome, cwd);
+
+  it("marks a session_kind:subagent summary so the history list can hide it", () => {
+    const fs = buildFs({
+      [path.join(dirFor("child"), "summary.json")]: {
+        isDir: false,
+        // Real child-session summary shape (grok 0.2.93): session_kind +
+        // agent_name identify the delegation workspace.
+        content: JSON.stringify({
+          info: { id: "child", cwd },
+          session_summary: "Analyze add() function in math.js file",
+          session_kind: "subagent",
+          agent_name: "general-purpose",
+          updated_at: "2026-07-11T18:00:00Z",
+        }),
+      },
+      [path.join(dirFor("real"), "summary.json")]: {
+        isDir: false,
+        content: JSON.stringify({ info: { id: "real", cwd }, session_summary: "Fix the login bug", updated_at: "2026-07-11T18:00:00Z" }),
+      },
+      [dir]: { isDir: true },
+    });
+    const out = readSessionEntries({ fs, grokHome, cwd, ids: ["child", "real"], overrides: {} });
+    expect(out.find((e) => e.id === "child")?.kind).toBe("subagent");
+    expect(out.find((e) => e.id === "real")?.kind).toBeUndefined();
+  });
+});
+
 describe("readContextUsage", () => {
   const signalsPath = (id: string) => path.join(dirFor(id), "signals.json");
 

@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.5.6 — 2026-07-11
+
+### Added
+
+- **Subagent rows, fully live.** A delegation renders as a purple *Subagent · \<task\>* row with running dots, then a duration stamp and a click-to-expand result under "Output of the subagent:" — the CLI envelope (plumbing tags, boilerplate lead-ins, one wrapping `<response>` pair, the Agent ID hint) is stripped when present, never failing. Covers grok-build's `spawn_subagent` — including `background: true` spawns, whose started-ack no longer masquerades as the result (the card completes from the output poller's `TaskOutput`, matched by task id) — and the Composer agent's `Task`. The `subagent_spawned`/`subagent_finished` lifecycle events are routed for the day the CLI transmits them (0.2.93 logs them but doesn't send them over ACP — live-verified). Real captured sessions are replayed end-to-end in the test suite. ([media/chat.js](media/chat.js), [media/webview-helpers.js](media/webview-helpers.js), [src/acp.ts](src/acp.ts), [test/fixtures/composer-subagent-session.jsonl](test/fixtures/composer-subagent-session.jsonl))
+
+- **[ACP-feedback.md](ACP-feedback.md)** — an upstream-facing summary of grok-CLI/ACP friction: the grok-build vs Composer wire differences, everything the extension works around or hides (with suggested fixes), what works well, and a Grok 4.5 verification checklist. Built from the wire captures and probes in `research/`.
+
+### Changed
+
+- **One copy/timestamp footer per turn, shown when the turn ends.** The copy action and time sit only under the turn's final agent message (the conclusion) and appear once the turn completes — no more copy icons flickering mid-conversation while grok works; the timestamp reads as the turn's end time. Code blocks keep their own copy buttons. ([media/chat.js](media/chat.js))
+- **The composer grows with your text.** 2 lines at rest (Cursor-style), expanding to 5 as you type, then scrolling; scales with `grok.chatFontScale`. ([media/chat.js](media/chat.js), [src/sidebar.ts](src/sidebar.ts))
+
+### Fixed
+
+- **No more fake Subagent cards while working on subagent code.** grok titles Grep/Read calls with their query/filename (a search for `spawn_subagent` is titled exactly that), so title matching false-carded ordinary tools; the classifier now treats the wire's `_meta["x.ai/tool"].name` as authoritative both ways and matches exact tool names otherwise. ([media/webview-helpers.js](media/webview-helpers.js))
+- **Subagent child sessions no longer clutter history.** Every delegation persists its child as a top-level session (`session_kind: "subagent"`); the history list hides them, and pagination advances by consumed index slots (`nextOffset`) so hidden rows can't stall or duplicate load-more. ([src/sessions.ts](src/sessions.ts), [src/sidebar.ts](src/sidebar.ts))
+- **Restored plan/permission cards no longer drift to the end of the conversation.** The host counted replayed `<system-reminder>` turns and marker-only verdicts toward plan positions while the webview (correctly) renders no bubble for them — so every verdict given after a session restore persisted an unreachable position and its card landed at the bottom on the next restore. The host now counts exactly what the webview bubbles (`countsAsUserBubble`). Positions persisted by older builds stay as recorded. ([src/plan-restore.ts](src/plan-restore.ts), [src/sidebar.ts](src/sidebar.ts))
+
 ## 1.5.5 — 2026-07-11
 
 ### Changed

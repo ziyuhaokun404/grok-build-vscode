@@ -54,7 +54,7 @@ import { matchSlashCommand } from "./slash-filter";
 import { configForcesAlwaysApprove } from "./grok-config";
 import { parseFileRef, shouldReadFileInline } from "./file-ref";
 import { pickRejectOption, shouldRejectPermission } from "./plan-gate";
-import { appendPlanEntry, decideRestoreState } from "./plan-restore";
+import { appendPlanEntry, countsAsUserBubble, decideRestoreState } from "./plan-restore";
 import { planReviewFileBaseName, sanitizePlanReviewFilePart } from "./plan-review";
 import { GROK_PRIMER, isPrimerText } from "./grok-primer";
 import { HostMsg, WebviewMsg } from "./protocol";
@@ -1505,8 +1505,13 @@ See design doc for the full state machine diagram.`;
       }
       // The first chunk after a non-user chunk marks the start of a new user
       // message — count it so the next persisted plan knows where it lives.
+      // Count ONLY turns the webview renders as bubbles (countsAsUserBubble):
+      // <system-reminder> turns and marker-only verdicts replay as user
+      // messages but paint nothing, and counting them here inflated every
+      // post-restore verdict position — those plan/permission cards then
+      // landed at the END of the conversation on the next restore.
       if (!session.inUserMessage) {
-        session.userMessageCount += 1;
+        if (countsAsUserBubble(text)) session.userMessageCount += 1;
         session.inUserMessage = true;
       }
       // Re-seed the session-scoped [Image #N] counter from replayed prompts so
@@ -1583,6 +1588,10 @@ See design doc for the full state machine diagram.`;
     client.on("xaiNotification", (u) => {
       if (gen !== session.gen) return;
       this.emit(session, { type: "xaiNotification", update: u });
+    });
+    client.on("subagentLifecycle", (u: unknown) => {
+      if (gen !== session.gen) return;
+      this.emit(session, { type: "subagentUpdate", update: u });
     });
     client.on("permissionRequest", (req: PermissionRequest) => {
       if (gen !== session.gen) return;
@@ -2140,26 +2149,37 @@ See design doc for the full state machine diagram.`;
     const index = indexSessions({ fs: defaultFs, grokHome, cwd, log });
     const mtimeById = new Map(index.map((e) => [e.id, e.mtimeMs]));
 
+    // Subagent child sessions (`session_kind: "subagent"` — grok persists every
+    // spawn_subagent delegation as a top-level sibling session) are grok's own
+    // working state, not user chats: hide them from history or every delegation
+    // adds a junk row. They still occupy index slots, so paging advances by ids
+    // CONSUMED (nextOffset), never by entries shown — a filtered-out id must not
+    // make the next page re-read the same slice.
     let pageEntries: SessionListEntry[];
     let total: number;
+    let nextOffset: number;
     if (query) {
       // Search needs names for everything, so read (cache-backed) the whole list once, then filter.
-      const all = this.readEntriesCached(index.map((e) => e.id), mtimeById, overrides, cwd, grokHome, log);
+      const all = this.readEntriesCached(index.map((e) => e.id), mtimeById, overrides, cwd, grokHome, log)
+        .filter((e) => e.kind !== "subagent");
       all.sort((a, b) => b.updatedAt - a.updatedAt);
       const matched = all.filter((e) => e.displayName.toLowerCase().includes(query));
       total = matched.length;
       pageEntries = matched.slice(offset, offset + limit);
+      nextOffset = offset + pageEntries.length;
     } else {
       total = index.length;
       const pageIds = index.slice(offset, offset + limit).map((e) => e.id);
-      pageEntries = this.readEntriesCached(pageIds, mtimeById, overrides, cwd, grokHome, log);
+      pageEntries = this.readEntriesCached(pageIds, mtimeById, overrides, cwd, grokHome, log)
+        .filter((e) => e.kind !== "subagent");
       // mtime is an approximate sort key; re-order the loaded page by exact updated_at.
       pageEntries.sort((a, b) => b.updatedAt - a.updatedAt);
+      nextOffset = offset + pageIds.length;
     }
 
     // hasMore is governed purely by what's on disk (load-more pages disk-only); compute it before
     // injecting any live-only rows below so an injected entry can't be mistaken for another page.
-    const hasMore = offset + pageEntries.length < total;
+    const hasMore = nextOffset < total;
 
     // A brand-new live session has no summary.json yet, so the disk-scan index misses it. Without
     // this, opening history the moment a session goes live drops the active row entirely (and the
@@ -2215,6 +2235,7 @@ See design doc for the full state machine diagram.`;
       offset,
       total,
       hasMore,
+      nextOffset,
       query: opts?.query ?? "",
     });
   }
@@ -3225,12 +3246,12 @@ See design doc for the full state machine diagram.`;
   // them out costs those flows nothing.
   private static readonly SUPPRESS_TYPES = new Set([
     "messageChunk", "userMessageChunk", "thoughtChunk", "toolCall", "toolCallUpdate",
-    "promptComplete", "xaiNotification", "agentEnd",
+    "promptComplete", "xaiNotification", "subagentUpdate", "agentEnd",
   ]);
   // Subset: content only, not lifecycle. Lets promptComplete/agentEnd through so
   // the webview's `busy` state clears when the false-approval turn ends.
   private static readonly PLAN_REJECT_SUPPRESS = new Set([
-    "messageChunk", "userMessageChunk", "thoughtChunk", "toolCall", "toolCallUpdate", "xaiNotification",
+    "messageChunk", "userMessageChunk", "thoughtChunk", "toolCall", "toolCallUpdate", "xaiNotification", "subagentUpdate",
   ]);
 
   private post(message: HostMsg): void {
@@ -3734,7 +3755,7 @@ See design doc for the full state machine diagram.`;
       <div id="attachments" class="attachments"></div>
       <div class="composer-input-wrap">
         <div id="input-highlight" class="input-highlight" aria-hidden="true"></div>
-        <textarea id="input" placeholder="Ask Grok..." rows="3"></textarea>
+        <textarea id="input" placeholder="Ask Grok..." rows="2"></textarea>
         <button id="mic-btn" class="mic-btn" title="Voice control"></button>
       </div>
       <div class="composer-toolbar">

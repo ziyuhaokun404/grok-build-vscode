@@ -111,12 +111,22 @@
     sessionHasMore: false,
     sessionLoading: false,
     sessionQuery: "",
+    // Index offset for the next load-more (from the host's `nextOffset` — slots
+    // consumed, not entries shown; hidden subagent sessions occupy slots).
+    sessionNextOffset: null,
     replaying: false,
     // Live ask_user_question tool calls (toolCallId → {questions, fromReplay}).
     // grok emits a tool_call alongside the live x.ai/ask_user_question request; we
     // stash it to suppress the generic tool chip (the interactive card from
     // `questionRequest` stands in).
     questionToolCalls: new Map(),
+    // Subagent delegation rows (toolCallId → card element) so the completed
+    // tool_call_update finds its row (title refinement, duration, result)
+    // instead of leaking into the generic tool group.
+    subagentCards: new Map(),
+    // The current turn's agent-message footer (copy + timestamp). Only the
+    // turn's LAST narration segment keeps one — see addMessage.
+    turnAgentActionsEl: null,
     // Restored question cards on resume (toolCallId → card element). On replay grok
     // sends a tool_call per question (with rawInput.questions); we render the card
     // immediately and fill the answer in whenever it arrives — on the tool_call
@@ -322,7 +332,7 @@
 
   // ---------- markdown ----------
 
-  const { looksLikeFileRef, formatRelativeTime, modelDisplayName, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, parseAttachmentContext, parseSelectionBlocks, parseImageTags, isKnownHostMessage } = globalThis.GrokWebviewHelpers;
+  const { looksLikeFileRef, formatRelativeTime, modelDisplayName, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, cleanSubagentOutput, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, parseAttachmentContext, parseSelectionBlocks, parseImageTags, isKnownHostMessage } = globalThis.GrokWebviewHelpers;
 
   function escapeAttr(s) {
     return String(s == null ? "" : s)
@@ -1371,7 +1381,7 @@
     list.onscroll = () => {
       if (!state.sessionHasMore || state.sessionLoading) return;
       if (list.scrollTop + list.clientHeight >= list.scrollHeight - 48) {
-        requestSessions(state.sessions.length);
+        requestSessions(state.sessionNextOffset != null ? state.sessionNextOffset : state.sessions.length);
       }
     };
     historyPopover.appendChild(list);
@@ -1568,6 +1578,8 @@
     state.pendingDiffByToolCallId.clear();
     state.toolItemsByToolCallId.clear();
     state.toolFailuresById.clear();
+    state.subagentCards.clear();
+    state.turnAgentActionsEl = null;
     state.activeAgentEl = null;
     state.activeAgentRaw = "";
     state.activeUserEl = null;
@@ -1735,6 +1747,24 @@
       actions.appendChild(copyBtn);
       actions.appendChild(ts);
       el.appendChild(actions);
+      if (role === "agent") {
+        // ONE footer per turn, not per narration segment: a turn's prose is
+        // split into several .msg.agent blocks by interleaved tool groups, and
+        // a copy/timestamp row under each is noise. Keep only the newest
+        // segment's footer — the turn's conclusion — and keep it HIDDEN while
+        // the turn is still running (revealTurnFooter shows it at turn end,
+        // with the end-of-turn time). Code blocks keep their own copy buttons.
+        actions.hidden = true;
+        if (state.turnAgentActionsEl && state.turnAgentActionsEl !== actions) {
+          state.turnAgentActionsEl.remove();
+        }
+        state.turnAgentActionsEl = actions;
+      } else {
+        // A user message starts a new turn; the previous turn's footer (if the
+        // replay never emitted an explicit turn end) becomes final now.
+        revealTurnFooter();
+        state.turnAgentActionsEl = null;
+      }
     }
 
     messagesEl.appendChild(el);
@@ -1745,6 +1775,18 @@
       });
     }
     return body;
+  }
+
+  // Show the current turn's (single) agent footer — called at every turn-end
+  // signal: promptComplete/agentEnd/agentError live, the next user message or
+  // replay end on restore. Stamps the time at reveal so it reads as the
+  // turn's END time, not the moment the last segment happened to start.
+  function revealTurnFooter() {
+    const a = state.turnAgentActionsEl;
+    if (!a || !a.hidden) return;
+    a.hidden = false;
+    const ts = a.querySelector(".msg-timestamp");
+    if (ts && !state.replaying) ts.textContent = formatTime(Date.now());
   }
 
   const TOOL_VERB = {
@@ -2211,22 +2253,173 @@
     scrollToBottom();
   }
 
-  // Distinct card for a subagent tool call (grok's parallel-subagent feature),
-  // so delegated work reads as "Subagent: <type>" instead of disappearing into
-  // the generic tool group. Collapsed scaffold — child-call nesting awaits a
-  // probe of the live subagent wire shape (research/subagents.md).
+  // Distinct row for a subagent delegation (grok's spawn_subagent tool) — the
+  // task reads as "Subagent · <description>" with the shared blink-dots while
+  // the child works, then a duration stamp and a click-to-expand result once
+  // the completed tool_call_update lands (its rawOutput.SubagentCompleted
+  // carries output + stats — research/subagents.md). Keyed by toolCallId in
+  // state.subagentCards; a replayed one-shot tool_call that already carries
+  // the final state renders completed immediately.
+
+  // Human title for the row: the task description grok puts in rawInput, else
+  // a non-generic call title (updates re-title the call from the literal
+  // "spawn_subagent" to the description; some builds title the call just
+  // "Subagent"/"Task" — noise, not a title), else the first line of the task
+  // prompt, else the classifier's label (subagent type / background command).
+  function subagentTitleFor(call) {
+    const d = call && call.rawInput && call.rawInput.description;
+    if (typeof d === "string" && d.trim()) return d.trim();
+    const t = typeof call?.title === "string" ? call.title.trim() : "";
+    if (t && !/^(spawn_subagent|run_terminal_command|subagent|task)$/i.test(t)) return t;
+    const p = call && call.rawInput && call.rawInput.prompt;
+    if (typeof p === "string" && p.trim()) {
+      const first = p.trim().split(/\r?\n/)[0].trim();
+      if (first) return truncate(first, 80);
+    }
+    return subagentLabel(call);
+  }
+
+  // "Subagent · Subagent" is noise — when the resolved title is empty or just
+  // the word Subagent, show the label alone. Never DOWNGRADE: the Composer
+  // agent's completion update arrives untitled (title "", no rawInput), and it
+  // must not wipe the description set by the earlier records.
+  function setSubagentTitle(el, call) {
+    const t = subagentTitleFor(call) || "";
+    const titleEl = el.querySelector(".subagent-title");
+    if (!t || /^subagent$/i.test(t)) {
+      if (!titleEl.textContent) {
+        el.querySelector(".subagent-sep").hidden = true;
+        titleEl.hidden = true;
+      }
+      return;
+    }
+    el.querySelector(".subagent-sep").hidden = false;
+    titleEl.hidden = false;
+    titleEl.textContent = t;
+  }
+
+  // Complete a card: stop the dots, stamp the duration, attach the expandable
+  // result under an "Output of the subagent:" label. Completion can arrive
+  // twice — a completed tool_call_update AND a subagent_finished lifecycle
+  // event (and a re-focus replays both) — so this is idempotent, except that a
+  // late duplicate may still fill in a missing duration (Composer's completed
+  // update carries no duration_ms; its lifecycle event does).
+  function finishSubagentCard(el, info) {
+    if (el.classList.contains("subagent-done")) {
+      const lateMs = typeof info.durationMs === "number" ? info.durationMs : null;
+      const timeEl = el.querySelector(".subagent-time");
+      if (lateMs != null && timeEl && !timeEl.textContent) {
+        timeEl.textContent = `· ${Math.max(1, Math.round(lateMs / 1000))}s`;
+      }
+      return;
+    }
+    el.classList.add("subagent-done");
+    const dots = el.querySelector(".blink-dots");
+    if (dots) dots.remove();
+    const ms = typeof info.durationMs === "number" ? info.durationMs : null;
+    if (ms != null) {
+      el.querySelector(".subagent-time").textContent = `· ${Math.max(1, Math.round(ms / 1000))}s`;
+    }
+    // cleanSubagentOutput strips the CLI envelope (plumbing tags, boilerplate
+    // lead-ins, one wrapping <response> pair, the trailing Agent ID hint) so
+    // only the child's actual words render — as markdown, since subagent
+    // answers routinely carry fences/bold/lists.
+    const result = cleanSubagentOutput(info.output || "");
+    if (result) {
+      const body = el.querySelector(".subagent-result");
+      body.innerHTML = `<div class="subagent-result-label">Output of the subagent:</div>` + renderMarkdown(result);
+      const row = el.querySelector(".subagent-row");
+      row.classList.add("expandable");
+      row.title = "Show the subagent's result";
+      row.onclick = () => { body.hidden = !body.hidden; };
+    }
+  }
+
   function addSubagentCard(call) {
     closeToolGroup();
     clearWelcome();
     hideGrokking();
     const el = document.createElement("div");
     el.className = "subagent-card";
-    const label = escapeHtml(subagentLabel(call));
     el.innerHTML =
-      `<span class="subagent-badge">${ICON.listTree || "🤖"}</span>` +
-      `<span class="subagent-label">Subagent: ${label}</span>`;
+      `<div class="subagent-row">` +
+        `<span class="subagent-badge">${ICON.listTree || "🤖"}</span>` +
+        `<span class="subagent-label">Subagent</span>` +
+        `<span class="subagent-sep">·</span>` +
+        `<span class="subagent-title"></span>` +
+        BLINK_DOTS +
+        `<span class="subagent-time"></span>` +
+      `</div>` +
+      `<div class="subagent-result" hidden></div>`;
+    setSubagentTitle(el, call);
     messagesEl.appendChild(el);
+    if (call && call.toolCallId) state.subagentCards.set(call.toolCallId, el);
+    applySubagentUpdate(call, el); // a replayed call may already be completed
     scrollToBottom();
+  }
+
+  function applySubagentUpdate(call, elOpt) {
+    const el = elOpt || state.subagentCards.get(call?.toolCallId);
+    if (!el) return;
+    setSubagentTitle(el, call);
+    // A background spawn's updates carry the child's task_id — stash it so the
+    // get_command_or_subagent_output poller's TaskOutput can find this card.
+    const tid = call && call.rawInput && call.rawInput.task_id;
+    if (tid && !el.dataset.taskId) el.dataset.taskId = String(tid);
+    // Completion shapes: grok-build's spawn_subagent → status "completed" +
+    // structured rawOutput.SubagentCompleted (output, duration_ms); Composer's
+    // Task → status "completed" + rawOutput {type:"Text", text} with NO
+    // duration (the subagent_finished lifecycle event fills that in).
+    const out = call && call.rawOutput;
+    const status = String(call?.status || "").toLowerCase();
+    const finished = status === "completed" || status === "failed" ||
+      (out && out.type === "SubagentCompleted");
+    if (!finished) return;
+    // Output lives in rawOutput.output (SubagentCompleted), rawOutput.text
+    // ({type:"Text"} — Composer + background acks), or the content text.
+    const output = out && typeof out.output === "string" ? out.output
+      : out && typeof out.text === "string" ? out.text
+      : toolUpdateText(call);
+    // A background spawn (rawInput.background: true) "completes" immediately
+    // with a started-ack while the child keeps running — that's not the
+    // result. Keep the dots; the real output arrives on the
+    // get_command_or_subagent_output poller's TaskOutput, matched back to this
+    // card by the child id parsed here (wire capture: accredia session).
+    if (/^subagent started in background\b/i.test(String(output || "").trim())) {
+      const ackId = /subagent_id:\s*([0-9a-f-]+)/i.exec(String(output));
+      if (ackId && !el.dataset.subagentId) el.dataset.subagentId = ackId[1];
+      return;
+    }
+    finishSubagentCard(el, {
+      durationMs: out && typeof out.duration_ms === "number" ? out.duration_ms : null,
+      output,
+    });
+  }
+
+  // A background delegation's result arrives on the poller tool
+  // (get_command_or_subagent_output), whose completed update carries
+  // rawOutput { type: "TaskOutput", Result: { task_id, duration_secs,
+  // output, … } } — finish the matching card. The poller's own row in the
+  // generic tool group is untouched (this hook doesn't consume the update).
+  function maybeFinishSubagentFromTaskOutput(call) {
+    const out = call && call.rawOutput;
+    if (!out || out.type !== "TaskOutput") return;
+    const results = [];
+    if (out.Result) results.push(out.Result);
+    if (Array.isArray(out.Results)) results.push(...out.Results);
+    for (const res of results) {
+      const tid = res && (res.task_id || res.taskId);
+      if (!tid) continue;
+      const el = [...state.subagentCards.values()].find(
+        (c) => c.dataset.taskId === String(tid) || c.dataset.subagentId === String(tid),
+      );
+      if (!el) continue;
+      finishSubagentCard(el, {
+        durationMs: typeof res.duration_secs === "number" ? Math.round(res.duration_secs * 1000)
+          : typeof res.duration_ms === "number" ? res.duration_ms : null,
+        output: typeof res.output === "string" ? res.output : "",
+      });
+    }
   }
 
   function addPlanNotice(text) {
@@ -3513,11 +3706,29 @@
 
   // Mirror the composer text onto the backdrop, wrapping a trailing send command
   // ("grok send") in an accent pill. Call whenever the input value changes.
+  // Auto-grow the composer with its content: 2 lines at rest (Cursor-style,
+  // matching the textarea's rows attribute), expanding to 5 as the user
+  // types, then scrolling. The .input-highlight overlay is inset:0 in the
+  // same wrap, so it tracks the height for free; its scrollTop is synced in
+  // renderInputHighlight.
+  function autosizeInput() {
+    const cs = window.getComputedStyle(input);
+    const line = parseFloat(cs.lineHeight) || 20;
+    const pad = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
+    const min = Math.round(line * 2 + pad);
+    const max = Math.round(line * 5 + pad);
+    input.style.height = "auto";
+    const content = input.scrollHeight;
+    input.style.height = Math.max(min, Math.min(content, max)) + "px";
+    input.style.overflowY = content > max ? "auto" : "hidden";
+  }
+
   function renderInputHighlight() {
     // The busy button's face reads the composer too (text = queue-send arrow,
     // empty = Stop) — refresh it on every input change; this function's call
     // sites are exactly those.
     updateSendButton();
+    autosizeInput();
     if (!inputHighlight) return;
     const text = input.value;
     const range = trailingSendPhrase(text, state.voiceSendPhrase);
@@ -3801,6 +4012,7 @@
         // A user-initiated turn just began (live send, or a plan-verdict
         // follow-up). Show "Grokking…" until the first real content replaces it.
         // The silent primer never emits agentStart, so it never shows here.
+        state.turnAgentActionsEl = null; // new turn → previous turn keeps its footer
         showGrokking();
         // Busy is event-sourced through the session buffer so a re-focus lands
         // on the true state: agentStart marks a turn in flight (a live send
@@ -3835,6 +4047,17 @@
           // it now at the bottom so we don't silently drop those plans.
           flushPlanHistory();
           flushPermissionHistory();
+          // A replayed delegation whose completion never reached the tool
+          // channel (Composer's Task completes only via live lifecycle events,
+          // which the CLI doesn't replay) must not keep dots running on
+          // history — settle any still-running subagent rows quietly.
+          for (const el of state.subagentCards.values()) {
+            const dots = el.querySelector(".blink-dots");
+            if (dots) dots.remove();
+          }
+          // The final replayed turn has no explicit turn-end signal — its
+          // footer becomes final here.
+          revealTurnFooter();
         }
         break;
       case "permissionHistoryQueue":
@@ -3903,6 +4126,16 @@
           }
           break;
         }
+        // A subagent's update belongs to its own row (title refinement, then the
+        // completed result + duration) — never the generic tool group.
+        if (state.subagentCards.has(msg.call?.toolCallId)) {
+          applySubagentUpdate(msg.call);
+          break;
+        }
+        // Background-delegation results ride the poller's TaskOutput — finish
+        // the matching card, then let the update flow on to the poller's own
+        // generic row.
+        maybeFinishSubagentFromTaskOutput(msg.call);
         // Fallback: a replayed answer update with no matching card (tool_call
         // missing/unmatched). Rebuild a card from the result text rather than
         // leaving the resumed turn blank.
@@ -3921,6 +4154,34 @@
           break;
         }
         applyToolDiffs(msg.call);
+        break;
+      }
+      case "subagentUpdate": {
+        // Lifecycle stream (method _x.ai/session/update): subagent_spawned tags
+        // the card with the child id; subagent_finished carries duration_ms +
+        // the child's output — the duration Composer's completed
+        // tool_call_update lacks, and a completion backstop if the tool
+        // channel's update never lands.
+        const u = msg.update || {};
+        const cards = [...state.subagentCards.values()];
+        if (u.sessionUpdate === "subagent_spawned") {
+          // FIFO: spawn events arrive in the same order as their tool_calls.
+          // Done-ness is irrelevant — the tool channel's completion can race
+          // ahead of the lifecycle stream.
+          const el = cards.find((c) => !c.dataset.subagentId);
+          if (el) el.dataset.subagentId = String(u.subagent_id || "");
+        } else if (u.sessionUpdate === "subagent_finished") {
+          let el = u.subagent_id
+            ? cards.find((c) => c.dataset.subagentId === String(u.subagent_id))
+            : undefined;
+          if (!el) el = cards.filter((c) => !c.classList.contains("subagent-done")).pop();
+          if (el) {
+            finishSubagentCard(el, {
+              durationMs: typeof u.duration_ms === "number" ? u.duration_ms : null,
+              output: typeof u.output === "string" ? u.output : "",
+            });
+          }
+        }
         break;
       }
       case "permissionRequest":
@@ -3974,6 +4235,7 @@
         // turn ends emitting promptComplete; afterTurn's follow-up turn then
         // runs and emits its own agentEnd at the end, which clears busy).
         commitAgentTurn();
+        revealTurnFooter(); // the turn is over — show its copy/timestamp footer
         // The host strips totalTokens:0 before it gets here — grok reports 0
         // for /session-info (context untouched) AND /compact (context shrunk,
         // not emptied), so 0 is never a real measurement (gateZeroTokenMeta,
@@ -4018,6 +4280,7 @@
         hideGrokking(); // turn ended (possibly before any content)
         hideThinkingIndicator();
         hidePlanProcessing();
+        revealTurnFooter();
         addError(msg.text);
         state.busy = false;
         updateSendButton();
@@ -4029,6 +4292,7 @@
         // empty) would otherwise orphan the dots forever — content-based
         // clearing never fires.
         hidePlanProcessing();
+        revealTurnFooter();
         state.busy = false;
         updateSendButton();
         break;
@@ -4129,6 +4393,10 @@
         state.dots = Object.assign({}, state.dots, msg.dots || {});
         if (msg.total !== undefined) state.sessionTotal = msg.total;
         state.sessionHasMore = !!msg.hasMore;
+        // Where the next load-more should start: index slots CONSUMED by the host
+        // (hidden subagent sessions occupy slots without producing rows), so a
+        // filtered page never makes us re-request the same slice.
+        state.sessionNextOffset = typeof msg.nextOffset === "number" ? msg.nextOffset : null;
         state.sessionLoading = false;
         if (open) renderSessionRows();
         break;

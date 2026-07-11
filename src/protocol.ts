@@ -106,7 +106,14 @@ export type HostMsg =
   | { type: "onboarding"; state: "missing-cli" | "auth-required"; platform?: string }
   | { type: "error"; text: string }
   | { type: "xaiNotification"; update?: unknown }
-  | { type: "sessions"; entries: SessionListEntry[]; activeId?: string; dots: Record<string, Dot>; offset: number; total: number; hasMore: boolean; query: string }
+  // Subagent lifecycle (method _x.ai/session/update): subagent_spawned /
+  // subagent_finished — duration/output stats the Composer agent's completed
+  // tool_call_update lacks, and a completion backstop for the card.
+  | { type: "subagentUpdate"; update?: unknown }
+  // nextOffset = the index offset the next load-more should request — ids CONSUMED
+  // from the on-disk index, not entries shown (hidden subagent sessions occupy
+  // slots without producing rows).
+  | { type: "sessions"; entries: SessionListEntry[]; activeId?: string; dots: Record<string, Dot>; offset: number; total: number; hasMore: boolean; nextOffset: number; query: string }
   | { type: "sessionDot"; id: string; dot: Dot }
   // Full snapshot of the focused session's host-owned send queue (#37) — the
   // webview renders pending user blocks from this; replay rebuilds them.
@@ -177,7 +184,7 @@ const HOST_MESSAGE_TYPE_MAP: Record<HostMsg["type"], true> = {
   planNotice: true, planBlocked: true, promptComplete: true, contextUsage: true, agentReset: true,
   agentError: true, agentEnd: true, exit: true, setBusy: true, summarizing: true,
   sessionContext: true, clearMessages: true, onboarding: true, error: true,
-  xaiNotification: true, sessions: true, sessionDot: true, queuedSends: true,
+  xaiNotification: true, subagentUpdate: true, sessions: true, sessionDot: true, queuedSends: true,
 };
 
 const WEBVIEW_MESSAGE_TYPE_MAP: Record<WebviewMsg["type"], true> = {

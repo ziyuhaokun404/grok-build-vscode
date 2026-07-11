@@ -1505,6 +1505,65 @@ describe("context popover (donut click, #39)", () => {
   });
 });
 
+describe("agent message footer (copy + timestamp) — one per turn", () => {
+  it("keeps the footer only on the turn's last narration segment, revealed at turn end", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, { type: "userMessage", text: "do things" });
+    dispatch(window, { type: "agentStart" });
+    dispatch(window, { type: "messageChunk", text: "first I'll look around" });
+    // A tool group splits the prose into a second .msg.agent segment.
+    dispatch(window, { type: "toolCall", call: { toolCallId: "t1", title: "read_file", kind: "read" } });
+    dispatch(window, { type: "messageChunk", text: "here is the conclusion" });
+
+    // Mid-turn: the (single) footer exists but is HIDDEN — no copy icons
+    // flickering through the conversation while the agent works.
+    let agentFooters = [...doc.querySelectorAll(".msg.agent .msg-actions")] as HTMLElement[];
+    expect(agentFooters).toHaveLength(1);
+    expect(agentFooters[0].hidden).toBe(true);
+
+    dispatch(window, { type: "promptComplete", meta: {} }); // commits the bubble (real turns always emit it)
+    dispatch(window, { type: "agentEnd" });
+
+    agentFooters = [...doc.querySelectorAll(".msg.agent .msg-actions")] as HTMLElement[];
+    expect(agentFooters).toHaveLength(1);
+    expect(agentFooters[0].hidden).toBe(false);
+    // …and it sits on the LAST segment (the conclusion), not the first.
+    expect(agentFooters[0].closest(".msg.agent")!.textContent).toContain("here is the conclusion");
+    // The user bubble keeps its own footer, visible immediately.
+    expect(doc.querySelectorAll(".msg.user .msg-actions")).toHaveLength(1);
+  });
+
+  it("each turn keeps its own footer — a new turn doesn't steal the previous one", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, { type: "userMessage", text: "q1" });
+    dispatch(window, { type: "agentStart" });
+    dispatch(window, { type: "messageChunk", text: "answer one" });
+    dispatch(window, { type: "promptComplete", meta: {} });
+    dispatch(window, { type: "agentEnd" });
+    dispatch(window, { type: "userMessage", text: "q2" });
+    dispatch(window, { type: "agentStart" });
+    dispatch(window, { type: "messageChunk", text: "answer two" });
+    dispatch(window, { type: "promptComplete", meta: {} });
+    dispatch(window, { type: "agentEnd" });
+
+    expect(doc.querySelectorAll(".msg.agent .msg-actions")).toHaveLength(2);
+  });
+});
+
+describe("composer autosize", () => {
+  it("sets an explicit height on every input change (grow-to-5-lines wiring)", () => {
+    // happy-dom has no layout (scrollHeight is 0), so the growth itself can't
+    // be measured here — this pins the wiring: typing re-runs autosize and the
+    // height is always an explicit px value with overflow managed.
+    const { window, doc } = bootWebview();
+    const input = $(doc, "input") as HTMLTextAreaElement;
+    input.value = "line1\nline2\nline3\nline4\nline5\nline6";
+    input.dispatchEvent(new window.Event("input", { bubbles: true }));
+    expect(input.style.height).toMatch(/px$/);
+    expect(["auto", "hidden"]).toContain(input.style.overflowY);
+  });
+});
+
 describe("welcome screen visibility (logo/byline hides once real content exists)", () => {
   it("hides the welcome block on the first live user message", () => {
     const { window, doc } = bootWebview();

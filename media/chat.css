@@ -671,21 +671,52 @@ body.thinking-hidden .msg.thinking { display: none; }
 }
 .generated-media-btn.copied { color: var(--vscode-charts-green, #4ec9b0); }
 
-/* Subagent delegation card */
+/* Subagent delegation row — same typography as the tool rows, with a purple
+   accent marking "delegated work" (one level up from a single tool call). */
 .subagent-card {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11px;
+  font-size: var(--vscode-font-size);
   color: var(--vscode-descriptionForeground);
   padding: 5px 10px;
   margin: 4px var(--pad);
   border-left: 2px solid var(--vscode-charts-purple, #b180d7);
   background: var(--vscode-textBlockQuote-background, rgba(177, 128, 215, 0.08));
+  border-radius: 0 6px 6px 0;
 }
-.subagent-card .subagent-label {
+.subagent-card .subagent-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.subagent-card .subagent-row.expandable { cursor: pointer; }
+.subagent-card .subagent-badge { display: inline-flex; flex: none; }
+.subagent-card .subagent-label { font-weight: 600; flex: none; }
+.subagent-card .subagent-sep { flex: none; opacity: 0.7; }
+.subagent-card .subagent-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.subagent-card .subagent-time { flex: none; opacity: 0.85; }
+.subagent-card .subagent-result-label {
+  font-size: 0.92em;
   font-weight: 600;
+  color: var(--vscode-descriptionForeground);
+  margin-bottom: 4px;
 }
+.subagent-card .subagent-result {
+  margin-top: 5px;
+  /* Balance the bottom edge: the last paragraph's margin is collapsed below,
+     so without this the text sits on the card's 5px padding while the top has
+     row + gap above it. */
+  padding-bottom: 3px;
+  overflow-wrap: anywhere;
+  color: var(--vscode-foreground);
+  opacity: 0.9;
+}
+.subagent-card .subagent-result > *:first-child { margin-top: 0; }
+.subagent-card .subagent-result > *:last-child { margin-bottom: 0; }
 
 .tool-group {
   font-size: var(--vscode-font-size);

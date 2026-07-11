@@ -17,6 +17,10 @@ export interface SessionListEntry {
   createdAt: number;
   numMessages: number;
   modelId?: string;
+  /** grok's `session_kind` when it marks a non-user session — a `spawn_subagent`
+   *  delegation persists its child as a top-level session dir with
+   *  `session_kind: "subagent"`; the history list hides those. */
+  kind?: "subagent";
 }
 
 export interface SessionMetaOverride {
@@ -132,7 +136,8 @@ function buildEntry(
   const override = overrides[id];
   const customName = override?.customName?.trim() || undefined;
   const displayName = customName || fallbackName(rawSummary, updatedAt);
-  return { id, cwd: sessCwd, displayName, rawSummary, customName, updatedAt, createdAt, numMessages, modelId };
+  const kind = raw?.session_kind === "subagent" ? ("subagent" as const) : undefined;
+  return { id, cwd: sessCwd, displayName, rawSummary, customName, updatedAt, createdAt, numMessages, modelId, kind };
 }
 
 export interface SessionIndexEntry {

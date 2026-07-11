@@ -8,6 +8,11 @@ that re-verifies the load-bearing shapes against the real binary. Deep-dives liv
 `research/*.md`; this document is the summary an upstream engineer can act on.
 
 **Basis:** grok CLI **0.2.93** (native Windows, stable channel), extension **v1.5.6**, 2026-07-11.
+The grok-build-family findings were re-verified against **Grok 4.5** (`grok-4.5`) — now the
+default model of that family. **Grok Build** (`grok-build`) is still present for some
+accounts/builds, so its observations below remain valid; where the two differ (context window,
+`set_model` echo) both are called out. See **§5** for the Grok 4.5 verification run (full live
+suite + probes; Composer 2.5 re-verified alongside).
 
 ---
 
@@ -16,16 +21,16 @@ that re-verifies the load-bearing shapes against the real binary. Deep-dives liv
 Models belong to *agent types* — `grok-build`/`grok-build-plan` vs the `cursor` agent that owns
 the Composer models. A client that only tested one family breaks on the other:
 
-| Surface | grok-build agent (Grok Build / Grok 4.5) | cursor agent (Composer 2.5) |
+| Surface | grok-build agent (Grok 4.5 / Grok Build, `grok-build-plan`) | cursor agent (Composer 2.5) |
 |---|---|---|
-| Context window (`_meta.totalContextTokens`) | 512K | 200K |
+| Context window (`_meta.totalContextTokens`) | **Grok 4.5: 500K** · **Grok Build: 512K** | 200K |
 | Delegation tool | `spawn_subagent` (`_meta["x.ai/tool"].name`) | `Task` |
 | `subagent_type` value style | `general-purpose` (kebab) | `generalPurpose` (camel) |
 | Delegation completion | Same-id `tool_call_update`, `status:"completed"`, structured `rawOutput.SubagentCompleted` (output, `tool_calls`, `turns`, `duration_ms`, `resume_from_hint`) | A **third, untitled** update (`title:""`, **no `_meta`**), `rawOutput {type:"Text", text}` — **no duration anywhere on the tool channel** |
 | Background delegation | `background:true` → instant "started" ack, real result later via `get_command_or_subagent_output` (`TaskOutput.Result` with `task_id`, `duration_secs`, `output`) | not observed |
 | Tool-call ids | `call-<uuid>-<n>` | `call-<uuid>-composer_call_<suffix>` — the short suffix **repeats across calls**; only the full id is unique |
 | Tool titles | verb-style ("List \`src/…\`") + tool name on spawn | frequently the raw user content (a Grep is titled with its search pattern) |
-| `session/set_model` echo | versioned id (`grok-build-0.1`) not in `availableModels` | same class of issue |
+| `session/set_model` echo | **Grok Build:** versioned id (`grok-build-0.1`) not in `availableModels` · **Grok 4.5:** clean (`{"model":{"Ok":"grok-4.5"}}`, resolvable) | same class of issue |
 | Cross-agent switch | `MODEL_SWITCH_INCOMPATIBLE_AGENT` after the first turn (agent locked at spawn) | same |
 
 **Ask:** treat the wire contract as one product across agents — same tool naming, same
@@ -135,7 +140,10 @@ asset paths to the model; error on dropped attachments.
   our own pagination, cache, and rename metadata. A client should not need to treat the CLI's
   on-disk implementation as a public API just to render session history.
 - `session/set_model` echoes a **versioned id** (`grok-build-0.1`) that isn't in
-  `availableModels` and carries no name or context window.
+  `availableModels` and carries no name or context window — still the case on **Grok Build**.
+  **Grok 4.5** echoes the clean requested id (`grok-4.5`, resolvable), so the defect is
+  per-model within the same agent family; the `resolveModelId` fallback stays for Grok Build,
+  older sessions, and the composer agent (see §5).
 - The agent type locks after the first turn; switching model families requires a full session
   restart choreographed by the client (`MODEL_SWITCH_INCOMPATIBLE_AGENT`).
 - `session/load` does not replay resolved `request_permission`s (we persist and re-inject
@@ -213,3 +221,56 @@ protocol shows users something it shouldn't:
 - **Concurrent sessions** — multiple `stdio` processes on one workspace with no cross-talk.
 - **Vision** actually works; **`ask_user_question`** is a good structured surface once its
   response shape is known; **`spawn_subagent` (0.2.93)** is well-structured on grok-build.
+
+---
+
+## 5. Grok 4.5 verification (grok 0.2.93, 2026-07-11)
+
+Every grok-build-family fact above was re-verified against **Grok 4.5** — the current default
+model of that family. **Grok Build (`grok-build`) still ships for some accounts/builds**, so the
+Grok Build observations in §1–§4 stand; the differences below are per-model *within the same
+`grok-build-plan` agent*, not a replacement. The full live suite (`npm run test:live` —
+**12 passed · 0 skipped · 0 failed**) plus targeted probes ran against the real binary on native
+Windows; Composer 2.5 was independently re-verified in the same run (`subagent-composer`).
+
+**Model surface (`session/new` → `availableModels`):**
+- `currentModelId: "grok-4.5"`, name **"Grok 4.5"**, `_meta.agentType: "grok-build-plan"`.
+- `_meta.totalContextTokens: 500000` — **500K, where Grok Build reports 512K** (per-model, same
+  agent). Corroborated by `/session-info` prose (`Context: N / 500000 tokens`).
+- `_meta.supportsReasoningEffort: true` with `reasoningEfforts` [high (default) / medium / low]
+  now advertised **in the model list itself** — previously reasoning effort was visible only as
+  a process-start flag (§2.7). It is still not settable per-turn over ACP; changing it still
+  restarts the process.
+- Only two models advertised: `grok-4.5` and `grok-composer-2.5-fast` (Composer 2.5).
+
+**`session/set_model` is clean on Grok 4.5.** `set_model("grok-4.5")` returns
+`{"_meta":{"model":{"Ok":"grok-4.5"}}}` — the requested id verbatim, resolvable in
+`availableModels`. The **versioned-id defect (§1, §2.6) still applies to Grok Build**
+(`grok-build` → `grok-build-0.1`) but does **not** reproduce on Grok 4.5 — so `resolveModelId`
+stays necessary for the Grok Build model.
+
+**Delegation (`spawn_subagent`) confirmed on Grok 4.5.** A real delegation emitted genuine
+`spawn_subagent` calls with kebab-case `subagent_type` values (`explore`, `general-purpose`),
+the completion arriving as a **same-id `tool_call_update`, `status:"completed"`** — exactly the
+§1 grok-build shape. The `get_command_or_subagent_output` poller was correctly **not** carded.
+The `subagent_spawned`/`subagent_finished` lifecycle events are **still not transmitted over
+ACP** (`finished=0` observed while `updates.jsonl` filled) — §2.4 holds unchanged.
+
+**The rest of §1–§4 reproduces on Grok 4.5:**
+- Tool-call ids are `call-<uuid>-<n>`; `_meta["x.ai/tool"]` carries
+  `{name, kind, namespace:"grok_build", label, read_only}` — the authoritative, title-independent
+  tool identity praised in §4.
+- Cross-agent switch after the first turn errors `MODEL_SWITCH_INCOMPATIBLE_AGENT`
+  (`activeAgentType:"grok-build-plan"` → `requiredAgentType:"cursor"`,
+  `suggestion:"start_new_session"`) — the agent is locked at spawn (§2.6).
+- `promptCapabilities.image:false` while inline `{type:"image"}` blocks work — the model
+  correctly named a solid red PNG (§2.5).
+- Plan mode: `exit_plan_mode` still can't be rejected; the client-side write/terminal gate
+  contained a rejected plan (0 workspace mutations) and released an approved one (§2.1).
+- Live prompts echo back as `user_message_chunk` (§2.6); `session/cancel` (Stop), two concurrent
+  sessions on one workspace, session restore, and structured edit-diff restore all behave as
+  documented.
+
+**Live suite (all against Grok 4.5 except the last):** handshake, capabilities, prompt-roundtrip,
+cancel-mid-turn, parallel-sessions, vision-prompt, session-restore, edit-diff-restore, plan-mode,
+image-gen, subagent, subagent-composer — **12/12 green.** Grok-free floor: **808/808.**

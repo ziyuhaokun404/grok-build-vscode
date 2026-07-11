@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.5.5 — 2026-07-11
+
+### Changed
+
+- **Codex-inspired chat restyle.** User bubbles use a theme-independent foreground tint (fixes bubbles that vanished on Cursor dark themes), inline and fenced code share one chip surface + editor-contrast text, one 28px ghost icon-button style across header/composer/message/code actions, file refs and "open diff →" render as real links (hover-only underline), plan/permission card text matches the chat font, and the composer types in the UI font instead of the editor's monospace. ([media/chat.css](media/chat.css), [media/chat.js](media/chat.js))
+- The permanent plan-cancel notice no longer says "Grok is processing the cancellation…" — the transient dots indicator carries that state. ([src/sidebar.ts](src/sidebar.ts))
+- **Resolved plan cards drop the inline plan text.** Once a plan is approved/rejected/cancelled (live or restored), the card shows just the plan-file link + verdict — the file opens as an editor tab; the Show/Hide toggle remains only when no plan file exists. ([media/chat.js](media/chat.js))
+- **Toolbar icons equalized.** The mode button, context donut, and mode-picker icons now use the same 16px glyph and 28px highlight height as the settings/history buttons. ([media/chat.css](media/chat.css))
+
+### Added
+
+- **Context popover on the donut.** Click the context donut for the exact token count (`used / window`, %). (#39) ([media/chat.js](media/chat.js))
+
+### Fixed
+
+- **Resolved plan cards stay resolved on re-focus.** Re-opening a live session no longer resurrects an already-answered plan review with active Approve/Reject/Cancel buttons; resolved cards replay collapsed behind Show/Hide plan with their verdict (`planResolved`, the plan twin of `permissionResolved`). ([src/sidebar.ts](src/sidebar.ts), [media/chat.js](media/chat.js), [src/protocol.ts](src/protocol.ts))
+- **`/session-info` no longer zeroes the context donut.** A turn's `totalTokens: 0` report is never a real measurement (`/compact` shrinks context, it doesn't empty it) and is now always ignored; `/context` (a CLI-TUI no-op over ACP) is hidden from autocomplete — use `/session-info`. (#39) ([src/acp-dispatch.ts](src/acp-dispatch.ts), [src/slash-filter.ts](src/slash-filter.ts))
+- **The context donut is real on restore and right after `/compact`.** A restored session seeds the donut from grok's persisted `signals.json` instead of showing 0 until the first turn; and `/compact` is followed by a hidden, CLI-local `/session-info` turn (~25ms, no model call, not persisted to history) whose reply carries the exact post-compact count — parsed and pushed to the donut moments after "Compacted." (the compact turn's own meta reports 0 and the CLI recomputes `signals.json` only at the next turn's end, so this was otherwise unknowable — probe-verified). ([src/sessions.ts](src/sessions.ts), [src/acp-dispatch.ts](src/acp-dispatch.ts), [src/sidebar.ts](src/sidebar.ts), [research/signals-refresh-probe.cjs](research/signals-refresh-probe.cjs))
+- **Approving a plan no longer leaks grok's post-verdict filler** ("I'll wait for your verdict…") into the chat: the planning turn the CLI unblocks on our response is cancelled and content-suppressed on Approve exactly as Reject/Cancel already did — that text never survived a session restore, so it doesn't paint live either. ([src/sidebar.ts](src/sidebar.ts))
+- **The welcome logo/byline actually hides once the chat has content** (a CSS `display` rule was overriding the `hidden` attribute), and a primer-only restore keeps the welcome screen instead of showing an empty chat. ([media/chat.css](media/chat.css), [media/chat.js](media/chat.js))
+- **No more forever-spinning dots after cancelling a plan.** Turn end now always clears the waiting indicator (grok's `[Plan cancelled]` ack can be contentless, which orphaned it), and a plain Cancel is silent by design: the "Plan abandoned" notice is the whole UX — the verdict still reaches grok on a hidden turn, but its ack reply no longer paints. ([media/chat.js](media/chat.js), [src/sidebar.ts](src/sidebar.ts))
+- **White flash on webview load fixed** (VS Code only): an inline critical style paints the theme background immediately and holds the welcome invisible until the stylesheet loads. ([src/sidebar.ts](src/sidebar.ts), [media/chat.css](media/chat.css))
+
 ## 1.5.4 — 2026-07-11
 
 ### Changed

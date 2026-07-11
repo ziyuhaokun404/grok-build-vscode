@@ -10,7 +10,7 @@ import { selectReapable, computeDot, Dot } from "./session-pool";
 import { resolveVoiceKey, parseVoiceCommand, DEFAULT_SEND_PHRASE } from "./voice";
 import { VoiceRecorder, transcribeAudio, resolveWindowsAudioDevice } from "./voice-recorder";
 import { VoiceStreamer } from "./voice-streamer";
-import { MediaRef, isIncompatibleAgentError, permissionOutcomeFor, summarizeBackgroundCommand } from "./acp-dispatch";
+import { MediaRef, gateZeroTokenMeta, isIncompatibleAgentError, parseSessionInfoContext, permissionOutcomeFor, summarizeBackgroundCommand } from "./acp-dispatch";
 import { modeToRemember, startsInYolo } from "./mode-prefs";
 import { GROK_VIEW_ID, moveViewContainerFor } from "./view-move";
 import {
@@ -68,6 +68,7 @@ import {
   fallbackName,
   indexSessions,
   isEmptyPrimerSession,
+  readContextUsage,
   readSessionEntries,
   resolveGrokHome,
   sessionsDirFor,
@@ -558,6 +559,11 @@ See design doc for the full state machine diagram.`;
     const gen = session.gen;
     client.respondExitPlan(requestId, verdict);
     this.persistPlanVerdict(session, verdict);
+    // Record the resolution in the session buffer (mirrors permissionResolved)
+    // so a re-focus replays the plan card collapsed with its verdict instead of
+    // actionable — the live collapse is a webview-only DOM mutation the buffer
+    // never captured.
+    this.emit(session, { type: "planResolved", requestId, verdict });
     this.setStatus(session, "working"); // a verdict always triggers a follow-up turn
 
     const feedback = comment?.trim();
@@ -570,6 +576,16 @@ See design doc for the full state machine diagram.`;
       // comment, post it as their user bubble immediately and append it to the
       // wire-level prompt — same pattern as reject/cancel.
       this.setPlanActive(session, false);
+      // Responding unblocked grok's planning turn (the CLI treats ANY
+      // exit_plan_mode response as approval), and the primer-trained
+      // continuation is contentless by design ("I'll wait for your verdict…").
+      // Cancel + content-suppress it exactly like reject/cancel do — grok
+      // doesn't persist it into replayed history, so live must hide it too;
+      // the [Plan approved] follow-up below is the real continuation. No
+      // agentReset here (unlike reject): pre-card narration the user already
+      // read stays on screen.
+      void client.cancel();
+      session.suppressPlanReject = true;
       if (feedback) {
         session.userMessageCount += 1;
         this.emit(session, { type: "userMessage", text: feedback, chips: [] });
@@ -577,6 +593,7 @@ See design doc for the full state machine diagram.`;
       this.emit(session, { type: "planProcessing" }); // indicator while we wait for grok
       const promptToGrok = feedback ? `[Plan approved] ${feedback}` : "[Plan approved]";
       session.afterTurn = async () => {
+        session.suppressPlanReject = false;
         try { await client.setMode(ACT_MODE_ID); } catch { /* CLI usually auto-exits already */ }
         this.emit(session, { type: "agentStart" });
         this.setStatus(session, "working");
@@ -624,7 +641,7 @@ See design doc for the full state machine diagram.`;
       if (!feedback) {
         this.emit(session, {
           type: "planNotice",
-          text: "Plan rejected — staying in Plan mode. Grok is processing the rejection…",
+          text: "Plan rejected — staying in Plan mode.",
         });
         this.emit(session, { type: "planProcessing" });
       }
@@ -659,14 +676,32 @@ See design doc for the full state machine diagram.`;
     if (!feedback) {
       this.emit(session, {
         type: "planNotice",
-        text: "Plan abandoned — switched to Agent mode. Grok is processing the cancellation…",
+        text: "Plan abandoned — switched to Agent mode.",
       });
-      this.emit(session, { type: "planProcessing" });
     }
     const promptToGrok = feedback ? `[Plan cancelled] ${feedback}` : "[Plan cancelled]";
     session.afterTurn = async () => {
-      session.suppressPlanReject = false;
       try { await client.setMode(ACT_MODE_ID); } catch { /* best-effort */ }
+      if (!feedback) {
+        // Plain cancel: the notice above is the whole UX — no dots, no
+        // follow-up bubble. The wire-level [Plan cancelled] still goes out
+        // (the primer contract needs the verdict), but grok's ack reply is
+        // noise: suppressPlanReject stays up through the turn so nothing
+        // paints, and agentEnd just releases the composer.
+        this.setStatus(session, "working");
+        try {
+          const meta = await client.prompt(promptToGrok);
+          if (gen !== session.gen) return;
+          this.emit(session, { type: "agentEnd", meta });
+        } catch (err) {
+          if (gen !== session.gen) return;
+          this.output.appendLine(`[plan-cancel] hidden ack turn failed: ${(err as Error).message}`);
+          this.emit(session, { type: "agentEnd" });
+        }
+        this.setStatus(session, "done");
+        return;
+      }
+      session.suppressPlanReject = false;
       this.emit(session, { type: "agentStart" });
       this.setStatus(session, "working");
       try {
@@ -1443,6 +1478,9 @@ See design doc for the full state machine diagram.`;
     client.on("messageChunk", (text: string) => {
       if (gen !== session.gen) return;
       session.inUserMessage = false;
+      // Hidden host-initiated turns (post-/compact /session-info) need the
+      // reply text; the emit below is suppressed for them (suppressContent).
+      if (session.captureAgentText !== undefined) session.captureAgentText += text;
       this.emit(session, { type: "messageChunk", text });
     });
     client.on("userMessageChunk", (text: string) => {
@@ -1534,7 +1572,13 @@ See design doc for the full state machine diagram.`;
     });
     client.on("promptComplete", (meta) => {
       if (gen !== session.gen) return;
-      this.emit(session, { type: "promptComplete", meta });
+      this.emit(session, { type: "promptComplete", meta: gateZeroTokenMeta(meta) });
+      // A zero report (stripped above) is /compact or /session-info; neither
+      // warrants a donut update here. /session-info leaves the context
+      // untouched, and after /compact the fresh count comes from the hidden
+      // /session-info turn (refreshContextAfterCompact) — reading signals.json
+      // now would fetch the stale pre-compact count (the CLI recomputes it
+      // only at the next inference turn's end; research/signals-refresh-probe.cjs).
     });
     client.on("xaiNotification", (u) => {
       if (gen !== session.gen) return;
@@ -1689,6 +1733,12 @@ See design doc for the full state machine diagram.`;
         this.setPlanActive(session, decision.planActive);
         const targetMode = decision.cliMode === "plan" ? "plan" : ACT_MODE_ID;
         try { await client.setMode(targetMode); } catch { /* best-effort */ }
+
+        // Seed the context donut from grok's persisted signals.json — no turn
+        // has run yet, so without this a restored session shows 0 until the
+        // first prompt completes. Emitted after loadSession so it lands after
+        // the donut-resetting `session` event in the replay buffer.
+        this.emitContextUsage(session);
       } else {
         await client.newSession(defaultModel || undefined);
         session.activeSessionId = client.sessionId;
@@ -3069,6 +3119,12 @@ See design doc for the full state machine diagram.`;
         // persisted: grok's own history has no such message, so re-focus (which
         // replays the session buffer) keeps it but a disk restore won't.
         this.emit(session, { type: "messageChunk", text: "Compacted." });
+        // The compact turn's own meta reports 0 (stripped) and signals.json
+        // still holds the pre-compact count, so the donut would sit stale
+        // until the next turn — fetch the fresh size now via a hidden
+        // /session-info (still inside the busy window, before agentEnd).
+        await this.refreshContextAfterCompact(client, session, gen);
+        if (gen !== session.gen) return;
       }
       // Skip agentEnd if a verdict was clicked mid-turn (afterTurn is queued).
       // Otherwise busy clears here, then the user could send during the brief
@@ -3089,7 +3145,15 @@ See design doc for the full state machine diagram.`;
         // otherwise short-circuit ensurePrimed without sending anything.
         session.primed = false;
         session.primingPromise = undefined;
-        void this.ensurePrimed(client, session, gen);
+        // The re-prime doubles as the donut BACKUP for /compact: the primary
+        // fix is the hidden /session-info above (instant, exact), but if its
+        // reply format ever drifts past the parser, this still lands — the
+        // CLI recomputes signals.json when an inference turn ends
+        // (research/signals-refresh-probe.cjs), and the hidden primer turn is
+        // exactly that, so once it acks the file has the post-compact count.
+        void this.ensurePrimed(client, session, gen).then(() => {
+          if (gen === session.gen) this.emitContextUsageSoon(session, gen);
+        });
       }
     } catch (err) {
       if (gen !== session.gen) return; // prompt rejected because we disposed the old client — don't leak the error into the new session
@@ -3415,6 +3479,60 @@ See design doc for the full state machine diagram.`;
     void this.context.globalState.update(SESSION_META_KEY, next);
   }
 
+  /** Push the context size from grok's on-disk signals.json to the webview —
+   *  the source that has a real count when the ACP turn meta can't: a cold
+   *  restore (no turn has run), the hidden post-/compact re-prime (its meta is
+   *  suppressed), and zero-reporting turns like /session-info (stripped by
+   *  gateZeroTokenMeta). Best-effort: no readable count, no message (the
+   *  donut keeps whatever it has). */
+  private emitContextUsage(session: Session): void {
+    const id = session.activeSessionId;
+    if (!id) return;
+    const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+    const usage = readContextUsage({ fs: defaultFs, grokHome: resolveGrokHome(process.env), cwd, id });
+    if (usage) this.emit(session, { type: "contextUsage", used: usage.used, window: usage.window });
+  }
+
+  /** emitContextUsage now + once more after the CLI's turn-end file flush has
+   *  certainly landed (the write races the ACP response by a beat). */
+  private emitContextUsageSoon(session: Session, gen: number): void {
+    this.emitContextUsage(session);
+    setTimeout(() => {
+      if (gen === session.gen) this.emitContextUsage(session);
+    }, 1500);
+  }
+
+  /** Fetch the post-compact context size via a hidden /session-info turn and
+   *  push it to the donut. The turn is CLI-local (~25ms, no model call) and is
+   *  NOT persisted to chat history, so nothing shows live or on restore; its
+   *  reply text is the only place the fresh count exists this early
+   *  (research/signals-refresh-probe.cjs). Runs before the compact turn's
+   *  agentEnd clears busy, so no user send can interleave. Parse failure is
+   *  silent — the post-compact re-prime's signals.json read is the backup. */
+  private async refreshContextAfterCompact(client: AcpClient, session: Session, gen: number): Promise<void> {
+    // Drift guard: if a future CLI stops advertising /session-info, sending it
+    // anyway would become a REAL inference turn (and a restore-visible bubble).
+    // Skip entirely — a donut that lags until the next turn beats that.
+    if (!client.availableCommands.some((c) => c?.name === "session-info")) return;
+    session.suppressContent = true;
+    session.captureAgentText = "";
+    try {
+      await client.prompt("/session-info");
+      if (gen !== session.gen) return;
+      // parseSessionInfoContext is null-safe and never throws: a reply-format
+      // change means no donut update (it lags until the next turn), never an
+      // error surfaced to the user.
+      const parsed = parseSessionInfoContext(session.captureAgentText ?? "");
+      if (parsed) this.emit(session, { type: "contextUsage", used: parsed.used, window: parsed.window });
+    } catch (e) {
+      // Even a failed hidden turn stays silent — log-only, no error bubble.
+      this.output.appendLine(`[compact] hidden /session-info failed: ${(e as Error).message}`);
+    } finally {
+      if (gen === session.gen) session.suppressContent = false;
+      session.captureAgentText = undefined;
+    }
+  }
+
   /** Clear a session's unread badge (it's being opened/viewed) and refresh its dot. */
   private markRead(session: Session): void {
     const id = session.activeSessionId;
@@ -3580,13 +3698,23 @@ See design doc for the full state machine diagram.`;
 <meta charset="UTF-8" />
 <meta http-equiv="Content-Security-Policy"
       content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; img-src ${webview.cspSource} data:; media-src ${webview.cspSource} data:; font-src ${webview.cspSource}; script-src 'nonce-${nonce}';" />
+<style>
+  /* Critical pre-stylesheet paint. VS Code serves chat.css through its webview
+     service worker, which can cold-start a beat after the HTML renders — that
+     gap otherwise flashes the welcome screen unstyled on a white background.
+     Paint the theme background immediately and hold the welcome invisible;
+     chat.css re-reveals it (visibility: visible on .welcome). */
+  html, body { background: var(--vscode-sideBar-background, var(--vscode-editor-background)); }
+  body { color: var(--vscode-foreground); font-family: var(--vscode-font-family); }
+  .welcome { visibility: hidden; }
+</style>
 <link rel="stylesheet" href="${mediaUri("chat.css")}" />
 </head>
 <body class="${this.showThinking() ? "" : "thinking-hidden"}" style="--chat-zoom: ${this.chatFontScale()}">
 
   <header class="top-bar">
-    <button id="history-btn" class="toolbar-btn" title="Session history"></button>
-    <button id="new-btn" class="toolbar-btn" title="New session"></button>
+    <button id="history-btn" class="icon-btn" title="Session history"></button>
+    <button id="new-btn" class="icon-btn" title="New session"></button>
     <div id="history-popover" class="toolbar-popover history-popover" hidden></div>
   </header>
 
@@ -3611,12 +3739,12 @@ See design doc for the full state machine diagram.`;
       </div>
       <div class="composer-toolbar">
         <div class="toolbar-left">
-          <button id="add-btn" class="toolbar-btn" title="Add context"></button>
-          <button id="gear-btn" class="toolbar-btn" title="Settings"></button>
+          <button id="add-btn" class="icon-btn" title="Add context"></button>
+          <button id="gear-btn" class="icon-btn" title="Settings"></button>
           <div class="context-donut" id="donut" title="Context usage">
             <svg width="16" height="16" viewBox="0 0 16 16">
-              <circle cx="8" cy="8" r="5" fill="none" stroke="var(--vscode-editorWidget-border,#444)" stroke-width="3"/>
-              <circle id="donut-arc" cx="8" cy="8" r="5" fill="none" stroke="var(--vscode-charts-green,#4ec9b0)" stroke-width="3" stroke-dasharray="0 999" transform="rotate(-90 8 8)"/>
+              <circle cx="8" cy="8" r="6" fill="none" stroke="var(--vscode-editorWidget-border,#444)" stroke-width="3"/>
+              <circle id="donut-arc" cx="8" cy="8" r="6" fill="none" stroke="var(--vscode-charts-green,#4ec9b0)" stroke-width="3" stroke-dasharray="0 999" transform="rotate(-90 8 8)"/>
             </svg>
             <span id="donut-label" class="small muted">0%</span>
           </div>
@@ -3631,6 +3759,7 @@ See design doc for the full state machine diagram.`;
     <div id="mode-popover" class="toolbar-popover" hidden></div>
     <div id="gear-popover" class="toolbar-popover gear-popover" hidden></div>
     <div id="add-popover" class="toolbar-popover" hidden></div>
+    <div id="context-popover" class="toolbar-popover" hidden></div>
     <div id="slash-popover" class="slash-popover" hidden></div>
   </footer>
 

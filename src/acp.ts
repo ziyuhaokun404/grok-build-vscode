@@ -158,6 +158,8 @@ export class AcpClient extends EventEmitter {
    */
   planActive = false;
 
+  // TEST COMMENT: added to demonstrate file editing in src/acp.ts
+
   /** Set by the host to satisfy server→client fs requests. */
   fsRead?: FsReadHandler;
   fsWrite?: FsWriteHandler;

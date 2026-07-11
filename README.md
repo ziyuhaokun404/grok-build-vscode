@@ -224,7 +224,7 @@ Gear icon → effort dots pick a level (`none` → `xhigh`), forwarded to the CL
 <details>
 <summary><strong>Cost control</strong> — token donut, <code>/compact</code> & effort</summary>
 
-Stay on top of spend without leaving the sidebar: the bottom-toolbar **context donut** shows `usedK/maxK` tokens after each prompt; **`/compact`** (gear → Compact) compresses the conversation when it fills, or **+** starts fresh. **Reasoning effort** trades tokens for depth, and voice STT cost is called out above.
+Stay on top of spend without leaving the sidebar: the bottom-toolbar **context donut** shows `usedK/maxK` tokens after each prompt (click it for the exact count, and it stays accurate across `/compact` and session restores); **`/compact`** (gear → Compact) compresses the conversation when it fills, or **+** starts fresh. **Reasoning effort** trades tokens for depth, and voice STT cost is called out above.
 
 </details>
 

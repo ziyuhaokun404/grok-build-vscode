@@ -84,10 +84,17 @@ export type HostMsg =
   // The host spreads the plan-review snapshot (planPath/planName) into the bare
   // ExitPlanRequest before posting, so the wire shape is wider than acp's type.
   | { type: "exitPlanRequest"; req: ExitPlanRequest & { planPath?: string; planName?: string } }
+  // Buffered right after the user's verdict (mirrors permissionResolved) so a
+  // re-focus replays the plan card collapsed instead of actionable.
+  | { type: "planResolved"; requestId: number | string; verdict: "approved" | "abandoned" | "rejected" }
   | { type: "questionRequest"; req: QuestionRequest }
   | { type: "planNotice"; text: string }
   | { type: "planBlocked"; kind: string; target: string }
   | { type: "promptComplete"; meta: PromptResultMeta }
+  // Context size read from grok's on-disk signals.json — the source that has a
+  // real count when the turn meta can't: a cold restore (no turn yet) and a
+  // /compact turn (its meta reports 0, stripped by gateZeroTokenMeta).
+  | { type: "contextUsage"; used: number; window?: number }
   | { type: "agentReset" }
   | { type: "agentError"; text: string }
   | { type: "agentEnd"; meta?: PromptResultMeta }
@@ -166,8 +173,8 @@ const HOST_MESSAGE_TYPE_MAP: Record<HostMsg["type"], true> = {
   thoughtChunk: true, messageChunk: true, media: true, userMessageChunk: true,
   historyReplay: true, permissionHistoryQueue: true, planHistoryQueue: true,
   planProcessing: true, toolCall: true, toolCallUpdate: true, permissionRequest: true,
-  permissionResolved: true, exitPlanRequest: true, questionRequest: true,
-  planNotice: true, planBlocked: true, promptComplete: true, agentReset: true,
+  permissionResolved: true, exitPlanRequest: true, planResolved: true, questionRequest: true,
+  planNotice: true, planBlocked: true, promptComplete: true, contextUsage: true, agentReset: true,
   agentError: true, agentEnd: true, exit: true, setBusy: true, summarizing: true,
   sessionContext: true, clearMessages: true, onboarding: true, error: true,
   xaiNotification: true, sessions: true, sessionDot: true, queuedSends: true,

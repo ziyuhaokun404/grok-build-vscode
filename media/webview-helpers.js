@@ -20,8 +20,8 @@
     "voiceError", "chips", "commandsUpdate", "userMessage", "agentStart", "thoughtChunk",
     "messageChunk", "media", "userMessageChunk", "historyReplay", "permissionHistoryQueue",
     "planHistoryQueue", "planProcessing", "toolCall", "toolCallUpdate", "permissionRequest",
-    "permissionResolved", "exitPlanRequest", "questionRequest", "planNotice", "planBlocked",
-    "promptComplete", "agentReset", "agentError", "agentEnd", "exit", "setBusy", "summarizing",
+    "permissionResolved", "exitPlanRequest", "planResolved", "questionRequest", "planNotice", "planBlocked",
+    "promptComplete", "contextUsage", "agentReset", "agentError", "agentEnd", "exit", "setBusy", "summarizing",
     "sessionContext", "clearMessages", "onboarding", "error", "xaiNotification", "sessions",
     "sessionDot", "queuedSends",
   ];

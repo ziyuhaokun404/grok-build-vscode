@@ -758,8 +758,10 @@ body.thinking-hidden .msg.thinking { display: none; }
   transform: rotate(90deg);
 }
 .tool-group.in-progress > .tool-group-header .tool-chevron { display: none; } /* can't expand while running */
-/* …except a lone running COMMAND, which is expandable immediately (#41). */
-.tool-group.in-progress.cmd-single > .tool-group-header .tool-chevron { display: inline-flex; }
+/* …except a lone running COMMAND, which is expandable immediately (#41), or a
+   group the Expand-All latch forced open mid-run (so it can be collapsed). */
+.tool-group.in-progress.cmd-single > .tool-group-header .tool-chevron,
+.tool-group.in-progress.expanded > .tool-group-header .tool-chevron { display: inline-flex; }
 /* A running group stays muted like the Grokking / Thinking indicators — the
    blinking dots convey activity, not a brighter text color. */
 .tool-group-label { color: inherit; }

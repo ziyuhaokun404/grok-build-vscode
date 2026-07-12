@@ -116,6 +116,10 @@ export type HostMsg =
   | { type: "commandOutput"; command: string; output: string; exitCode: number | null; truncated: boolean }
   // grok.expandCommandOutputs — pre-expand every command's IN/OUT detail.
   | { type: "expandCommandOutputs"; value: boolean }
+  // On-demand audit: expand (open:true) / collapse (open:false) EVERY tool group
+  // and command IN/OUT box in the focused session at once. Ephemeral (not
+  // persisted) — the Command Palette "Grok: Expand/Collapse All Tool Details".
+  | { type: "setAllToolDetails"; open: boolean }
   // nextOffset = the index offset the next load-more should request — ids CONSUMED
   // from the on-disk index, not entries shown (hidden subagent sessions occupy
   // slots without producing rows).
@@ -192,7 +196,7 @@ const HOST_MESSAGE_TYPE_MAP: Record<HostMsg["type"], true> = {
   agentError: true, agentEnd: true, exit: true, setBusy: true, summarizing: true,
   sessionContext: true, clearMessages: true, onboarding: true, error: true,
   xaiNotification: true, subagentUpdate: true, commandOutput: true, expandCommandOutputs: true,
-  sessions: true, sessionDot: true, queuedSends: true,
+  setAllToolDetails: true, sessions: true, sessionDot: true, queuedSends: true,
 };
 
 const WEBVIEW_MESSAGE_TYPE_MAP: Record<WebviewMsg["type"], true> = {

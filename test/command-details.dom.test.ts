@@ -26,6 +26,10 @@ const out = (command: string, output: string, exitCode: number | null = 0, trunc
   exitCode,
   truncated,
 });
+const read = (id: string, path: string) => ({
+  type: "toolCall",
+  call: { toolCallId: id, kind: "read", title: `Read ${path}`, rawInput: { path } },
+});
 const close = (window: Window) => dispatch(window, { type: "messageChunk", text: "done" });
 
 describe("command details (#41)", () => {
@@ -206,5 +210,191 @@ describe("command details (#41)", () => {
     close(window);
     expect(doc.querySelector(".has-details")).toBeNull();
     expect(doc.querySelector(".tool-item-details")).toBeNull();
+  });
+});
+
+// #41 (1.5.10): with the audit toggle on, a command-bearing tool GROUP opens
+// itself so a "Ran N commands ›" batch needs zero extra clicks. Explore/edit-only
+// groups (no command detail) stay collapsed.
+describe("group auto-expand under grok.expandCommandOutputs", () => {
+  const bootExpanded = () => {
+    const h = bootWebview();
+    dispatch(h.window, {
+      type: "initialState",
+      effort: "", cwd: "/w", useCtrlEnter: false, extVersion: "0",
+      showThinking: false, expandCommandOutputs: true,
+    });
+    return h;
+  };
+
+  it("a finished command-bearing group paints open; an explore-only group stays collapsed", () => {
+    const { window, doc } = bootExpanded();
+
+    // Batch 1: a command + a read → kept as a group, has a command detail row.
+    dispatch(window, exec("c1", "git status"));
+    dispatch(window, read("r1", "src/a.ts"));
+    close(window);
+
+    // Batch 2: two reads → kept as a group, NO command detail.
+    dispatch(window, read("r2", "src/b.ts"));
+    dispatch(window, read("r3", "src/c.ts"));
+    close(window);
+
+    const groups = [...doc.querySelectorAll(".tool-group")] as HTMLElement[];
+    expect(groups).toHaveLength(2);
+    const cmdGroup = groups.find((g) => g.querySelector(".has-details"))!;
+    const readGroup = groups.find((g) => !g.querySelector(".has-details"))!;
+
+    expect((cmdGroup.querySelector(".tool-group-body") as HTMLElement).hidden).toBe(false);
+    expect(cmdGroup.classList.contains("expanded")).toBe(true);
+    expect((readGroup.querySelector(".tool-group-body") as HTMLElement).hidden).toBe(true);
+    expect(readGroup.classList.contains("expanded")).toBe(false);
+  });
+
+  it("toggling the setting live expands/collapses existing command-bearing groups only", () => {
+    const { window, doc } = bootWebview(); // setting OFF by default
+
+    dispatch(window, exec("c1", "git status"));
+    dispatch(window, read("r1", "src/a.ts"));
+    close(window);
+    dispatch(window, read("r2", "src/b.ts"));
+    dispatch(window, read("r3", "src/c.ts"));
+    close(window);
+
+    const groups = [...doc.querySelectorAll(".tool-group")] as HTMLElement[];
+    const cmdBody = groups.find((g) => g.querySelector(".has-details"))!.querySelector(".tool-group-body") as HTMLElement;
+    const readBody = groups.find((g) => !g.querySelector(".has-details"))!.querySelector(".tool-group-body") as HTMLElement;
+    expect(cmdBody.hidden).toBe(true); // both collapsed while OFF
+
+    dispatch(window, { type: "expandCommandOutputs", value: true });
+    expect(cmdBody.hidden).toBe(false); // command group opened
+    expect(readBody.hidden).toBe(true); // explore-only untouched
+
+    dispatch(window, { type: "expandCommandOutputs", value: false });
+    expect(cmdBody.hidden).toBe(true); // collapses back
+  });
+});
+
+// 1.5.10: Command Palette "Grok: Expand/Collapse All Tool Details (This Session)"
+// — a per-session, in-memory LATCH. It opens/closes EVERY group (even
+// explore-only) and every command box, and keeps applying to content that
+// streams in afterward, until the opposite command or a gear-setting change
+// (last action wins). It never persists to the host.
+const bodies = (doc: Document) => [...doc.querySelectorAll(".tool-group-body")] as HTMLElement[];
+const details = (doc: Document) => [...doc.querySelectorAll(".tool-item-details")] as HTMLElement[];
+
+describe("setAllToolDetails (expand/collapse all latch)", () => {
+  it("opens every group and command box, then collapses them all", () => {
+    const { window, doc } = bootWebview();
+
+    dispatch(window, exec("c1", "git status"));
+    dispatch(window, read("r1", "src/a.ts"));
+    close(window);
+    dispatch(window, read("r2", "src/b.ts"));
+    dispatch(window, read("r3", "src/c.ts"));
+    close(window);
+    dispatch(window, exec("solo", "npm test")); // lone command → flat row with details
+    close(window);
+
+    expect(bodies(doc).every((b) => b.hidden)).toBe(true); // all collapsed initially
+
+    dispatch(window, { type: "setAllToolDetails", open: true });
+    expect(bodies(doc).every((b) => !b.hidden)).toBe(true); // every group open (incl. explore-only)
+    expect(details(doc).every((d) => !d.hidden)).toBe(true); // every IN/OUT box open
+
+    dispatch(window, { type: "setAllToolDetails", open: false });
+    expect(bodies(doc).every((b) => b.hidden)).toBe(true);
+    expect(details(doc).every((d) => d.hidden)).toBe(true);
+  });
+
+  it("opens a group that is STILL EXECUTING (the reported gap)", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, exec("a", "npm test"));
+    dispatch(window, exec("b", "git status")); // 2 tools, no close → group in-progress
+    const group = doc.querySelector(".tool-group.in-progress") as HTMLElement;
+    expect((group.querySelector(".tool-group-body") as HTMLElement).hidden).toBe(true);
+
+    dispatch(window, { type: "setAllToolDetails", open: true });
+    expect((group.querySelector(".tool-group-body") as HTMLElement).hidden).toBe(false);
+    expect(group.classList.contains("expanded")).toBe(true); // chevron shown via CSS while running
+  });
+
+  it("keeps applying to tool calls that arrive AFTER the command (the second reported gap)", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, { type: "setAllToolDetails", open: true }); // latch on, transcript empty
+
+    // A group + a lone command that appear later both render open.
+    dispatch(window, exec("c1", "git status"));
+    dispatch(window, read("r1", "src/a.ts"));
+    close(window);
+    dispatch(window, exec("solo", "npm test"));
+    close(window);
+    expect(bodies(doc).every((b) => !b.hidden)).toBe(true);
+    expect(details(doc).every((d) => !d.hidden)).toBe(true);
+
+    // Flip to collapse-all; subsequent content renders collapsed.
+    dispatch(window, { type: "setAllToolDetails", open: false });
+    dispatch(window, read("r2", "src/b.ts"));
+    dispatch(window, read("r3", "src/c.ts"));
+    close(window);
+    expect(bodies(doc).every((b) => b.hidden)).toBe(true);
+    expect(details(doc).every((d) => d.hidden)).toBe(true);
+  });
+
+  it("last action wins: flipping the gear setting clears the latch", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, exec("c1", "git status"));
+    dispatch(window, read("r1", "src/a.ts"));
+    close(window);
+    dispatch(window, read("r2", "src/b.ts")); // explore-only group
+    dispatch(window, read("r3", "src/c.ts"));
+    close(window);
+
+    dispatch(window, { type: "setAllToolDetails", open: false }); // force-collapse everything
+    const cmdBody = bodies(doc).find((b) => b.closest(".tool-group")!.querySelector(".has-details"))!;
+    const readBody = bodies(doc).find((b) => !b.closest(".tool-group")!.querySelector(".has-details"))!;
+    expect(cmdBody.hidden).toBe(true);
+
+    // Turning the setting ON clears the latch → command group opens, explore-only stays closed.
+    dispatch(window, { type: "expandCommandOutputs", value: true });
+    expect(cmdBody.hidden).toBe(false); // setting now governs (command-bearing only)
+    expect(readBody.hidden).toBe(true);
+  });
+
+  it("collapse-all overrides the persisted setting (setting on, then collapse)", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, {
+      type: "initialState",
+      effort: "", cwd: "/w", useCtrlEnter: false, extVersion: "0",
+      showThinking: false, expandCommandOutputs: true,
+    });
+    dispatch(window, exec("c1", "git status"));
+    dispatch(window, read("r1", "src/a.ts"));
+    close(window); // command group auto-opens under the setting
+    const cmdBody = bodies(doc)[0];
+    expect(cmdBody.hidden).toBe(false);
+
+    dispatch(window, { type: "setAllToolDetails", open: false }); // latch beats the setting
+    expect(cmdBody.hidden).toBe(true);
+  });
+
+  it("does not persist — no setExpandCommandOutputs round-trips to the host", () => {
+    const { window, posted } = bootWebview();
+    dispatch(window, exec("solo", "git status"));
+    close(window);
+    dispatch(window, { type: "setAllToolDetails", open: true });
+    expect(posted.filter((m: any) => m.type === "setExpandCommandOutputs")).toHaveLength(0);
+  });
+
+  it("resets on a session swap (clearMessages) — new content follows the gear default again", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, { type: "setAllToolDetails", open: true }); // latch on
+    dispatch(window, { type: "clearMessages" }); // focus-swap / new session
+
+    dispatch(window, read("r1", "src/a.ts"));
+    dispatch(window, read("r2", "src/b.ts"));
+    close(window);
+    // Explore-only group, latch cleared, setting off → collapsed.
+    expect(bodies(doc)[0].hidden).toBe(true);
   });
 });

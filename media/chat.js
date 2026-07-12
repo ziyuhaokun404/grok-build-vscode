@@ -202,10 +202,17 @@
     // host's commandOutput (snapshotted at terminal/release, #41) attaches to
     // the oldest un-served row with the exact same command string (FIFO).
     pendingCommandDetails: [],
-    // grok.expandCommandOutputs: new command rows render with their IN/OUT
-    // detail already open (v). Tool GROUPS still collapse as usual — this
-    // governs only the per-command detail inside them / on flat rows.
+    // grok.expandCommandOutputs (persisted, global): the standing DEFAULT for
+    // new content — command IN/OUT details pre-open, and command-bearing groups
+    // auto-open. Command scope only (explore/edit groups stay collapsed).
     expandCommandOutputs: false,
+    // toolExpandOverride (per-session, in-memory): the Command Palette
+    // Expand/Collapse All latch. null = follow the setting above; true/false =
+    // force ALL groups + details open/closed for this session, and keep applying
+    // to new content as it streams in (last action wins vs the setting). Rides
+    // the session's replay buffer, so it survives focus-swaps but resets on a
+    // cold reopen from history — see resetForNewSession + the emit in sidebar.ts.
+    toolExpandOverride: null,
   };
 
   // Matches any version of the extension's primer (v1, v2, …). Used during
@@ -340,7 +347,7 @@
 
   // ---------- markdown ----------
 
-  const { looksLikeFileRef, formatRelativeTime, modelDisplayName, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, cleanSubagentOutput, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, parseAttachmentContext, parseSelectionBlocks, parseImageTags, isKnownHostMessage } = globalThis.GrokWebviewHelpers;
+  const { looksLikeFileRef, formatRelativeTime, modelDisplayName, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, cleanSubagentOutput, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, commandProgramLabel, parseAttachmentContext, parseSelectionBlocks, parseImageTags, isKnownHostMessage } = globalThis.GrokWebviewHelpers;
 
   function escapeAttr(s) {
     return String(s == null ? "" : s)
@@ -1215,12 +1222,15 @@
         renderConfigDebugPanel(); // re-render so the switch reflects the new state
       },
     );
-    // Expand command outputs (#41) — pre-open every command's IN/OUT detail
-    // (tool groups still collapse as usual). Persisted via grok.expandCommandOutputs.
+    // Expand command outputs (#41) — the persisted default: pre-open every
+    // command's IN/OUT detail + command-bearing groups. Flipping it clears the
+    // per-session Expand/Collapse All latch so the setting takes over (last
+    // action wins). Persisted via grok.expandCommandOutputs.
     addGearItem(
       `<span>Expand command outputs</span><span class="popover-switch${state.expandCommandOutputs ? " on" : ""}" role="switch" aria-checked="${state.expandCommandOutputs}"><span class="popover-switch-knob"></span></span>`,
       () => {
         state.expandCommandOutputs = !state.expandCommandOutputs;
+        state.toolExpandOverride = null;
         applyExpandCommandOutputs();
         vscode.postMessage({ type: "setExpandCommandOutputs", value: state.expandCommandOutputs });
         renderConfigDebugPanel();
@@ -1613,6 +1623,7 @@
     state.toolFailuresById.clear();
     state.subagentCards.clear();
     state.pendingCommandDetails = [];
+    state.toolExpandOverride = null; // the Expand/Collapse All latch is per-session; a swap/restore starts clean (the replay buffer re-applies it for a warm re-focus)
     state.turnAgentActionsEl = null;
     state.activeAgentEl = null;
     state.activeAgentRaw = "";
@@ -1990,7 +2001,9 @@
         target = prettyPath(filePath);
       }
     } else if (command) {
-      target = clamp(command);
+      // Program name (+ a non-flag subcommand), not the raw command — the full
+      // text is in the row's IN/OUT detail. "Run git status", "Run node", etc.
+      target = commandProgramLabel(command);
     } else if (pattern) {
       target = clamp(pattern);
     }
@@ -2073,6 +2086,9 @@
       el.classList.remove("in-progress");
       const hdr = el.querySelector(".tool-group-header");
       hdr.querySelector(".tool-group-label").textContent = summarizeTools(calls);
+      // Settle the finished group to its effective expand state: the latch if
+      // set, else auto-open when it ran a command (grok.expandCommandOutputs).
+      setGroupExpanded(el, groupShouldExpand(el));
     }
     state.activeToolGroupEl = null;
   }
@@ -2105,6 +2121,9 @@
       el.appendChild(body);
       messagesEl.appendChild(el);
       state.activeToolGroupEl = el;
+      // Expand-all latched → open the group the moment it appears, mid-run
+      // (setGroupExpanded's `.expanded` class also reveals the chevron via CSS).
+      if (state.toolExpandOverride === true) setGroupExpanded(el, true);
     }
 
     const el = state.activeToolGroupEl;
@@ -2166,16 +2185,58 @@
   // the row carries the same chevron + hover affordance as a tool-group
   // header. Shared by grouped rows and the lone flat row (closeToolGroup
   // moves the chevron + details nodes into the flat form).
-  // Sync every command detail (open/closed + chevron) to the
-  // expandCommandOutputs preference — used by the config watcher and the gear
-  // switch.
+  // Effective expand state, given the per-session latch (toolExpandOverride)
+  // takes precedence over the persisted grok.expandCommandOutputs default.
+  //   - override set  → force everything to the override (all groups, all boxes).
+  //   - override null → the setting: command IN/OUT boxes open, and only
+  //                     command-bearing GROUPS auto-open (explore/edit stay shut).
+  // `groupShouldExpand` needs the element to decide the command-bearing case;
+  // `detailShouldExpand` is group-agnostic.
+  function groupShouldExpand(el) {
+    if (state.toolExpandOverride !== null) return state.toolExpandOverride;
+    return state.expandCommandOutputs && !!(el && el.querySelector(".has-details"));
+  }
+  function detailShouldExpand() {
+    if (state.toolExpandOverride !== null) return state.toolExpandOverride;
+    return state.expandCommandOutputs;
+  }
+  // Open/close a group's body + chevron (safe on an in-progress group — the CSS
+  // shows the chevron once `.expanded` is set even mid-run).
+  function setGroupExpanded(el, open) {
+    const body = el.querySelector(".tool-group-body");
+    if (!body) return;
+    body.hidden = !open;
+    el.classList.toggle("expanded", open);
+  }
+  function setDetailExpanded(row, open) {
+    const d = row.querySelector(".tool-item-details");
+    if (!d) return;
+    d.hidden = !open;
+    row.classList.toggle("expanded", open);
+  }
+
+  // Re-apply the effective expand state to the WHOLE transcript. Called when the
+  // persisted setting changes (gear/config) and when the latch flips. Respects
+  // the latch via the effective helpers; touches the in-progress group too so a
+  // running batch opens/closes live (the reported gap).
   function applyExpandCommandOutputs() {
     for (const row of messagesEl.querySelectorAll(".has-details")) {
-      const d = row.querySelector(".tool-item-details");
-      if (!d) continue;
-      d.hidden = !state.expandCommandOutputs;
-      row.classList.toggle("expanded", !d.hidden);
+      setDetailExpanded(row, detailShouldExpand());
     }
+    for (const group of messagesEl.querySelectorAll(".tool-group")) {
+      setGroupExpanded(group, groupShouldExpand(group));
+    }
+  }
+
+  // Command Palette: Grok: Expand/Collapse All Tool Details (This Session). Sets
+  // the per-session latch, then re-applies it everywhere — so it (a) opens the
+  // batch that's still executing and (b) keeps applying to tool calls that
+  // arrive later this session, until you collapse-all or change the gear setting
+  // (last action wins). Broader than the setting: it opens EVERY group, incl.
+  // explore/edit-only ones.
+  function setAllToolDetails(open) {
+    state.toolExpandOverride = !!open;
+    applyExpandCommandOutputs();
   }
 
   function wireCommandToggle(rowEl, details) {
@@ -2201,7 +2262,7 @@
 
     const details = document.createElement("div");
     details.className = "tool-item-details";
-    details.hidden = !state.expandCommandOutputs; // grok.expandCommandOutputs opens new rows pre-expanded
+    details.hidden = !detailShouldExpand(); // latch, else grok.expandCommandOutputs, opens new rows pre-expanded
     const block = document.createElement("div");
     block.className = "cmd-block";
     const inRow = document.createElement("div");
@@ -4441,10 +4502,17 @@
         break;
       case "expandCommandOutputs":
         // Live toggle (grok.expandCommandOutputs): applies to existing rows
-        // too, and sets the default for rows still to come.
+        // too, and sets the default for rows still to come. Clears the
+        // per-session Expand/Collapse All latch — last action wins.
         state.expandCommandOutputs = !!msg.value;
+        state.toolExpandOverride = null;
         applyExpandCommandOutputs();
         if (state.gearView === "config") renderConfigDebugPanel(); // keep the switch in sync
+        break;
+      case "setAllToolDetails":
+        // Command Palette: Grok: Expand/Collapse All Tool Details — one-shot,
+        // current session only, doesn't touch the persisted expandCommandOutputs.
+        setAllToolDetails(!!msg.open);
         break;
       case "commandOutput": {
         // A finished shell command's captured output (#41). Attach to the

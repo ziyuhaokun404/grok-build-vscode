@@ -34,6 +34,8 @@ export function activate(context: vscode.ExtensionContext): void {
       sidebar.insertActiveMention(),
     ),
     vscode.commands.registerCommand("grok.showLogs", () => output.show()),
+    vscode.commands.registerCommand("grok.expandAllToolDetails", () => sidebar.setAllToolDetails(true)),
+    vscode.commands.registerCommand("grok.collapseAllToolDetails", () => sidebar.setAllToolDetails(false)),
     vscode.commands.registerCommand("grok.logout", () => sidebar.logout()),
     // Internal debug helper for manually exercising the plan-review card UI
     // (Approve / Reject / Cancel flows) without a live CLI session.

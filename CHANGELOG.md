@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.5.10 — 2026-07-12
+
+### Added
+
+- **Expand / collapse all tool details.** Two Command Palette commands — *Grok: Expand All Tool Details (This Session)* / *…Collapse All…* — open or close every tool group and command IN/OUT box, **including a batch that's still running**, and keep applying to tool calls that stream in afterward. It's a per-session latch (last action wins vs the gear setting; flipping the setting clears it) that survives Agent Dashboard focus-swaps and resets on a cold reopen — never persisted to disk. Bind them to a key if you like. ([src/extension.ts](src/extension.ts), [media/chat.js](media/chat.js), [src/sidebar.ts](src/sidebar.ts))
+
+### Changed
+
+- **`grok.expandCommandOutputs` now also opens command-bearing tool *groups*,** not just each command's IN/OUT detail — an Auto-accept "Ran N commands" batch is audit-visible with zero extra clicks; explore/edit-only groups stay collapsed. ([media/chat.js](media/chat.js))
+- **Command rows read as "Run \<program\>"** — the executable plus a non-flag subcommand (`Run git status`, `Run npm test`, `Run node`, `Run Get-Date`), not a truncated slab of shell. The full command still lives in the row's IN/OUT detail. ([media/webview-helpers.js](media/webview-helpers.js))
+- Refreshed the README — new mode-picker and image-paste screenshots, and a leaner **Install** section (the extension's onboarding installs the CLI and signs you in) with build-from-source / per-IDE scripts moved to [docs/INSTALL.md](docs/INSTALL.md). ([README.md](README.md))
+
+### Fixed
+
+- **Failed non-shell tools now show their real error inline** instead of a generic "Tool call failed." — the reason is mined from variant-keyed `rawOutput` blobs (e.g. `list_dir` → `NotFound`, `read_file` → `FileReadError`) when there's no `message`/`content` to read. ([media/webview-helpers.js](media/webview-helpers.js))
+
 ## 1.5.9 — 2026-07-12
 
 ### Changed

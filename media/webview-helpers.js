@@ -21,7 +21,7 @@
     "messageChunk", "media", "userMessageChunk", "historyReplay", "permissionHistoryQueue",
     "planHistoryQueue", "planProcessing", "toolCall", "toolCallUpdate", "permissionRequest",
     "permissionResolved", "exitPlanRequest", "planResolved", "questionRequest", "planNotice", "planBlocked",
-    "promptComplete", "contextUsage", "commandOutput", "expandCommandOutputs", "agentReset", "agentError", "agentEnd", "exit", "setBusy", "summarizing",
+    "promptComplete", "contextUsage", "commandOutput", "expandCommandOutputs", "setAllToolDetails", "agentReset", "agentError", "agentEnd", "exit", "setBusy", "summarizing",
     "sessionContext", "clearMessages", "onboarding", "error", "xaiNotification", "subagentUpdate", "sessions",
     "sessionDot", "queuedSends",
   ];
@@ -304,7 +304,44 @@
       }
     }
     if (typeof raw.error === "string" && raw.error.trim()) return raw.error.trim();
+    // Some tools put the reason under a variant-specific key rather than
+    // message/error, with no content[] blob (e.g. list_dir → rawOutput.NotFound,
+    // read_file → rawOutput.FileReadError). Mine the first stringy value —
+    // skipping the "type" discriminant — so the row shows the real error instead
+    // of the generic fallback.
+    for (const k of Object.keys(raw)) {
+      if (k === "type") continue;
+      const v = raw[k];
+      if (typeof v === "string" && v.trim()) return v.trim();
+    }
     return "Tool call failed.";
+  }
+
+  // Scannable program label for a command tool row: the executable (first token,
+  // path-stripped, de-quoted) plus one following word when it isn't a flag — so
+  // `git status` / `npm test` stay distinguishable while a long `node -e "…"`
+  // payload collapses to just `node`. The full command lives in the row's IN/OUT
+  // detail. PowerShell `Verb-Noun` cmdlets survive (the hyphen is mid-token; only
+  // a LEADING -/ marks a flag). Only the first statement is summarized (a ; | &
+  // or newline ends it). Always returns something → "command" fallback, so an
+  // unparseable command still reads "Run command".
+  function commandProgramLabel(command) {
+    if (typeof command !== "string") return "command";
+    const stmt = command.trim().split(/\s*(?:&&|\|\||;|\||&|\n)\s*/)[0].trim();
+    if (!stmt) return "command";
+    // Tokenize, honoring a quoted first arg (Windows paths with spaces).
+    const tokens = [];
+    const re = /"([^"]*)"|'([^']*)'|(\S+)/g;
+    let m;
+    while ((m = re.exec(stmt)) !== null) tokens.push(m[1] ?? m[2] ?? m[3]);
+    let i = 0;
+    while (i < tokens.length && /^[A-Za-z_]\w*=/.test(tokens[i])) i++; // skip FOO=bar env prefixes
+    const rawProg = tokens[i];
+    if (!rawProg) return "command";
+    const prog = rawProg.split(/[\\/]/).pop() || rawProg; // basename
+    const next = tokens[i + 1];
+    const label = next && !/^[-/]/.test(next) ? `${prog} ${next}` : prog;
+    return label.length > 30 ? label.slice(0, 29) + "…" : label;
   }
 
   // Parse the <vscode-context> envelope that prompt-builder.ts wraps around the
@@ -436,7 +473,7 @@
     return { body: rest.trim(), images: [...leading, ...trailing] };
   }
 
-  const api = { FILE_EXTS, HOST_MESSAGE_TYPES, WEBVIEW_MESSAGE_TYPES, isKnownHostMessage, looksLikeFileRef, formatRelativeTime, modelDisplayName, MIC_STATES, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, cleanSubagentOutput, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, parseAttachmentContext, parseSelectionBlocks, parseImageTags };
+  const api = { FILE_EXTS, HOST_MESSAGE_TYPES, WEBVIEW_MESSAGE_TYPES, isKnownHostMessage, looksLikeFileRef, formatRelativeTime, modelDisplayName, MIC_STATES, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, cleanSubagentOutput, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, commandProgramLabel, parseAttachmentContext, parseSelectionBlocks, parseImageTags };
 
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;

@@ -35,48 +35,13 @@ A short tour of how the extension is wired (and the one place it's deliberately 
 
 ## Install
 
-**1. Install the CLI and sign in.**
+**1. Install the extension.** In VS Code or Cursor, open **Extensions** (`Ctrl/Cmd+Shift+X`) and search **"Grok Build for VS Code (Community)"** — or install from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=PawelHuryn.grok-vscode-phuryn) / [Open VSX Registry](https://open-vsx.org/extension/PawelHuryn/grok-vscode-phuryn).
 
-macOS / Linux / WSL:
+**2. Open Grok and sign in.** Press `Ctrl/Cmd+;`. The sidebar **walks you through installing the `grok` CLI and signing in** — one click per step, with your SuperGrok / X Premium+ subscription or an xAI API key. That's the whole setup.
 
-```bash
-curl -fsSL https://x.ai/cli/install.sh | bash
-grok login
-```
+Grok opens in the **Secondary Side Bar** (right side, next to other AI tools). Prefer it elsewhere? Gear → **Config & debug** → **Move view** relocates it to the Panel or Primary Side Bar in one click.
 
-Windows (PowerShell):
-
-```powershell
-irm https://x.ai/cli/install.ps1 | iex
-grok login
-```
-
-`grok login` opens a browser and completes OAuth in one step. Prefer an API key? Get one at [console.x.ai](https://console.x.ai) and set `XAI_API_KEY` in your shell or a workspace `.env` (the extension auto-loads it).
-
-**2. Install the extension.**
-
-From the Marketplace — search **Grok Build** by *PawelHuryn*, or:
-
-```bash
-code --install-extension PawelHuryn.grok-vscode-phuryn
-```
-
-Or build from source:
-
-```bash
-git clone https://github.com/phuryn/grok-build-vscode.git
-cd grok-build-vscode
-npm install
-./scripts/install.sh        # Windows: pwsh scripts\install.ps1
-```
-
-The install script auto-detects your IDE's CLI (`code` → `code-insiders` → `cursor` → Antigravity's `antigravity-ide`/`antigravity`). To target a specific code-compatible IDE, pass its CLI name or path — `./scripts/install.sh cursor` (Windows: `pwsh scripts\install.ps1 -Cli cursor`) — or set `CODE_CLI=…`. To install into **every** detected IDE in one run, pass `--all` (Windows: `-All`). The uninstall scripts take the same CLI argument.
-
-Reload VS Code (**Ctrl+Shift+P → Developer: Reload Window**). Grok opens in the **Secondary Side Bar** (right side, next to other AI tools) — or press `Ctrl/Cmd+;`.
-
-> **Tip:** Prefer it elsewhere? Gear → **Config & debug** → **Move view** relocates Grok to the Panel, Primary Side Bar, or back to the Secondary Side Bar in one click.
-
-**Uninstall:** `./scripts/uninstall.sh [cli]` (Windows: `pwsh scripts\uninstall.ps1 [-Cli name]`) or `code --uninstall-extension PawelHuryn.grok-vscode-phuryn`.
+> Prefer the terminal, building from source, or installing into several IDEs at once? See **[docs/INSTALL.md](docs/INSTALL.md)**.
 
 ---
 
@@ -106,11 +71,12 @@ When Grok proposes an edit, hit **open diff →** to review it in VS Code's nati
 <details>
 <summary><strong>Modes — Agent, Plan & Auto accept</strong></summary>
 
-| Mode | Behaviour |
-|---|---|
-| **Agent** (default) | Grok acts directly and **may** ask permission for a write or shell action it judges sensitive — a card appears in chat. |
-| **Plan** | Grok drafts a plan first and **cannot** write to the workspace or run anything outside a read-only allowlist until you approve. Approve / Reject / Cancel from the card, each with an optional comment. Plan Mode is enforced by the extension — see [How it works](#how-it-works). |
-| **Auto accept** (YOLO) | The extension auto-approves every permission request. The CLI session is untouched — no restart, just a flag flip. |
+Switch from the bottom toolbar; the picker describes each mode. What the labels don't tell you:
+
+- **Plan** is enforced by the *extension*, not the CLI — workspace writes and non-read-only commands are genuinely blocked until you approve, and you Approve / Reject / Cancel from the plan card, each with an optional comment. See [How it works](#how-it-works).
+- **Auto accept** just flips a flag on the live session — no restart, the CLI session is untouched.
+
+![The mode picker — Agent, Plan, and Auto accept](docs/screenshots/agent_modes.png)
 
 </details>
 
@@ -124,7 +90,9 @@ Type `/imagine <prompt>` (or `/imagine-video <prompt>`) and the result renders *
 <details>
 <summary><strong>Paste or attach images</strong> — Grok sees the pixels, not just a path</summary>
 
-**Ctrl+V a screenshot**, drag-drop an image, or attach one with the **+** picker (png/jpg/gif/webp, up to 20 MiB) — it's sent inline as vision input, so you can ask *"what's wrong with this UI?"* about an error dialog you just captured. Each image gets an `[Image #N]` tag in the message (disk imports keep their file path so Grok can also act on the real file), image chips restore when you reopen the session, and an unreadable image blocks the send instead of silently vanishing. SVG deliberately stays a *path* attachment — you usually want Grok to edit the source, not look at it. Wire details: [research/vision-input.md](research/vision-input.md).
+**Ctrl+V a screenshot**, drag-drop an image, or attach one with the **+** picker (png/jpg/gif/webp, up to 20 MiB) — it's sent inline as vision input, so you can ask *"what's wrong with this UI?"* about an error dialog you just captured, or hand Grok a batch of references at once. Disk imports keep their file path so Grok can also act on the real file; chips restore when you reopen the session; and an unreadable image blocks the send instead of silently vanishing. SVG deliberately stays a *path* attachment — you usually want Grok to edit the source, not look at it. Wire details: [research/vision-input.md](research/vision-input.md).
+
+![Several pasted images attached in the composer as removable chips](docs/screenshots/paste_attach_images.png)
 
 </details>
 
@@ -185,11 +153,11 @@ The clock icon lists this project's sessions, newest first. Click a row to resum
 <details>
 <summary><strong>Tool calls</strong> — every read, edit & command, inline; expand any command for its full output</summary>
 
-Every action Grok takes appears in chat as a **category-iconed** row — a single line, or a batch summarized by what it did ("Explored 5 items", "Edited 2 files") that expands to the full list on click. A tool that **fails** turns red with the reason inline.
+Every action Grok takes appears as a **category-iconed** row — a single line, or a batch summarized by what it did ("Explored 5 items", "Edited 2 files") that expands to the full list. A tool that **fails** turns red with the reason inline.
 
-**Shell commands go further:** each command row carries a `›` — click it for an **IN/OUT block** with the full command text and the complete captured output (the extension runs the commands itself, so the output is exactly what Grok received). Failures show `[Error] exit N`; `grok.expandCommandOutputs` pre-opens everything for auditing Auto-accept sessions.
+**Shell commands go further:** each carries an expandable **IN/OUT block** with the full command and its complete captured output — the extension runs the commands itself, so what you see is exactly what Grok received, down to the byte and the exit code. For auditing Auto-accept runs, `grok.expandCommandOutputs` pre-opens every command's block *and* its group; or expand/collapse the whole session on demand from the Command Palette (**Grok: Expand All Tool Details**).
 
-![Tool calls grouped and summarized by category, with icons](docs/screenshots/tool_calls.png)
+![A tool batch with a command expanded to its IN/OUT block](docs/screenshots/tool_calls.png)
 
 </details>
 
@@ -295,6 +263,8 @@ VS Code commands (not Grok slash commands):
 | `Grok: Send File` | Add the selected file to context |
 | `Grok: Send Selection` | Send the current text selection to Grok |
 | `Grok: Insert @-Mention` | Insert an `@`-mention for the active file into the composer |
+| `Grok: Expand All Tool Details (This Session)` | Open every tool group and command IN/OUT box, and keep new ones open — this session only |
+| `Grok: Collapse All Tool Details (This Session)` | Collapse them all, and keep new ones collapsed — this session only |
 | `Grok: Show Logs` | Open the Grok output channel (ACP messages, errors) |
 | `Grok: Log Out` | Sign out of the Grok CLI (`grok logout`) and return to the sign-in screen |
 

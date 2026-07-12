@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 // @ts-expect-error — plain JS module, no types
-import { looksLikeFileRef, formatRelativeTime, FILE_EXTS, modelDisplayName, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, cleanSubagentOutput, shouldStickToBottom, splitMath, stripUnsupportedTex, parseAttachmentContext, parseSelectionBlocks, parseImageTags } from "../media/webview-helpers.js";
+import { looksLikeFileRef, formatRelativeTime, FILE_EXTS, modelDisplayName, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, cleanSubagentOutput, shouldStickToBottom, splitMath, stripUnsupportedTex, parseAttachmentContext, parseSelectionBlocks, parseImageTags, toolFailureText, commandProgramLabel } from "../media/webview-helpers.js";
 import { buildPrompt, buildPromptWithImages } from "../src/prompt-builder";
 import { makeExplicitChip, makeImplicitChip, makeImageChip } from "../src/chips";
 
@@ -737,5 +737,108 @@ describe("stripUnsupportedTex", () => {
   it("coerces null/undefined to an empty string", () => {
     expect(stripUnsupportedTex(null)).toBe("");
     expect(stripUnsupportedTex(undefined)).toBe("");
+  });
+});
+
+describe("toolFailureText", () => {
+  it("returns null for a non-failed call", () => {
+    expect(toolFailureText({ status: "completed" })).toBe(null);
+    expect(toolFailureText({ status: "in_progress" })).toBe(null);
+    expect(toolFailureText(null)).toBe(null);
+  });
+
+  it("prefers rawOutput.message", () => {
+    expect(
+      toolFailureText({ status: "failed", rawOutput: { message: "boom" } }),
+    ).toBe("boom");
+  });
+
+  it("falls back to a content[].content.text blob", () => {
+    expect(
+      toolFailureText({
+        status: "failed",
+        content: [{ type: "content", content: { type: "text", text: "no such file" } }],
+      }),
+    ).toBe("no such file");
+  });
+
+  it("mines a variant-specific rawOutput key when there is no message/content (list_dir NotFound)", () => {
+    // Real wire shape from a failed list_dir on a missing directory — the error
+    // lives only under rawOutput.NotFound, which the generic fallback used to hide.
+    expect(
+      toolFailureText({
+        status: "failed",
+        rawOutput: { type: "ListDir", NotFound: "Error: c:\\x\\fkjgk does not exist." },
+      }),
+    ).toBe("Error: c:\\x\\fkjgk does not exist.");
+  });
+
+  it("mines rawOutput.FileReadError as the variant key too", () => {
+    expect(
+      toolFailureText({
+        status: "failed",
+        rawOutput: { type: "FileRead", FileReadError: "Cannot read binary file: x.png" },
+      }),
+    ).toBe("Cannot read binary file: x.png");
+  });
+
+  it("skips the 'type' discriminant and non-string variant values", () => {
+    expect(
+      toolFailureText({ status: "failed", rawOutput: { type: "Whatever", count: 3, note: "the reason" } }),
+    ).toBe("the reason");
+  });
+
+  it("returns the generic fallback when nothing stringy is present", () => {
+    expect(toolFailureText({ status: "failed", rawOutput: { type: "X" } })).toBe("Tool call failed.");
+    expect(toolFailureText({ status: "error" })).toBe("Tool call failed.");
+  });
+});
+
+describe("commandProgramLabel", () => {
+  it("keeps a non-flag subcommand", () => {
+    expect(commandProgramLabel("git status")).toBe("git status");
+    expect(commandProgramLabel("git status --short")).toBe("git status");
+    expect(commandProgramLabel("npm test")).toBe("npm test");
+    expect(commandProgramLabel("node build.js")).toBe("node build.js");
+  });
+
+  it("drops a flag or payload, leaving just the program", () => {
+    expect(commandProgramLabel('node -e "console.log(1)"')).toBe("node");
+    expect(commandProgramLabel("ls -la /tmp")).toBe("ls");
+    expect(commandProgramLabel("dir /s /b foo")).toBe("dir"); // Windows /-flags
+  });
+
+  it("summarizes only the first statement (stops at ; | && || &)", () => {
+    expect(commandProgramLabel('Get-Date; Write-Output "done"')).toBe("Get-Date");
+    expect(commandProgramLabel("cat foo | grep bar")).toBe("cat foo");
+    expect(commandProgramLabel("cd src && npm test")).toBe("cd src");
+  });
+
+  it("handles PowerShell Verb-Noun cmdlets (leading dash only marks a flag)", () => {
+    expect(commandProgramLabel("Get-ChildItem -Path . -Recurse")).toBe("Get-ChildItem");
+    expect(commandProgramLabel('Write-Output "hello"')).toBe("Write-Output hello");
+    expect(commandProgramLabel("Get-Date")).toBe("Get-Date");
+  });
+
+  it("path-strips the executable and de-quotes a spaced path", () => {
+    expect(commandProgramLabel("/usr/bin/node script.js")).toBe("node script.js");
+    expect(commandProgramLabel('"C:\\Program Files\\tool.exe" run')).toBe("tool.exe run");
+  });
+
+  it("skips leading FOO=bar env assignments", () => {
+    expect(commandProgramLabel("DEBUG=1 node app.js")).toBe("node app.js");
+  });
+
+  it("caps very long labels", () => {
+    const out = commandProgramLabel("someverylongprogramname anotherverylongsubcommandword extra");
+    expect(out.length).toBeLessThanOrEqual(30);
+    expect(out.endsWith("…")).toBe(true);
+  });
+
+  it("falls back to 'command' for empty / unparseable input", () => {
+    expect(commandProgramLabel("")).toBe("command");
+    expect(commandProgramLabel("   ")).toBe("command");
+    expect(commandProgramLabel(null as unknown as string)).toBe("command");
+    expect(commandProgramLabel("FOO=bar")).toBe("command"); // only an env assignment, no program
   });
 });

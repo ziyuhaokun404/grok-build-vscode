@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.5.12 — 2026-07-13
+
+### Added
+
+- **Edit diffs are reviewable inline in chat, even under Auto accept (#45).** Every edit row shows an always-visible `+N −M` change count (rolled up onto collapsed "Edited N files" group headers, path-deduped) plus an expandable **inline diff** — a Codex-style line-number gutter, colored left-border stripe, subtle tint, and a `+/−` glyph for color-blind readability. It rides the same expand controls as command IN/OUT, works live and on session restore, and — because the diff data is always on the ACP wire regardless of permission mode — needs no permission card. The native `open diff →` link stays for the full side-by-side. ([media/chat.js](media/chat.js), [media/webview-helpers.js](media/webview-helpers.js), [media/chat.css](media/chat.css))
+
+### Changed
+
+- **The gear toggle "Expand command outputs" is now "Expand tool details"** — it governs command IN/OUT blocks **and** edit diffs, matching the *Expand All Tool Details* commands (the `grok.expandCommandOutputs` setting key is unchanged). ` ```diff ` blocks in Grok's messages now share the same Codex diff palette + left-border styling. ([media/chat.js](media/chat.js), [media/chat.css](media/chat.css), [package.json](package.json))
+
+### Fixed
+
+- **A shell command that exits 0 with no output** now shows a muted `✓ done · no output` marker instead of an empty `(no output)` line. ([media/chat.js](media/chat.js))
+
 ## 1.5.11 — 2026-07-13
 
 ### Added

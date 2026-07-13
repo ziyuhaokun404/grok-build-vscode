@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 // @ts-expect-error — plain JS module, no types
-import { looksLikeFileRef, formatRelativeTime, FILE_EXTS, modelDisplayName, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, cleanSubagentOutput, shouldStickToBottom, splitMath, stripUnsupportedTex, parseAttachmentContext, parseSelectionBlocks, parseImageTags, toolFailureText, commandProgramLabel } from "../media/webview-helpers.js";
+import { looksLikeFileRef, formatRelativeTime, FILE_EXTS, modelDisplayName, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, cleanSubagentOutput, shouldStickToBottom, splitMath, stripUnsupportedTex, parseAttachmentContext, parseSelectionBlocks, parseImageTags, toolFailureText, commandProgramLabel, computeLineDiff } from "../media/webview-helpers.js";
 import { buildPrompt, buildPromptWithImages } from "../src/prompt-builder";
 import { makeExplicitChip, makeImplicitChip, makeImageChip } from "../src/chips";
 
@@ -840,5 +840,77 @@ describe("commandProgramLabel", () => {
     expect(commandProgramLabel("   ")).toBe("command");
     expect(commandProgramLabel(null as unknown as string)).toBe("command");
     expect(commandProgramLabel("FOO=bar")).toBe("command"); // only an env assignment, no program
+  });
+});
+
+describe("computeLineDiff", () => {
+  const types = (r: { lines: { type: string; text: string }[] }) => r.lines.map((l) => l.type + ":" + l.text);
+
+  it("a one-line word change is one del + one add", () => {
+    const r = computeLineDiff("alpha", "beta");
+    expect(r.added).toBe(1);
+    expect(r.removed).toBe(1);
+    expect(types(r)).toEqual(["del:alpha", "add:beta"]);
+  });
+
+  it("keeps unchanged lines as context and counts only the real change", () => {
+    // "a\nb" -> "a\nB\nc": 'a' is context, 'b' removed, 'B' and 'c' added.
+    const r = computeLineDiff("a\nb", "a\nB\nc");
+    expect(r.added).toBe(2);
+    expect(r.removed).toBe(1);
+    expect(types(r)).toEqual(["ctx:a", "del:b", "add:B", "add:c"]);
+  });
+
+  it("a new file (empty oldText) is pure additions, never a phantom -1", () => {
+    const r = computeLineDiff("", "line1\nline2");
+    expect(r.removed).toBe(0);
+    expect(r.added).toBe(2);
+    expect(types(r)).toEqual(["add:line1", "add:line2"]);
+  });
+
+  it("a full deletion (empty newText) is pure removals", () => {
+    const r = computeLineDiff("x\ny", "");
+    expect(r.added).toBe(0);
+    expect(r.removed).toBe(2);
+    expect(types(r)).toEqual(["del:x", "del:y"]);
+  });
+
+  it("normalizes CRLF so a \\r\\n region does not fabricate changes", () => {
+    // Identical content, only line endings differ → zero changes.
+    const r = computeLineDiff("a\r\nb\r\n", "a\nb\n");
+    expect(r.added).toBe(0);
+    expect(r.removed).toBe(0);
+    expect(r.lines.every((l) => l.type === "ctx")).toBe(true);
+    // And no stray \r survives into the rendered text.
+    expect(r.lines.some((l) => /\r/.test(l.text))).toBe(false);
+  });
+
+  it("identical text yields no additions or removals", () => {
+    const r = computeLineDiff("same\ntext", "same\ntext");
+    expect(r.added).toBe(0);
+    expect(r.removed).toBe(0);
+  });
+
+  it("an inserted line in the middle is a single addition", () => {
+    const r = computeLineDiff("a\nc", "a\nb\nc");
+    expect(r.added).toBe(1);
+    expect(r.removed).toBe(0);
+    expect(types(r)).toEqual(["ctx:a", "add:b", "ctx:c"]);
+  });
+
+  it("both empty is an empty diff", () => {
+    const r = computeLineDiff("", "");
+    expect(r.lines).toEqual([]);
+    expect(r.added).toBe(0);
+    expect(r.removed).toBe(0);
+  });
+
+  it("falls back to a flat replace (flagged truncated) past the size cap", () => {
+    const big = Array.from({ length: 40 }, (_, i) => "l" + i).join("\n");
+    const big2 = Array.from({ length: 40 }, (_, i) => "m" + i).join("\n");
+    const r = computeLineDiff(big, big2, { maxProduct: 100 }); // 40*40=1600 > 100
+    expect(r.truncated).toBe(true);
+    expect(r.removed).toBe(40);
+    expect(r.added).toBe(40);
   });
 });

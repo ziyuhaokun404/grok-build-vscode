@@ -140,6 +140,43 @@ describe("command details (#41)", () => {
     expect(markers[1].textContent).toContain("output truncated");
   });
 
+  it("an exit-0 command with no output shows a done marker, not an empty (no output) pre", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, exec("q", "touch newfile"));
+    close(window);
+    dispatch(window, out("touch newfile", "", 0)); // success, nothing on stdout
+
+    const outRow = doc.querySelector(".cmd-out") as HTMLElement;
+    expect(outRow.classList.contains("failed")).toBe(false);
+    const marker = outRow.querySelector(".cmd-out-marker") as HTMLElement;
+    expect(marker.classList.contains("ok")).toBe(true);
+    expect(marker.textContent).toContain("no output");
+    expect(outRow.querySelector(".tool-cmd-output")).toBeNull(); // no empty <pre>
+  });
+
+  it("whitespace-only output is treated as empty (no lingering pre)", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, exec("w", "echo"));
+    close(window);
+    dispatch(window, out("echo", "\n  \n", 0));
+
+    const outRow = doc.querySelector(".cmd-out") as HTMLElement;
+    expect(outRow.querySelector(".cmd-out-marker.ok")).not.toBeNull();
+    expect(outRow.querySelector(".tool-cmd-output")).toBeNull();
+  });
+
+  it("a non-zero exit with no output shows only [Error], no (no output) filler", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, exec("f", "false"));
+    close(window);
+    dispatch(window, out("false", "", 1));
+
+    const outRow = doc.querySelector(".cmd-out") as HTMLElement;
+    expect(outRow.classList.contains("failed")).toBe(true);
+    expect(outRow.querySelector(".cmd-out-marker")!.textContent).toBe("[Error] exit 1");
+    expect(outRow.querySelector(".tool-cmd-output")).toBeNull();
+  });
+
   it("clicking inside the expanded block (text selection) does not collapse it", () => {
     const { window, doc } = bootWebview();
     dispatch(window, exec("s", "git status"));

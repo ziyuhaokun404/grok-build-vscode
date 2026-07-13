@@ -347,7 +347,7 @@
 
   // ---------- markdown ----------
 
-  const { looksLikeFileRef, formatRelativeTime, modelDisplayName, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, cleanSubagentOutput, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, commandProgramLabel, parseAttachmentContext, parseSelectionBlocks, parseImageTags, isKnownHostMessage } = globalThis.GrokWebviewHelpers;
+  const { looksLikeFileRef, formatRelativeTime, modelDisplayName, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, cleanSubagentOutput, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, commandProgramLabel, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, isKnownHostMessage } = globalThis.GrokWebviewHelpers;
 
   function escapeAttr(s) {
     return String(s == null ? "" : s)
@@ -1222,12 +1222,14 @@
         renderConfigDebugPanel(); // re-render so the switch reflects the new state
       },
     );
-    // Expand command outputs (#41) — the persisted default: pre-open every
-    // command's IN/OUT detail + command-bearing groups. Flipping it clears the
-    // per-session Expand/Collapse All latch so the setting takes over (last
-    // action wins). Persisted via grok.expandCommandOutputs.
+    // Expand tool details (#41/#45) — the persisted default: pre-open every tool
+    // detail surface (a command's IN/OUT block, an edit's inline diff) + the
+    // groups that hold one. Named to match the "Expand/Collapse All Tool Details"
+    // commands. Flipping it clears the per-session Expand/Collapse All latch so the
+    // setting takes over (last action wins). Persisted via grok.expandCommandOutputs
+    // (the key is unchanged — only the user-facing label widened).
     addGearItem(
-      `<span>Expand command outputs</span><span class="popover-switch${state.expandCommandOutputs ? " on" : ""}" role="switch" aria-checked="${state.expandCommandOutputs}"><span class="popover-switch-knob"></span></span>`,
+      `<span>Expand tool details</span><span class="popover-switch${state.expandCommandOutputs ? " on" : ""}" role="switch" aria-checked="${state.expandCommandOutputs}"><span class="popover-switch-knob"></span></span>`,
       () => {
         state.expandCommandOutputs = !state.expandCommandOutputs;
         state.toolExpandOverride = null;
@@ -1928,7 +1930,16 @@
   }
   function summarizeTools(calls) {
     const n = { explore: 0, edit: 0, delete: 0, generate: 0, web: 0, command: 0 };
-    for (const c of calls) n[categorize(c)]++;
+    // Edits are counted by UNIQUE file path (grok emits one edit call per change,
+    // so two edits to one file must read "Edited 1 file", not 2). Pathless edits
+    // stay distinct via a synthetic key.
+    const editFiles = new Set();
+    for (const c of calls) {
+      const cat = categorize(c);
+      if (cat === "edit") editFiles.add(toolFilePath(c) || "__anon" + editFiles.size);
+      else n[cat]++;
+    }
+    n.edit = editFiles.size;
     const parts = [];
     if (n.explore) parts.push(`explored ${n.explore} item${n.explore === 1 ? "" : "s"}`);
     if (n.edit) parts.push(`edited ${n.edit} file${n.edit === 1 ? "" : "s"}`);
@@ -2051,15 +2062,13 @@
     const el = state.activeToolGroupEl;
     const calls = el._calls || [];
 
-    // A lone edit/write is NOT flattened to a `.tool-flat` (icon + label only). That
-    // flat row has no chevron and no body, so the diff preview ("N → M lines" +
-    // "open diff →") — which attachDiffPreviewToToolItem appends to the tool-item in
-    // the body — would be discarded and the message couldn't be expanded to review
-    // the change (#30). On restore it's worse: renderRestoredPermissionForTool closes
-    // the group BEFORE the toolCallUpdate carrying the diff arrives, so the preview
-    // would attach to an orphaned node. Keeping the group (chevron + body) makes a
-    // single edit behave exactly like a multi-tool batch, which already works, in both
-    // the live and replay orderings.
+    // A lone edit/write is NOT flattened to a `.tool-flat` (icon + label only). The
+    // edit's review surface (the `+A −R` stat + the expandable inline diff) is
+    // attached to the tool-item in the group body; on restore
+    // renderRestoredPermissionForTool closes the group BEFORE the toolCallUpdate
+    // carrying the diff arrives, so a flattened lone edit would drop it. Keeping the
+    // group (chevron + body + header totals) makes a single edit behave exactly like
+    // a multi-tool batch, in both the live and replay orderings (#30).
     if (calls.length === 1 && categorize(calls[0]) !== "edit") {
       const flat = document.createElement("div");
       flat.className = "tool-flat";
@@ -2085,9 +2094,11 @@
     } else {
       el.classList.remove("in-progress");
       const hdr = el.querySelector(".tool-group-header");
-      hdr.querySelector(".tool-group-label").textContent = summarizeTools(calls);
+      const label = hdr.querySelector(".tool-group-label");
+      label.textContent = summarizeTools(calls);
+      appendGroupDiffTotals(el, label); // "Edited N files" gains a "· +A −R" roll-up
       // Settle the finished group to its effective expand state: the latch if
-      // set, else auto-open when it ran a command (grok.expandCommandOutputs).
+      // set, else auto-open when it has a command/diff detail (Expand tool details).
       setGroupExpanded(el, groupShouldExpand(el));
     }
     state.activeToolGroupEl = null;
@@ -2188,9 +2199,10 @@
   // Effective expand state, given the per-session latch (toolExpandOverride)
   // takes precedence over the persisted grok.expandCommandOutputs default.
   //   - override set  → force everything to the override (all groups, all boxes).
-  //   - override null → the setting: command IN/OUT boxes open, and only
-  //                     command-bearing GROUPS auto-open (explore/edit stay shut).
-  // `groupShouldExpand` needs the element to decide the command-bearing case;
+  //   - override null → the setting: every detail box (command IN/OUT, edit diff)
+  //                     opens, and only GROUPS that HOLD a detail auto-open —
+  //                     command or edit groups, but not read/explore-only ones.
+  // `groupShouldExpand` needs the element to decide the has-detail case;
   // `detailShouldExpand` is group-agnostic.
   function groupShouldExpand(el) {
     if (state.toolExpandOverride !== null) return state.toolExpandOverride;
@@ -2239,10 +2251,10 @@
     applyExpandCommandOutputs();
   }
 
-  function wireCommandToggle(rowEl, details) {
+  function wireCommandToggle(rowEl, details, title) {
     rowEl.classList.add("has-details"); // hover highlight + chevron = "this one is clickable"
     rowEl.classList.toggle("expanded", !details.hidden);
-    rowEl.title = "Show full command and output";
+    rowEl.title = title || "Show full command and output";
     rowEl.addEventListener("click", (e) => {
       if (e.target.closest("a, button")) return; // preview links keep their own click
       if (e.target.closest(".tool-item-details")) return; // selecting text inside must not collapse
@@ -2294,6 +2306,8 @@
     outRow.appendChild(tag);
     const body = document.createElement("div");
     body.className = "cmd-out-body";
+    const output = typeof msg.output === "string" ? msg.output : "";
+    const hasOutput = output.trim() !== "";
     // Success is silent (exit 0 = just the output); failure gets an [Error]
     // marker + error tint; a kill is not an error.
     if (msg.exitCode != null && msg.exitCode !== 0) {
@@ -2307,11 +2321,23 @@
       mark.className = "cmd-out-marker muted";
       mark.textContent = "[Cancelled] no exit code";
       body.appendChild(mark);
+    } else if (!hasOutput) {
+      // exit 0 with nothing on stdout: a bare "(no output)" pre read as broken.
+      // A muted "done" marker (process success, not a claim about the task) is
+      // clearer, and there's no empty <pre> to feel like a gap.
+      const mark = document.createElement("div");
+      mark.className = "cmd-out-marker ok";
+      mark.textContent = "✓ done · no output";
+      body.appendChild(mark);
     }
-    const out = document.createElement("pre");
-    out.className = "tool-cmd-output";
-    out.textContent = msg.output || "(no output)";
-    body.appendChild(out);
+    // Only render the output <pre> when there's actually output — a marker alone
+    // carries the empty cases (success/error/cancel).
+    if (hasOutput) {
+      const out = document.createElement("pre");
+      out.className = "tool-cmd-output";
+      out.textContent = output;
+      body.appendChild(out);
+    }
     if (msg.truncated) {
       const note = document.createElement("div");
       note.className = "cmd-out-marker muted";
@@ -2322,48 +2348,167 @@
     block.appendChild(outRow);
   }
 
-  function attachDiffPreviewToToolItem(toolCallId, diff) {
+  // Render one edit region as a colored inline diff on the shared code-block
+  // surface (`.code-block.diff` + `.diff-line`, the same styling ` ```diff `
+  // message fences use). grok only sends the replaced region (old/new strings),
+  // so computeLineDiff produces the +/-/context lines; a "+"/"-"/" " gutter goes
+  // in front of each so the diff reads (and copies) as a real unified diff even
+  // for colorblind users. Long regions cap the rendered rows (the full change is
+  // one "open diff →" click away in the native editor).
+  const MAX_INLINE_DIFF_LINES = 400;
+  function buildInlineDiffRegion(diff, result) {
+    // Codex-style: a line-number gutter + a colored left-border stripe + a subtle
+    // per-line background (green add / red del). A small +/- glyph sits right by the
+    // border for color-blind readability. Numbers are region-relative (grok sends
+    // only the replaced region, not the file offset): a del shows the OLD-side
+    // number, an add/context the NEW-side number -- unified-diff local numbering.
+    const wrap = document.createElement("div");
+    wrap.className = "tool-diff-region";
+    const rows = result.lines;
+    const shown = Math.min(rows.length, MAX_INLINE_DIFF_LINES);
+    let oldNo = 1;
+    let newNo = 1;
+    for (let i = 0; i < shown; i++) {
+      const ln = rows[i];
+      const isAdd = ln.type === "add";
+      const isDel = ln.type === "del";
+      const row = document.createElement("div");
+      row.className = "tdl" + (isAdd ? " tdl-add" : isDel ? " tdl-del" : "");
+      const sign = document.createElement("span");
+      sign.className = "tdl-sign";
+      sign.textContent = isAdd ? "+" : isDel ? "-" : "";
+      const num = document.createElement("span");
+      num.className = "tdl-num";
+      if (isAdd) num.textContent = String(newNo++);
+      else if (isDel) num.textContent = String(oldNo++);
+      else { num.textContent = String(newNo++); oldNo++; }
+      const code = document.createElement("span");
+      code.className = "tdl-code";
+      code.textContent = ln.text === "" ? " " : ln.text;
+      row.appendChild(sign);
+      row.appendChild(num);
+      row.appendChild(code);
+      wrap.appendChild(row);
+    }
+    if (rows.length > shown || result.truncated) {
+      const more = document.createElement("div");
+      more.className = "tool-diff-more";
+      more.textContent = "... " + (rows.length - shown) + " more line(s) - open diff for the full change";
+      wrap.appendChild(more);
+    }
+    return wrap;
+  }
+
+  // Attach an edit's review surface to its tool row: an always-visible `+A −R`
+  // count (so a collapsed group is still auditable) plus an expandable detail
+  // holding the inline diff(s) + the native "open diff →" link. Rides the exact
+  // same expand machinery as a command's IN/OUT block — the row becomes
+  // `has-details`, governed by grok.expandCommandOutputs / the Expand-All latch /
+  // a per-row click (wireCommandToggle). `diffs` is an ARRAY: a single tool call
+  // can carry more than one region.
+  function attachDiffPreviewToToolItem(toolCallId, diffs) {
     const item = state.toolItemsByToolCallId.get(toolCallId);
-    if (!item || item.querySelector(".preview-link")) return; // already attached
-    const oldLines = (diff.oldText || "").split("\n").length;
-    const newLines = (diff.newText || "").split("\n").length;
-    const sub = document.createElement("div");
-    sub.className = "tool-item-subtitle";
-    sub.textContent = `${oldLines} → ${newLines} lines`;
-    item.appendChild(sub);
-    const preview = document.createElement("button");
-    preview.className = "preview-link";
-    preview.textContent = "open diff →";
-    preview.onclick = (e) => {
-      e.stopPropagation(); // don't toggle the tool-group expand/collapse
-      vscode.postMessage({
-        type: "openDiff",
-        path: diff.path,
-        oldText: diff.oldText,
-        newText: diff.newText,
-      });
-    };
-    item.appendChild(preview);
+    if (!item || item.querySelector(".tool-item-details")) return; // idempotent (buffer replay)
+
+    let added = 0;
+    let removed = 0;
+    const regions = [];
+    for (const diff of diffs) {
+      const result = computeLineDiff(diff.oldText, diff.newText);
+      added += result.added;
+      removed += result.removed;
+      regions.push({ diff, result });
+    }
+    item._diffStat = { added, removed, path: diffs[0] && diffs[0].path };
+
+    // Always-visible +A −R on the row (and the roll-up onto the group header).
+    item.appendChild(makeDiffStat(added, removed));
+    bumpGroupDiffTotals(item, added, removed, item._diffStat.path);
+
+    const chevron = document.createElement("span");
+    chevron.className = "tool-chevron";
+    chevron.setAttribute("aria-hidden", "true");
+    chevron.innerHTML = ICON.chevronRight;
+    item.appendChild(chevron);
+
+    const details = document.createElement("div");
+    details.className = "tool-item-details tool-item-diff";
+    details.hidden = !detailShouldExpand();
+    for (const { diff, result } of regions) {
+      details.appendChild(buildInlineDiffRegion(diff, result));
+      const preview = document.createElement("button");
+      preview.className = "preview-link";
+      preview.textContent = "open diff →";
+      preview.onclick = (e) => {
+        e.stopPropagation(); // don't toggle the row/group expand
+        vscode.postMessage({ type: "openDiff", path: diff.path, oldText: diff.oldText, newText: diff.newText });
+      };
+      details.appendChild(preview);
+    }
+    item.appendChild(details);
+    wireCommandToggle(item, details, "Show the diff");
     scrollToBottom();
   }
 
-  // Extract any `type:"diff"` blocks from a tool call's `content` and attach the
-  // "N → M lines" + "open diff →" preview. grok delivers the diff differently by
-  // path: LIVE it rides a `tool_call_update` (the `tool_call` is a bare
-  // "StrReplace" with no content), but on session/load REPLAY the whole edit
-  // collapses into a single completed `tool_call` that carries the diff itself —
-  // there is no separate update. So this must run for BOTH message kinds, else a
-  // restored edit shows an expandable group with no diff inside it (#30).
+  // "+A −R" pill for an edit row (green additions, red removals). Uses a real
+  // minus sign; 0 sides still render so the change magnitude is unambiguous.
+  function makeDiffStat(added, removed) {
+    const sub = document.createElement("span");
+    sub.className = "tool-item-subtitle diff-stat";
+    const a = document.createElement("span");
+    a.className = "diff-stat-add";
+    a.textContent = `+${added}`;
+    const d = document.createElement("span");
+    d.className = "diff-stat-del";
+    d.textContent = `−${removed}`;
+    sub.appendChild(a);
+    sub.appendChild(document.createTextNode(" "));
+    sub.appendChild(d);
+    return sub;
+  }
+
+  // Roll an edit's counts up onto its enclosing group so the COLLAPSED header can
+  // show totals ("Edited 1 file · +7 −2"). Files are de-duped by path — grok
+  // emits one edit call per change, so two edits to one file must still read
+  // "Edited 1 file" (matching summarizeTools' path-dedup), not 2.
+  function bumpGroupDiffTotals(item, added, removed, path) {
+    const group = item.closest && item.closest(".tool-group");
+    if (!group) return;
+    const t = group._diffTotals || (group._diffTotals = { added: 0, removed: 0, files: new Set() });
+    t.added += added;
+    t.removed += removed;
+    t.files.add(path || ("__anon" + t.files.size));
+  }
+
+  // Extract every `type:"diff"` block from a tool call's `content` and render the
+  // inline edit diff. grok delivers the diff differently by path: LIVE it rides a
+  // `tool_call_update` (the `tool_call` is a bare "StrReplace" with no content),
+  // but on session/load REPLAY the whole edit collapses into a single completed
+  // `tool_call` that carries the diff itself — no separate update. So this must
+  // run for BOTH message kinds, else a restored edit shows an expandable group
+  // with no diff inside it (#30).
+  // Append the group's rolled-up edit totals to its (already-summarized) header
+  // label, so a COLLAPSED "Edited N files" is auditable at a glance. No-op for a
+  // group with no edits.
+  function appendGroupDiffTotals(group, labelEl) {
+    const t = group._diffTotals;
+    if (!t || (t.added === 0 && t.removed === 0)) return;
+    labelEl.appendChild(document.createTextNode(" · "));
+    labelEl.appendChild(makeDiffStat(t.added, t.removed));
+  }
+
   function applyToolDiffs(call) {
     const c = call?.content;
     if (!Array.isArray(c)) return;
+    const diffs = [];
     for (const item of c) {
       if (item?.type === "diff") {
-        const diff = { path: item.path, oldText: item.oldText ?? "", newText: item.newText ?? "" };
-        state.pendingDiffByToolCallId.set(call.toolCallId, diff);
-        attachDiffPreviewToToolItem(call.toolCallId, diff);
+        diffs.push({ path: item.path, oldText: item.oldText ?? "", newText: item.newText ?? "" });
       }
     }
+    if (!diffs.length) return;
+    state.pendingDiffByToolCallId.set(call.toolCallId, diffs[0]); // permission card / openDiff use the first
+    attachDiffPreviewToToolItem(call.toolCallId, diffs);
   }
 
   // Render a tool failure on its row: the row goes error-colored and the reason

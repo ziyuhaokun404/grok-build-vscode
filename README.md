@@ -151,11 +151,11 @@ The clock icon lists this project's sessions, newest first. Click a row to resum
 </details>
 
 <details>
-<summary><strong>Tool calls</strong> — every read, edit & command, inline; expand any command for its full output</summary>
+<summary><strong>Tool calls</strong> — every read, edit & command, inline; expand commands and edits for full details</summary>
 
 Every action Grok takes appears as a **category-iconed** row — a single line, or a batch summarized by what it did ("Explored 5 items", "Edited 2 files") that expands to the full list. A tool that **fails** turns red with the reason inline.
 
-**Shell commands go further:** each carries an expandable **IN/OUT block** with the full command and its complete captured output — the extension runs the commands itself, so what you see is exactly what Grok received, down to the byte and the exit code. For auditing Auto-accept runs, `grok.expandCommandOutputs` pre-opens every command's block *and* its group; or expand/collapse the whole session on demand from the Command Palette (**Grok: Expand All Tool Details**).
+Edits always show a visible `+N −M` change count (also rolled up on "Edited N files" group headers); expand the row for the inline diff. **Shell commands go further:** each carries an expandable **IN/OUT block** with the full command and its complete captured output — the extension runs the commands itself, so what you see is exactly what Grok received, down to the byte and the exit code. For auditing Auto-accept runs, `grok.expandCommandOutputs` pre-opens every command IN/OUT *and* edit diff (plus their groups); or expand/collapse the whole session on demand from the Command Palette (**Grok: Expand All Tool Details**).
 
 ![A tool batch with a command expanded to its IN/OUT block](docs/screenshots/tool_calls.png)
 
@@ -233,7 +233,7 @@ Or edit the config via gear → *Open global / project config*, then click **+**
 | `grok.includeActiveFileByDefault` | `true` | Auto-add the active editor as a context chip. |
 | `grok.useCtrlEnterToSend` | `false` | When true, Enter inserts a newline and Ctrl/Cmd+Enter sends. |
 | `grok.showThinking` | `false` | Show Grok's reasoning (thinking) traces in chat. Off shows a *Thinking…* stand-in. Also toggleable live from gear → Config & debug. |
-| `grok.expandCommandOutputs` | `false` | Pre-expand every command's IN/OUT detail (full command + captured output) — the audit view for Auto-accept sessions. Also toggleable live from gear → Config & debug. |
+| `grok.expandCommandOutputs` | `false` | Expand tool details by default — each shell command's IN/OUT block and each edit's inline diff (useful for auditing Auto-accept sessions). Tool groups still collapse by default. Toggle live from gear → Config & debug → **Expand tool details**. (Setting key kept for compatibility.) |
 | `grok.telemetry.enabled` | `true` | Send anonymous, privacy-first usage telemetry (see [Privacy](#privacy)). Also honors VS Code's global `telemetry.telemetryLevel`. |
 | `grok.chatFontScale` | `100` | Zoom for the chat panel only, as a percent (`150`, `200`, …). Scales the whole chat UI without rescaling the rest of VS Code (unlike `Ctrl/Cmd+Shift+=`). Applies live; supports User (global) and Workspace (local) scope. |
 | `grok.voiceApiKey` | `""` | xAI API key for voice Speech-to-Text — a separate [console.x.ai](https://console.x.ai) developer key, not the CLI login. Empty = fall back to `GROK_VOICE_API_KEY` / `XAI_API_KEY` in the workspace `.env`. |
@@ -263,7 +263,7 @@ VS Code commands (not Grok slash commands):
 | `Grok: Send File` | Add a file to the composer (right-clicked file, active editor, or a file picker) |
 | `Add Selection to Grok` | Attach the selected lines as a snippet chip in the composer |
 | `Grok: Insert @-Mention` | Insert an `@`-mention for the active file into the composer |
-| `Grok: Expand All Tool Details (This Session)` | Open every tool group and command IN/OUT box, and keep new ones open — this session only |
+| `Grok: Expand All Tool Details (This Session)` | Open every tool group, command IN/OUT box, and edit inline diff, and keep new ones open — this session only |
 | `Grok: Collapse All Tool Details (This Session)` | Collapse them all, and keep new ones collapsed — this session only |
 | `Grok: Show Logs` | Open the Grok output channel (ACP messages, errors) |
 | `Grok: Log Out` | Sign out of the Grok CLI (`grok logout`) and return to the sign-in screen |

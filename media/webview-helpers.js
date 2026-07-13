@@ -318,30 +318,71 @@
   }
 
   // Scannable program label for a command tool row: the executable (first token,
-  // path-stripped, de-quoted) plus one following word when it isn't a flag — so
-  // `git status` / `npm test` stay distinguishable while a long `node -e "…"`
+  // path-stripped, de-quoted) plus one following BARE word when it isn't a flag —
+  // so `git status` / `npm test` stay distinguishable while a long `node -e "…"`
   // payload collapses to just `node`. The full command lives in the row's IN/OUT
   // detail. PowerShell `Verb-Noun` cmdlets survive (the hyphen is mid-token; only
-  // a LEADING -/ marks a flag). Only the first statement is summarized (a ; | &
-  // or newline ends it). Always returns something → "command" fallback, so an
-  // unparseable command still reads "Run command".
+  // a LEADING -/ marks a flag). A QUOTED next token is an argument/data (an echo
+  // banner like `Write-Output '=== 1. git status ==='`), not a subcommand, so it's
+  // dropped — otherwise it drags a long quoted string into the label. Only the
+  // first statement is summarized (a ; | & or newline ends it). Always returns
+  // something → "command" fallback, so an unparseable command still reads "Run command".
   function commandProgramLabel(command) {
     if (typeof command !== "string") return "command";
     const stmt = command.trim().split(/\s*(?:&&|\|\||;|\||&|\n)\s*/)[0].trim();
     if (!stmt) return "command";
-    // Tokenize, honoring a quoted first arg (Windows paths with spaces).
+    // Tokenize, tracking whether each token was quoted (Windows paths / banners).
     const tokens = [];
     const re = /"([^"]*)"|'([^']*)'|(\S+)/g;
     let m;
-    while ((m = re.exec(stmt)) !== null) tokens.push(m[1] ?? m[2] ?? m[3]);
+    while ((m = re.exec(stmt)) !== null) {
+      tokens.push({ text: m[1] ?? m[2] ?? m[3], quoted: m[1] !== undefined || m[2] !== undefined });
+    }
     let i = 0;
-    while (i < tokens.length && /^[A-Za-z_]\w*=/.test(tokens[i])) i++; // skip FOO=bar env prefixes
-    const rawProg = tokens[i];
+    while (i < tokens.length && /^[A-Za-z_]\w*=/.test(tokens[i].text)) i++; // skip FOO=bar env prefixes
+    const rawProg = tokens[i] && tokens[i].text;
     if (!rawProg) return "command";
     const prog = rawProg.split(/[\\/]/).pop() || rawProg; // basename
-    const next = tokens[i + 1];
-    const label = next && !/^[-/]/.test(next) ? `${prog} ${next}` : prog;
+    const nextTok = tokens[i + 1];
+    // Append the next token only when it's a bare, non-flag word — a real
+    // subcommand (`git status`), never a quoted argument value.
+    const next = nextTok && !nextTok.quoted && !/^[-/]/.test(nextTok.text) ? nextTok.text : null;
+    const label = next ? `${prog} ${next}` : prog;
     return label.length > 30 ? label.slice(0, 29) + "…" : label;
+  }
+
+  // Pull a self-executed shell command's result off a completed `tool_call_update`.
+  // The cursor/Composer agent runs commands in its OWN CLI-side persistent shell
+  // and reports the result on the completed update (keyed by `toolCallId`) instead
+  // of delegating via `terminal/create` — so the #41 IN/OUT box, fed only by the
+  // terminal `commandOutput` path, never gets output for those rows. Recover the
+  // output + exit code here so the box can render it, matched reliably by
+  // `toolCallId` (Composer completes commands OUT of issue order, so no order-based
+  // guess is safe). Returns `{output, exitCode, truncated}` or null when the update
+  // carries no command result. Pure.
+  function extractToolResultOutput(call) {
+    if (!call || typeof call !== "object") return null;
+    const ro = call.rawOutput;
+    // Output text: the decoded `content` text is cleanest; else decode rawOutput.output
+    // (a byte array on the wire), else a plain string.
+    let output = "";
+    if (Array.isArray(call.content)) {
+      const c = call.content.find((b) => b && b.content && typeof b.content.text === "string");
+      if (c) output = c.content.text;
+    }
+    if (!output && ro) {
+      if (typeof ro.output === "string") output = ro.output;
+      else if (Array.isArray(ro.output)) {
+        try { output = new TextDecoder().decode(Uint8Array.from(ro.output)); } catch { output = ""; }
+      }
+    }
+    // grok reports the exit code as snake_case `exit_code`; tolerate camelCase too.
+    const exitCode =
+      ro && typeof ro.exit_code === "number" ? ro.exit_code
+      : ro && typeof ro.exitCode === "number" ? ro.exitCode
+      : null;
+    if (!output && exitCode == null) return null; // nothing to show
+    return { output, exitCode, truncated: !!(ro && ro.truncated) };
   }
 
   // Parse the <vscode-context> envelope that prompt-builder.ts wraps around the
@@ -536,7 +577,7 @@
     return { lines, added, removed, truncated: false };
   }
 
-  const api = { FILE_EXTS, HOST_MESSAGE_TYPES, WEBVIEW_MESSAGE_TYPES, isKnownHostMessage, looksLikeFileRef, formatRelativeTime, modelDisplayName, MIC_STATES, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, cleanSubagentOutput, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, commandProgramLabel, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags };
+  const api = { FILE_EXTS, HOST_MESSAGE_TYPES, WEBVIEW_MESSAGE_TYPES, isKnownHostMessage, looksLikeFileRef, formatRelativeTime, modelDisplayName, MIC_STATES, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, cleanSubagentOutput, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, commandProgramLabel, extractToolResultOutput, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags };
 
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;

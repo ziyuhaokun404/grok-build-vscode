@@ -31,7 +31,7 @@ import {
   isLockedBinaryError,
   GROK_STDIO_DOWNGRADE_TARGET,
 } from "./cli-locator";
-import { TerminalManager } from "./terminal-manager";
+import { TerminalManager, setTerminalShellPreference, type ShellPreference } from "./terminal-manager";
 import {
   FileChip,
   MAX_VISION_IMAGE_BYTES,
@@ -285,7 +285,18 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
         // chip right away (not on the next editor event), enabling shows it.
         this.refreshImplicitChip(true);
       }
+      if (e.affectsConfiguration("grok.terminalShell")) {
+        this.applyTerminalShellPref();
+      }
     });
+    this.applyTerminalShellPref();
+  }
+
+  /** Push the `grok.terminalShell` preference (#46) into the shared shell
+   *  resolver so the next agent command re-resolves cmd vs PowerShell. */
+  private applyTerminalShellPref(): void {
+    const pref = vscode.workspace.getConfiguration("grok").get<ShellPreference>("terminalShell", "auto");
+    setTerminalShellPreference(pref === "cmd" ? "cmd" : "auto");
   }
 
   insertActiveMention(opts?: { selection?: boolean; uri?: vscode.Uri; pickIfMissing?: boolean }): void {

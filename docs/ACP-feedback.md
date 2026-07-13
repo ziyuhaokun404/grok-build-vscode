@@ -184,6 +184,37 @@ restore replay free of internal protocol messages and include resolved interacti
   response schema (`outcome:"accepted"` required, empty ACK rejected) had to be recovered from
   strings in the binary. Documentation would have saved a probe.
 
+### 2.9 Terminal commands: the shell is the client's, but the agent writes for another one
+In ACP mode grok never runs shell commands itself — it hands each to the client over
+`terminal/create`, so the host shell is the **client's** choice. Two problems follow on Windows
+(added v1.5.13; issue #46):
+
+- **The agent writes bash-flavored commands even against a PowerShell host.** We run the agent's
+  commands under PowerShell on Windows to match the standalone CLI — users expect their PowerShell
+  profile functions and pipelines (`… | Format-List`) to work, which they can't under cmd.exe. But
+  grok, in ACP mode, still emits POSIX-subshell idioms like `(cd dir ; cmd)` — invalid in
+  PowerShell (`( )` is a grouping *expression*, not a statement list; it errors *"Missing closing
+  ')'"*), even while using PowerShell cmdlets (`Get-ChildItem`, `$env:`) in the same batch.
+  Standalone grok "just works" under PowerShell, so ACP-mode generation is *worse* than standalone.
+  The agent self-recovers by retrying with `Set-Location dir; cmd`, but each miss is a wasted tool
+  call + model turn — the exact retry cost #46 set out to remove. A client can't safely rewrite the
+  agent's commands. **Ask:** tell the agent the client's shell (or let the client advertise it in
+  `initialize`), or generate PowerShell-native syntax on a Windows host as the standalone CLI does.
+- **The two agents use different command-execution models, and the client output surface differs.**
+  grok-build **delegates** every shell command over `terminal/create` (the client runs it and
+  captures stdout). The cursor agent (Composer 2.5) instead runs commands in its **own CLI-side
+  persistent shell** — it never sends `terminal/create`; the result rides the completed
+  `tool_call_update` (`rawOutput` = `{output, exit_code, command, truncated, current_dir, …}`,
+  "Shell state persists for subsequent calls"). So a client that renders command output from the
+  `terminal/*` capture gets nothing for Composer rows and must *also* read the completed update's
+  `rawOutput`, matched by `toolCallId`. Two consequences worth flagging: (a) **Composer completes a
+  batch OUT of issue order** (verified: 10 parallel read-only commands finished 1,2,7,6,10,8,5,3,9,4
+  by call#), so any order-based correlation (FIFO) misattributes — `toolCallId` is the only safe key;
+  (b) `#46`'s client-shell choice doesn't reach Composer at all, since its shell is CLI-side.
+  **Ask:** converge the execution model (or document it), and surface command output the same way on
+  both agents — ideally on the completed update's structured `rawOutput` for both, keyed by
+  `toolCallId`.
+
 ---
 
 ## 3. What the extension silently hides from users today

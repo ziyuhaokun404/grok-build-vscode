@@ -260,10 +260,12 @@ the steady-state fix.
   toggling Agent ↔ Auto accept doesn't restart the CLI or even send a message.
   When the CLI raises a permission request, the extension just answers "allow
   always" automatically.
-- **Cross-platform without per-OS branches.** `terminal-manager.ts` uses
-  `spawn(cmd, { shell: true })` so Node picks `cmd.exe` or `/bin/sh`;
-  `cli-locator.ts` prefers `HOME`/`USERPROFILE` env over `os.homedir()` so tests
-  can override paths.
+- **Cross-platform shell selection.** `terminal-manager.ts` picks the host shell
+  for the agent's `terminal/*` commands via `resolveTerminalShell`: on Windows it
+  runs them under PowerShell (`pwsh.exe`→`powershell.exe`→cmd.exe) to match the
+  standalone grok CLI (#46 — cmd couldn't run the user's PowerShell profile
+  functions or pipelines); elsewhere `shell:true` → `/bin/sh`. `cli-locator.ts`
+  prefers `HOME`/`USERPROFILE` env over `os.homedir()` so tests can override paths.
 - **Streaming is rAF-coalesced.** Message and thought chunks buffer into a raw
   string and re-render at most once per animation frame — long responses stay
   smooth under fast chunk rates.

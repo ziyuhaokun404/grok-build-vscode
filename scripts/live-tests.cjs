@@ -250,6 +250,71 @@ function assert(cond, msg) { if (!cond) throw new Error(msg); }
 // Each returns a short detail string on success, throws Error to FAIL, or
 // throws Skip to mark inconclusive (e.g. no subscription / grok didn't delegate).
 
+// #46: agent shell host. The extension — not grok — runs every terminal/* call,
+// so which shell it uses is our choice. This is the one entry that doesn't spawn
+// grok: it drives the REAL compiled `out/terminal-manager.js` the extension ships
+// against the actual OS shell, proving on Windows that a grok-issued command runs
+// under PowerShell (pwsh → powershell), where a PowerShell-only pipeline + cmdlet
+// succeed that cmd.exe would have failed. On POSIX it just confirms /bin/sh is
+// unchanged. Deterministic (we issue the commands), so it's a real release gate.
+async function testTerminalShell() {
+  let TerminalManager, resolveTerminalShell;
+  try {
+    ({ TerminalManager, resolveTerminalShell } = require(path.join(REPO, "out", "terminal-manager.js")));
+  } catch (e) {
+    throw new Skip("out/terminal-manager.js not built — run `npm run compile` (" + e.message + ")");
+  }
+  const which = (name) => {
+    if (process.platform !== "win32") return undefined;
+    try {
+      const out = require("node:child_process").execFileSync("where", [name], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      });
+      const first = out.split(/\r?\n/)[0]?.trim();
+      return first && fs.existsSync(first) ? first : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+  const shell = resolveTerminalShell(process.platform, which);
+
+  const m = new TerminalManager();
+  const run = async (command) => {
+    const { terminalId } = m.create({ command });
+    const { exitCode } = await m.waitForExit(terminalId);
+    const output = m.output(terminalId).output.trim();
+    return { exitCode, output };
+  };
+
+  try {
+    if (process.platform !== "win32") {
+      assert(shell === true, `POSIX host should be /bin/sh (true), got ${JSON.stringify(shell)}`);
+      const r = await run("printf '%s' OK_POSIX");
+      assert(r.exitCode === 0 && /OK_POSIX/.test(r.output), `sh command failed: ${JSON.stringify(r)}`);
+      return "POSIX host = /bin/sh (unchanged); sh command ran";
+    }
+
+    // Windows: must resolve to a PowerShell, never cmd.exe.
+    assert(shell !== true, "Windows resolved to cmd.exe (shell:true) — no PowerShell on PATH?");
+    const shellName = path.basename(String(shell)).toLowerCase();
+    assert(/^(pwsh|powershell)\.exe$/.test(shellName), `unexpected Windows host shell: ${shell}`);
+
+    const pipe = await run("'a','b','c' | Measure-Object | ForEach-Object { $_.Count }");
+    assert(pipe.exitCode === 0 && pipe.output.includes("3"), `PS pipeline failed under ${shellName}: ${JSON.stringify(pipe)}`);
+
+    const ver = await run("$PSVersionTable.PSVersion.Major");
+    assert(ver.exitCode === 0 && /^\d+$/.test(ver.output), `$PSVersionTable failed: ${JSON.stringify(ver)}`);
+
+    const fmt = await run("[pscustomobject]@{ RepoRoot = 'demo' } | Format-List");
+    assert(fmt.exitCode === 0 && /RepoRoot/.test(fmt.output) && /demo/.test(fmt.output), `Format-List pipe failed: ${JSON.stringify(fmt)}`);
+
+    return `Windows host = ${shellName} (PowerShell ${ver.output}); pipeline + cmdlet + Format-List all ran (cmd.exe would fail these)`;
+  } finally {
+    m.disposeAll();
+  }
+}
+
 async function testHandshake() {
   const cwd = mkTmp("hs");
   const acp = new Acp(cwd);
@@ -802,6 +867,8 @@ async function testSubagentComposer() {
 const TESTS = [
   { name: "handshake", fn: testHandshake, slow: false, smoke: true },
   { name: "capabilities", fn: testCapabilities, slow: false, smoke: true },
+  // #46 — local (non-grok) validation of the shipped TerminalManager's shell host.
+  { name: "terminal-shell", fn: testTerminalShell, slow: false, smoke: true },
   { name: "prompt-roundtrip", fn: testPrompt, slow: false },
   { name: "cancel-mid-turn", fn: testCancelMidTurn, slow: false },
   { name: "parallel-sessions", fn: testParallelSessions, slow: false },

@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.5.13 — 2026-07-13
+
+### Fixed
+
+- **On Windows, the agent's shell commands now run under PowerShell instead of cmd (#46)** — `pwsh.exe` when installed, else Windows PowerShell 5.1 (`powershell.exe`), else cmd.exe. The extension runs every command Grok requests (Grok delegates them over ACP), so the shell was ours to pick; matching the standalone Grok CLI means PowerShell profile functions and pipelines (`… | Format-List`) just work, instead of failing under cmd and forcing the agent into costly retry/re-wrap loops. Linux/macOS are unchanged (`/bin/sh`). ([src/terminal-manager.ts](src/terminal-manager.ts))
+  - **Install PowerShell 7 (`pwsh`) for the best experience** — the Windows PowerShell 5.1 fallback rejects `&&` command chains and reports every failing command's exit code as `1`; pwsh 7 does neither.
+  - New **`grok.terminalShell`** setting (`auto` | `cmd`) — an escape hatch back to `cmd.exe` on Windows if the PowerShell host ever causes trouble. ([package.json](package.json), [src/sidebar.ts](src/sidebar.ts))
+- **Command output now shows in the tool row for the Composer agent too.** Composer runs shell commands in its own CLI-side shell (it doesn't delegate over ACP like Grok Build), so its command rows showed the command (IN) but no output (OUT). The captured output is now read from the completed tool-call update and attached by tool-call id — reliable even though Composer runs commands in parallel and finishes them out of order. ([media/chat.js](media/chat.js), [media/webview-helpers.js](media/webview-helpers.js))
+- **A command row's one-line label no longer drags in a quoted argument.** `Write-Output '=== banner ==='` now reads "Run Write-Output", not a truncated "Run Write-Output === 1. git statu…" — a quoted arg is data, not a subcommand. ([media/webview-helpers.js](media/webview-helpers.js))
+
 ## 1.5.12 — 2026-07-13
 
 ### Added

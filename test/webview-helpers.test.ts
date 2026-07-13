@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 // @ts-expect-error — plain JS module, no types
-import { looksLikeFileRef, formatRelativeTime, FILE_EXTS, modelDisplayName, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, cleanSubagentOutput, shouldStickToBottom, splitMath, stripUnsupportedTex, parseAttachmentContext, parseSelectionBlocks, parseImageTags, toolFailureText, commandProgramLabel, computeLineDiff } from "../media/webview-helpers.js";
+import { looksLikeFileRef, formatRelativeTime, FILE_EXTS, modelDisplayName, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, cleanSubagentOutput, shouldStickToBottom, splitMath, stripUnsupportedTex, parseAttachmentContext, parseSelectionBlocks, parseImageTags, toolFailureText, commandProgramLabel, extractToolResultOutput, computeLineDiff } from "../media/webview-helpers.js";
 import { buildPrompt, buildPromptWithImages } from "../src/prompt-builder";
 import { makeExplicitChip, makeImplicitChip, makeImageChip } from "../src/chips";
 
@@ -816,8 +816,18 @@ describe("commandProgramLabel", () => {
 
   it("handles PowerShell Verb-Noun cmdlets (leading dash only marks a flag)", () => {
     expect(commandProgramLabel("Get-ChildItem -Path . -Recurse")).toBe("Get-ChildItem");
-    expect(commandProgramLabel('Write-Output "hello"')).toBe("Write-Output hello");
     expect(commandProgramLabel("Get-Date")).toBe("Get-Date");
+  });
+
+  it("drops a QUOTED next token (an argument/banner, not a subcommand)", () => {
+    // A quoted arg is data — dragging it in makes the label a long truncated slab
+    // (the reported "Run Write-Output === 1. git statu…"). Just show the program.
+    expect(commandProgramLabel('Write-Output "hello"')).toBe("Write-Output");
+    expect(commandProgramLabel("Write-Output '=== 1. git status ==='; git status")).toBe("Write-Output");
+    expect(commandProgramLabel('Set-Location "c:\\GitHub\\a b"; git status')).toBe("Set-Location");
+    expect(commandProgramLabel("echo 'a long banner message here'")).toBe("echo");
+    // …but a bare next word (a real subcommand) is still kept.
+    expect(commandProgramLabel("git commit -m x")).toBe("git commit");
   });
 
   it("path-strips the executable and de-quotes a spaced path", () => {
@@ -840,6 +850,36 @@ describe("commandProgramLabel", () => {
     expect(commandProgramLabel("   ")).toBe("command");
     expect(commandProgramLabel(null as unknown as string)).toBe("command");
     expect(commandProgramLabel("FOO=bar")).toBe("command"); // only an env assignment, no program
+  });
+});
+
+describe("extractToolResultOutput (cursor/Composer self-executed command result)", () => {
+  it("reads the decoded content text + exit code", () => {
+    const r = extractToolResultOutput({
+      rawOutput: { type: "Bash", output: [1, 2, 3], exit_code: 0, truncated: false },
+      content: [{ type: "content", content: { type: "text", text: "v20.19.0\n10.8.2" } }],
+    });
+    expect(r).toEqual({ output: "v20.19.0\n10.8.2", exitCode: 0, truncated: false });
+  });
+
+  it("decodes rawOutput.output bytes when there's no content text", () => {
+    const bytes = [...Buffer.from("hi ✓", "utf8")]; // multibyte survives TextDecoder
+    const r = extractToolResultOutput({ rawOutput: { type: "Bash", output: bytes, exit_code: 0 } });
+    expect(r!.output).toBe("hi ✓");
+  });
+
+  it("carries a non-zero exit code (for the [Error] marker)", () => {
+    const r = extractToolResultOutput({
+      rawOutput: { type: "Bash", exit_code: 1, truncated: true },
+      content: [{ type: "content", content: { type: "text", text: "boom" } }],
+    });
+    expect(r).toEqual({ output: "boom", exitCode: 1, truncated: true });
+  });
+
+  it("returns null when there's no command result to show", () => {
+    expect(extractToolResultOutput(null as unknown as object)).toBeNull();
+    expect(extractToolResultOutput({})).toBeNull();
+    expect(extractToolResultOutput({ rawOutput: {} })).toBeNull(); // no output, no exit code
   });
 });
 

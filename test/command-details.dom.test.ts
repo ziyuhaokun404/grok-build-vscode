@@ -126,6 +126,65 @@ describe("command details (#41)", () => {
     expect(details.querySelector(".tool-cmd-output")!.textContent).toBe("orphan output");
   });
 
+  // The cursor/Composer agent runs commands in its OWN CLI-side shell (no
+  // terminal/create), so `commandOutput` never fires for it — its output rides
+  // the completed tool_call_update (rawOutput/content), keyed by toolCallId. The
+  // #41 box must render it from there, or the row shows IN with no OUT (the bug).
+  const completed = (id: string, output: string, exitCode = 0) => ({
+    type: "toolCallUpdate",
+    call: {
+      toolCallId: id,
+      status: "completed",
+      rawOutput: { type: "Bash", output: [...Buffer.from(output, "utf8")], exit_code: exitCode, command: "x", truncated: false },
+      content: [{ type: "content", content: { type: "text", text: output } }],
+    },
+  });
+
+  it("fills a self-executed (Composer) command's OUT from the completed update, no terminal/create", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, exec("c1", "git status --short"));
+    close(window);
+    // No commandOutput ever arrives (Composer never delegates). The completed
+    // update carries the result instead.
+    dispatch(window, completed("c1", " M CHANGELOG.md", 0));
+
+    const rows = [...doc.querySelectorAll(".has-details")];
+    expect(rows).toHaveLength(1); // no duplicate/standalone row
+    expect(doc.querySelector(".tool-cmd-output")!.textContent).toBe(" M CHANGELOG.md");
+    expect(doc.querySelector(".tool-cmd")!.textContent).toBe("git status --short"); // IN unchanged
+  });
+
+  it("attaches self-executed outputs by toolCallId regardless of completion order (Composer runs parallel)", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, exec("a", "git status --short"));
+    dispatch(window, exec("b", "$env:USERNAME"));
+    close(window); // 2 calls → stays a group with rows
+    // Completions arrive OUT of issue order (b before a) — FIFO would swap them.
+    dispatch(window, completed("b", "Dell", 0));
+    dispatch(window, completed("a", "STATUS_OUT", 0));
+
+    const items = [...doc.querySelectorAll(".tool-item.has-details")];
+    expect(items).toHaveLength(2); // no duplicate rows
+    const outFor = (id: string) =>
+      (items.find((i) => i.querySelector(".tool-cmd")!.textContent ===
+        (id === "a" ? "git status --short" : "$env:USERNAME"))!
+        .querySelector(".tool-cmd-output") as HTMLElement).textContent;
+    expect(outFor("a")).toBe("STATUS_OUT"); // each output on its OWN row, by id
+    expect(outFor("b")).toBe("Dell");
+  });
+
+  it("a non-zero self-executed command shows [Error] exit N in its OUT box", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, exec("e", "(cd x ; git status)"));
+    close(window);
+    dispatch(window, completed("e", "Missing closing ')' in expression.", 1));
+
+    const outRow = doc.querySelector(".cmd-out") as HTMLElement;
+    expect(outRow.classList.contains("failed")).toBe(true);
+    expect(outRow.querySelector(".cmd-out-marker")!.textContent).toBe("[Error] exit 1");
+    expect(outRow.querySelector(".tool-cmd-output")!.textContent).toContain("Missing closing");
+  });
+
   it("killed commands read [Cancelled] (muted, not an error); truncation is noted", () => {
     const { window, doc } = bootWebview();
     dispatch(window, exec("k", "sleep 999"));

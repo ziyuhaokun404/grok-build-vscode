@@ -347,7 +347,7 @@
 
   // ---------- markdown ----------
 
-  const { looksLikeFileRef, formatRelativeTime, modelDisplayName, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, cleanSubagentOutput, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, commandProgramLabel, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, isKnownHostMessage } = globalThis.GrokWebviewHelpers;
+  const { looksLikeFileRef, formatRelativeTime, modelDisplayName, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, cleanSubagentOutput, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, commandProgramLabel, extractToolResultOutput, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, isKnownHostMessage } = globalThis.GrokWebviewHelpers;
 
   function escapeAttr(s) {
     return String(s == null ? "" : s)
@@ -2157,7 +2157,7 @@
     // command text immediately (grok truncates its titles), and the complete
     // captured output once the terminal finishes.
     const cmd = call.rawInput && typeof call.rawInput.command === "string" ? call.rawInput.command.trim() : "";
-    if (cmd) attachCommandDetails(item, cmd);
+    if (cmd) attachCommandDetails(item, cmd, call.toolCallId);
 
     hdr.innerHTML =
       toolIconFor(el._calls) +
@@ -2263,7 +2263,7 @@
     });
   }
 
-  function attachCommandDetails(item, command) {
+  function attachCommandDetails(item, command, toolCallId) {
     // Chevron at the END of the (possibly ellipsized) command line: › when
     // collapsed, rotated to v while expanded.
     const chevron = document.createElement("span");
@@ -2292,7 +2292,10 @@
     item.appendChild(details);
 
     wireCommandToggle(item, details);
-    state.pendingCommandDetails.push({ command, details, done: false });
+    // toolCallId lets the completed tool_call_update attach output by id (the
+    // cursor/Composer path); command lets the terminal commandOutput attach by
+    // string (the grok-build path). Both reference the same `details` node.
+    state.pendingCommandDetails.push({ command, details, done: false, toolCallId });
   }
 
   function attachCommandOutput(details, msg) {
@@ -2346,6 +2349,29 @@
     }
     outRow.appendChild(body);
     block.appendChild(outRow);
+  }
+
+  // #41 for the cursor/Composer agent: it runs commands in its own CLI-side shell
+  // (no terminal/create), so `commandOutput` never fires for its rows. Its output
+  // rides the completed `tool_call_update` instead — attach it to the row by
+  // toolCallId (reliable + order-independent; Composer completes out of order).
+  // Returns true only when it actually filled an empty command row, so the caller
+  // skips the generic failure/diff path for it. A no-op for grok-build, whose
+  // terminal `commandOutput` already populated the row before this update arrives.
+  function maybeAttachToolResultOutput(call) {
+    const id = call && call.toolCallId;
+    if (!id) return false;
+    // Use the pendingCommandDetails entry (a direct `details` node reference that
+    // survives a lone command's flatten-move) rather than re-querying the item —
+    // the item's details node is relocated to the .tool-flat wrapper.
+    const entry = state.pendingCommandDetails.find((p) => p.toolCallId === id);
+    if (!entry) return false;
+    const block = entry.details.querySelector(".cmd-block");
+    if (!block || block.querySelector(".cmd-out")) return false; // OUT already present (grok-build)
+    const res = extractToolResultOutput(call);
+    if (!res) return false;
+    attachCommandOutput(entry.details, res);
+    return true;
   }
 
   // Render one edit region as a colored inline diff on the shared code-block
@@ -4547,6 +4573,15 @@
             break;
           }
         }
+        // A self-executed command (cursor/Composer runs it in its own shell and
+        // reports the result here, not via terminal/create) — fill the row's #41
+        // IN/OUT box by toolCallId. Takes precedence over the generic failure path
+        // so a non-zero command reads as an [Error] exit N in its OUT box, matching
+        // grok-build's terminal-fed rows. No-op (returns false) for grok-build,
+        // whose row already has OUT.
+        if (String(msg.call?.status).toLowerCase() === "completed" && maybeAttachToolResultOutput(msg.call)) {
+          break;
+        }
         // A failed tool (e.g. `image_to_video failed: image reference not readable`)
         // — surface the reason on its row instead of silently dropping it.
         const failure = toolFailureText(msg.call);
@@ -4670,17 +4705,24 @@
         setAllToolDetails(!!msg.open);
         break;
       case "commandOutput": {
-        // A finished shell command's captured output (#41). Attach to the
-        // oldest un-served row with the exact same command; if no row matches
-        // (title-only shapes, a race) render a standalone row so the output is
-        // never dropped.
-        const pending = state.pendingCommandDetails.find((p) => !p.done && p.command === msg.command);
+        // A finished shell command's captured output (#41). grok-build delegates
+        // commands via terminal/create, so this path fires for it — attach to the
+        // oldest un-served row with the exact same command; if none matches
+        // (title-only shape / a race) render a standalone row so output is never
+        // dropped. (The cursor/Composer agent runs commands in its OWN CLI-side
+        // persistent shell and never sends terminal/create, so this never fires
+        // for it — its output arrives on the completed tool_call_update instead
+        // and is attached by toolCallId; see maybeAttachToolResultOutput. Do NOT
+        // FIFO-match here: Composer completes commands out of issue order, so any
+        // order-based guess would misattribute outputs to the wrong rows.)
+        const wanted = typeof msg.command === "string" ? msg.command.trim() : msg.command;
+        const pending = state.pendingCommandDetails.find((p) => !p.done && p.command === wanted);
         let details = pending && pending.details;
         if (pending) pending.done = true;
         if (!details) {
           addToToolGroup({ title: truncate(`Run ${msg.command}`, 120), kind: "execute", rawInput: { command: msg.command } });
           const fallback = state.pendingCommandDetails[state.pendingCommandDetails.length - 1];
-          if (fallback && !fallback.done && fallback.command === msg.command) {
+          if (fallback && !fallback.done && fallback.command === wanted) {
             fallback.done = true;
             details = fallback.details;
           }

@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.5.14 — 2026-07-14
+
+### Fixed
+
+- **Inline-diff line numbers no longer wrap mid-digit.** In an edit's inline diff, line numbers ≥100 could break onto a second row (`147` → `14` / `7`); the gutter is now wide enough and the number never wraps. Thanks to [@jiezaichan](https://github.com/jiezaichan) (#47). ([media/chat.css](media/chat.css))
+
 ## 1.5.13 — 2026-07-13
 
 ### Fixed

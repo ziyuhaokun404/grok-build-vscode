@@ -1,21 +1,20 @@
 {
-  "name": "grok-vscode-phuryn",
-  "displayName": "Grok Build for VS Code (Community)",
-  "description": "GUI for Grok Build CLI (incl. Grok 4.5). Voice control, multiple sessions, images and videos, Mermaid diagrams, and LaTeX. Works with SuperGrok, X Premium+, and xAI API key. MIT, open-source. Not affiliated with or endorsed by xAI.",
-  "version": "1.5.14",
-  "publisher": "PawelHuryn",
+  "name": "grok-vscode-ziyuhaokun",
+  "displayName": "Grok Build for VS Code（社区版）",
+  "description": "Grok Build CLI 的图形界面（含 Grok 4.5）。支持语音控制、多会话、图片与视频、Mermaid 与 LaTeX。支持 SuperGrok、X Premium+ 与 xAI API 密钥。MIT 开源，与 xAI 无隶属关系。由 ziyuhaokun 维护。",
+  "version": "1.3.2",
+  "publisher": "ziyuhaokun",
   "author": {
-    "name": "Paweł Huryn",
-    "url": "https://www.productcompass.pm"
+    "name": "ziyuhaokun"
   },
   "license": "MIT",
-  "homepage": "https://github.com/phuryn/grok-build-vscode",
+  "homepage": "https://github.com/ziyuhaokun/grok-build-vscode",
   "bugs": {
-    "url": "https://github.com/phuryn/grok-build-vscode/issues"
+    "url": "https://github.com/ziyuhaokun/grok-build-vscode/issues"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/phuryn/grok-build-vscode"
+    "url": "https://github.com/ziyuhaokun/grok-build-vscode"
   },
   "engines": {
     "vscode": "^1.106.0"
@@ -77,55 +76,55 @@
     "commands": [
       {
         "command": "grok.open",
-        "title": "Grok: Open"
+        "title": "Grok: 打开"
       },
       {
         "command": "grok.newSession",
-        "title": "Grok: New Session"
+        "title": "Grok: 新建会话"
       },
       {
         "command": "grok.compact",
-        "title": "Grok: Compact Conversation"
+        "title": "Grok: 压缩对话"
       },
       {
         "command": "grok.pickModel",
-        "title": "Grok: Pick Model"
+        "title": "Grok: 选择模型"
       },
       {
         "command": "grok.toggleMode",
-        "title": "Grok: Toggle Plan / Agent Mode"
+        "title": "Grok: 切换计划 / 代理模式"
       },
       {
         "command": "grok.sendSelection",
-        "title": "Add Selection to Grok"
+        "title": "将选中内容添加到 Grok"
       },
       {
         "command": "grok.sendFile",
-        "title": "Grok: Send File"
+        "title": "Grok: 发送文件"
       },
       {
         "command": "grok.insertAtMention",
-        "title": "Grok: Insert @-Mention"
+        "title": "Grok: 插入 @ 引用"
       },
       {
         "command": "grok.showLogs",
-        "title": "Grok: Show Logs"
+        "title": "Grok: 显示日志"
       },
       {
         "command": "grok.expandAllToolDetails",
-        "title": "Grok: Expand All Tool Details (This Session)"
+        "title": "Grok: 展开全部工具详情（当前会话）"
       },
       {
         "command": "grok.collapseAllToolDetails",
-        "title": "Grok: Collapse All Tool Details (This Session)"
+        "title": "Grok: 折叠全部工具详情（当前会话）"
       },
       {
         "command": "grok.logout",
-        "title": "Grok: Log Out"
+        "title": "Grok: 退出登录"
       },
       {
         "command": "grok._debugDummyPlan",
-        "title": "Grok: Debug — Show dummy plan card (for testing Approve/Reject/Cancel)"
+        "title": "Grok: 调试 — 显示示例计划卡片（测试批准/拒绝/取消）"
       }
     ],
     "keybindings": [
@@ -175,12 +174,12 @@
         "grok.cliPath": {
           "type": "string",
           "default": "",
-          "description": "Path to the grok binary. Empty = auto-discover (~/.grok/bin/grok, then PATH)."
+          "description": "grok 可执行文件路径。留空则自动查找（~/.grok/bin/grok，然后 PATH）。"
         },
         "grok.defaultModel": {
           "type": "string",
           "default": "",
-          "description": "Model ID to use on new sessions. Empty = CLI default."
+          "description": "新会话使用的模型 ID。留空则使用 CLI 默认模型。"
         },
         "grok.defaultMode": {
           "type": "string",
@@ -190,17 +189,17 @@
             "yolo"
           ],
           "enumDescriptions": [
-            "Agent mode (CLI default)",
-            "Agent mode",
-            "Auto accept — auto-approve every permission request"
+            "代理模式（CLI 默认）",
+            "代理模式",
+            "自动接受 — 自动批准所有权限请求"
           ],
           "default": "",
-          "description": "Mode for new sessions. Updated automatically to remember your last switch between Agent and Auto accept (Plan is never remembered). Empty = Agent."
+          "description": "新会话模式。会自动记住你在「代理」与「自动接受」之间的上次选择（不会记住计划模式）。留空 = 代理。"
         },
         "grok.includeActiveFileByDefault": {
           "type": "boolean",
           "default": true,
-          "description": "Auto-add the active editor file as a context chip."
+          "description": "自动将当前编辑器文件添加为上下文芯片。"
         },
         "grok.defaultEffort": {
           "type": "string",
@@ -214,21 +213,21 @@
             "xhigh"
           ],
           "enumDescriptions": [
-            "CLI default (no flag passed to grok agent stdio)",
-            "None",
-            "Minimal",
-            "Low — faster, lighter reasoning",
-            "Medium",
-            "High",
-            "XHigh — deepest reasoning, slowest"
+            "CLI 默认（不向 grok agent stdio 传参）",
+            "无",
+            "最低",
+            "低 — 更快、更轻的推理",
+            "中",
+            "高",
+            "极高 — 最深推理，最慢"
           ],
           "default": "",
-          "description": "Reasoning effort passed as --reasoning-effort to grok agent stdio. Values match the grok CLI's accepted set (none, minimal, low, medium, high, xhigh). Changing this restarts the session."
+          "description": "作为 --reasoning-effort 传给 grok agent stdio 的推理强度。取值与 CLI 一致（none、minimal、low、medium、high、xhigh）。更改会重启会话。"
         },
         "grok.useCtrlEnterToSend": {
           "type": "boolean",
           "default": false,
-          "description": "Use Ctrl/Cmd+Enter to send (Enter inserts newline)."
+          "description": "使用 Ctrl/Cmd+Enter 发送（Enter 插入换行）。"
         },
         "grok.terminalShell": {
           "type": "string",
@@ -237,58 +236,63 @@
             "cmd"
           ],
           "enumDescriptions": [
-            "PowerShell on Windows (pwsh, then Windows PowerShell 5.1) — matches the standalone Grok CLI",
-            "Force cmd.exe on Windows (legacy)"
+            "Windows 上使用 PowerShell（优先 pwsh，否则 Windows PowerShell 5.1）— 与独立 Grok CLI 一致",
+            "Windows 上强制使用 cmd.exe（旧版行为）"
           ],
           "default": "auto",
-          "markdownDescription": "Which shell runs the agent's commands **on Windows**. `auto` (default) uses PowerShell — `pwsh.exe` if installed, else Windows PowerShell 5.1 — so your PowerShell profile functions and pipelines work like they do in the standalone Grok CLI (#46). `cmd` forces `cmd.exe` (the pre-1.5.13 behavior) if the PowerShell host causes trouble. **Tip: install PowerShell 7 (`pwsh`)** — the 5.1 fallback rejects `&&` chains and reports every failing command's exit code as 1. No effect on macOS/Linux (always `/bin/sh`)."
+          "markdownDescription": "**仅 Windows**：代理命令使用的 shell。`auto`（默认）使用 PowerShell — 优先 `pwsh.exe`，否则 Windows PowerShell 5.1 — 以便配置文件函数与管道像独立 Grok CLI 一样可用（#46）。`cmd` 强制 `cmd.exe`（1.5.13 之前的行为），可在 PowerShell 主机出问题时回退。**建议安装 PowerShell 7（`pwsh`）** — 5.1 不支持 `&&` 链，且失败命令的退出码常被报为 1。macOS/Linux 始终使用 `/bin/sh`。"
         },
         "grok.showThinking": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "Show Grok's reasoning (thinking) traces in chat. Off by default — a lightweight \"Thinking…\" indicator stands in while Grok reasons. Also toggleable live from the gear menu → **Config & debug → Show thinking traces** (applies to already-loaded sessions too)."
+          "markdownDescription": "在聊天中显示 Grok 的推理（思考）轨迹。默认关闭 — 推理时仅显示轻量「思考中…」指示。也可在齿轮菜单 → **配置与调试 → 显示思考轨迹** 中实时切换（已加载会话同样生效）。"
+        },
+        "grok.showTurnMetrics": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "在每轮对话结束后的页脚显示 **首字耗时**、**对话耗时** 与 **token/s**（吞吐）。吞吐 ≈ 输出+思考 token / (首字到结束 − 工具与权限等待)。悬停可看输入/输出/思考等明细。也可在齿轮菜单 → **配置与调试** 中切换。"
         },
         "grok.expandCommandOutputs": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "Expand tool details by default — each shell command's IN/OUT block (full command text + captured output) and each edit's inline diff (useful for auditing Auto-accept sessions). Tool groups (\"Ran N commands\", \"Edited N files\") still need to be expanded first; a single command outside a group shows its details immediately. Off: click a row (›) to expand just that one — edit rows always show a `+N −M` change count regardless. Also toggleable live from the gear menu → **Config & debug → Expand tool details**."
+          "markdownDescription": "默认展开工具详情 — 每个 shell 命令的 输入/输出 块（完整命令与捕获输出）以及每次编辑的行内 diff（便于审计「自动接受」会话）。工具分组（「运行了 N 条命令」「编辑了 N 个文件」）仍需先展开；分组外的单条命令会立即显示详情。关闭时：点击行（›）仅展开该项 — 编辑行始终显示 `+N −M` 变更计数。也可在齿轮菜单 → **配置与调试 → 展开工具详情** 中实时切换。"
         },
         "grok.telemetry.enabled": {
           "type": "boolean",
-          "default": true,
-          "markdownDescription": "Send anonymous, privacy-first usage telemetry. A single `session_start` event per session carries only an anonymous install id (a random GUID, no account/identity) plus the chosen mode/model/effort — **never** any message content, code, or file paths. Also requires VS Code's global `telemetry.telemetryLevel` to be enabled; turning either off stops all sending."
+          "default": false,
+          "markdownDescription": "发送匿名、隐私优先的使用遥测（默认关闭；需在 `src/telemetry.ts` 配置自有 Aptabase 密钥后才会实际上报）。每个会话仅发送一次 `session_start`，只含匿名安装 ID（随机 GUID，无账号/身份）以及所选模式/模型/推理强度 — **绝不**包含消息内容、代码或文件路径。还需启用 VS Code 全局 `telemetry.telemetryLevel`；任一关闭即停止发送。"
         },
         "grok.chatFontScale": {
           "type": "number",
           "default": 100,
           "minimum": 60,
           "maximum": 300,
-          "markdownDescription": "Zoom for the Grok chat panel only, as a percent (100 = default). Scales the whole chat UI — text, icons, spacing — without affecting the rest of VS Code (unlike `Ctrl/Cmd+Shift+=`). Applies live, no reload needed. Supports User (global) and Workspace (local) scope."
+          "markdownDescription": "仅 Grok 聊天面板的缩放比例（百分数，100 = 默认）。缩放整块聊天 UI（文字、图标、间距），不影响 VS Code 其余部分（与 `Ctrl/Cmd+Shift+=` 不同）。实时生效，无需重载。支持用户（全局）与工作区（本地）范围。"
         },
         "grok.voiceApiKey": {
           "type": "string",
           "default": "",
-          "markdownDescription": "xAI API key for voice control (Speech-to-Text via `api.x.ai/v1/stt`). This is a **separate** developer key from [console.x.ai](https://console.x.ai) — it is billed pay-as-you-go and is unrelated to the Grok CLI login. Leave empty to fall back to `GROK_VOICE_API_KEY` or `XAI_API_KEY` in your workspace `.env`."
+          "markdownDescription": "语音控制用的 xAI API 密钥（经 `api.x.ai/v1/stt` 做语音转文字）。这是来自 [console.x.ai](https://console.x.ai) 的**独立**开发者密钥 — 按量计费，与 Grok CLI 登录无关。留空则回退到工作区 `.env` 中的 `GROK_VOICE_API_KEY` 或 `XAI_API_KEY`。"
         },
         "grok.ffmpegPath": {
           "type": "string",
           "default": "",
-          "description": "Path to the ffmpeg binary used to record the microphone for voice control. Empty = use 'ffmpeg' from PATH. Install ffmpeg from https://ffmpeg.org if voice control reports it as missing."
+          "description": "用于语音控制录音的 ffmpeg 可执行文件路径。留空则使用 PATH 中的 'ffmpeg'。若语音提示缺少 ffmpeg，请从 https://ffmpeg.org 安装。"
         },
         "grok.voiceInputDevice": {
           "type": "string",
           "default": "",
-          "description": "Microphone device for voice control. Empty = system default (on Windows, the first DirectShow audio device is auto-detected). Set this to a specific device name (Windows/dshow) or index (macOS/avfoundation) to override."
+          "description": "语音控制使用的麦克风设备。留空 = 系统默认（Windows 上自动检测第一个 DirectShow 音频设备）。可设为具体设备名（Windows/dshow）或索引（macOS/avfoundation）以覆盖。"
         },
         "grok.voiceSendPhrase": {
           "type": "string",
           "default": "grok send",
-          "description": "Spoken phrase that auto-submits the message when it ends a voice transcription (e.g. say \"…fix the bug, grok send\"). The phrase is stripped before sending. Leave empty to disable hands-free sending."
+          "description": "语音转写末尾触发自动发送的口令（例如说「…修一下这个 bug，grok send」）。发送前会去掉该口令。留空则禁用免提发送。"
         },
         "grok.voiceStreaming": {
           "type": "boolean",
           "default": true,
-          "description": "Stream voice transcription live as you speak (words appear in the composer in real time, and \"grok send\" can submit without a second click). Disable to use one-shot batch mode (click to start, click to stop, then transcribe). Streaming costs $0.20/hr of audio vs $0.10/hr batch."
+          "description": "边说边流式转写（文字实时出现在输入框，「grok send」无需再点一次即可发送）。关闭则使用一次性批处理（点开始、点停止，再转写）。流式约 $0.20/小时音频，批处理约 $0.10/小时。"
         }
       }
     }

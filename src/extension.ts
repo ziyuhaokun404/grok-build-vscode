@@ -18,7 +18,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("grok.compact", () => {
       // emulated by sending the slash command as a prompt; CLI handles it
       vscode.window.showInformationMessage(
-        "Type /compact in the composer to compress the conversation.",
+        "在输入框中输入 /compact 以压缩对话。",
       );
     }),
     vscode.commands.registerCommand("grok.pickModel", () => sidebar.pickModel()),

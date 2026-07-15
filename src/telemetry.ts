@@ -10,15 +10,16 @@
 import * as https from "node:https";
 
 // Aptabase ingestion app keys (region-prefixed write-only keys meant to ship in
-// the client, not secrets). Two projects keep test traffic out of the real
-// analytics: the **extension always reports to PROD** (dev host, local install,
-// and the published Marketplace build alike); the **DEV** key is used only by the
-// `telemetry:probe` script / tests, so probe traffic lands in a separate project.
-export const APTABASE_APP_KEY_PROD = "A-EU-2294571902";
-export const APTABASE_APP_KEY_DEV = "A-EU-5074036690";
+// the client, not secrets). Empty by default for this fork — set your own keys
+// if you want analytics. An empty / non-region key makes `aptabaseHost` return
+// undefined and `postEvent` becomes a no-op. Two slots keep test traffic out of
+// prod when both are filled: the extension uses PROD; `telemetry:probe` / tests
+// can use DEV.
+export const APTABASE_APP_KEY_PROD = "";
+export const APTABASE_APP_KEY_DEV = "";
 
 /** The label Aptabase shows as the SDK that sent the event. */
-export const TELEMETRY_SDK = "grok-vscode-phuryn";
+export const TELEMETRY_SDK = "grok-vscode-ziyuhaokun";
 
 export interface SystemProps {
   appVersion: string;

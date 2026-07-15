@@ -11,6 +11,9 @@
   const historyBtn = $("history-btn");
   const modeBtn = $("mode-btn");
   const gearBtn = $("gear-btn");
+  const modelChipBtn = $("model-chip-btn");
+  const modelChipName = $("model-chip-name");
+  const modelChipEffort = $("model-chip-effort");
   const addBtn = $("add-btn");
   const chipsEl = $("chips");
   const attachmentsEl = $("attachments");
@@ -20,21 +23,54 @@
   const contextPopover = $("context-popover");
   const slashPopover = $("slash-popover");
   const modePopover = $("mode-popover");
-  const gearPopover = $("gear-popover");
+  const modelEffortPopover = $("model-effort-popover");
+  const settingsPage = $("settings-page");
+  const settingsPageBody = $("settings-page-body");
+  const settingsPageTitle = $("settings-page-title");
+  const settingsBackBtn = $("settings-back-btn");
   const addPopover = $("add-popover");
   const historyPopover = $("history-popover");
   const scrollBottomBtn = $("scroll-bottom-btn");
+  const sessionRail = $("session-rail");
+  const sessionRailList = $("session-rail-list");
+  const sessionRailToggle = $("session-rail-toggle");
+  const sessionRailNew = $("session-rail-new");
+  const sessionRailHistory = $("session-rail-history");
+  const sessionRailResizer = $("session-rail-resizer");
+  /** Default / min / max widths for the left session rail (px). */
+  const SESSION_RAIL_DEFAULT_W = 168;
+  const SESSION_RAIL_MIN_W = 120;
+  const SESSION_RAIL_MAX_W = 420;
+  const sessionTitleEl = $("session-title");
 
   // grok's accepted reasoning-effort values, lowest → highest (matches the CLI;
   // `max` is not a real grok level and is intentionally excluded — see #3/#4).
   const EFFORT_LEVELS = ["none", "minimal", "low", "medium", "high", "xhigh"];
   const EFFORT_TOOLTIPS = {
-    none: "None — no extra reasoning",
-    minimal: "Minimal — least reasoning",
-    low: "Low — fast, lightweight reasoning",
-    medium: "Medium — balanced",
-    high: "High — deeper reasoning",
-    xhigh: "XHigh — deepest reasoning, slowest",
+    none: "无 — 无额外推理",
+    minimal: "最低 — 最少推理",
+    low: "低 — 快速、轻量推理",
+    medium: "中 — 均衡",
+    high: "高 — 更深推理",
+    xhigh: "极高 — 最深推理，最慢",
+  };
+  // Sol-style caption above the slider (short impact line, not a dry label).
+  const EFFORT_CAPTIONS = {
+    none: "几乎不消耗用量",
+    minimal: "轻度推理，更省用量",
+    low: "较快响应",
+    medium: "均衡表现",
+    high: "更深推理",
+    xhigh: "消耗用量更快",
+  };
+  // Short labels for the always-visible model chip (and card summary).
+  const EFFORT_SHORT = {
+    none: "无",
+    minimal: "最低",
+    low: "低",
+    medium: "中",
+    high: "高",
+    xhigh: "极高",
   };
 
   const state = {
@@ -99,6 +135,13 @@
     // badge); the webview just paints it. Sent in full on each `sessions` message
     // and patched incrementally by `sessionDot`.
     dots: {},
+    // Left session rail collapsed? Persisted via vscode.setState so it survives
+    // webview reloads within the same VS Code session.
+    sessionRailCollapsed: false,
+    // Left session rail width in px (drag sash); also persisted via setState.
+    sessionRailWidth: SESSION_RAIL_DEFAULT_W,
+    // Show archived sessions under the main rail list.
+    sessionRailShowArchived: false,
     sessionSearch: "",
     renamingSessionId: null,
     // History pagination: the host sends one page at a time (newest-first by last
@@ -169,9 +212,9 @@
     // priming spinner clears (setBusy:false). See the initialized/setBusy cases.
     cliVersion: "",
     startingPhase: false,
-    // Extension version (from initialState) — shown in the gear → About panel.
+    // Extension version (from initialState) — shown in settings → About.
     extVersion: "",
-    // Which gear-popover view is showing ("main"|"model"|"about"|"config"), so an
+    // Which settings-page view is showing ("main"|"about"|"config"), so an
     // async grokUpdateStatus only re-renders About when it's the visible view.
     gearView: "main",
     // Latest `grok update --check` result for the About panel: { checking } while
@@ -197,6 +240,10 @@
     // tool/Grokking indicator is already showing). Toggle lives in gear → Config
     // & debug. The host posts the real value on init and on config change.
     showThinking: false,
+    // grok.showTurnMetrics — per-turn 首字/耗时/tok/s on the agent footer.
+    showTurnMetrics: true,
+    // Saved metrics for session/load restore (drained by afterUserMessage).
+    turnMetricsQueue: [],
     thinkingIndicatorEl: null,
     // Command rows awaiting their output ({command, details, done}) — the
     // host's commandOutput (snapshotted at terminal/release, #41) attaches to
@@ -263,6 +310,8 @@
     copy: `<svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>`,
     check: `<svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>`,
     chevronRight: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>`,
+    chevronLeft: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>`,
+    chevronDown: `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>`,
     clock: `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>`,
     plus: `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>`,
     x: `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>`,
@@ -270,6 +319,9 @@
     download: `<svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V3"/><path d="m7 10 5 5 5-5"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/></svg>`,
     trash: `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg>`,
     pencil: `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/></svg>`,
+    pin: `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/></svg>`,
+    pinFilled: `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/></svg>`,
+    archive: `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="5" x="2" y="3" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/></svg>`,
     mic: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg>`,
     // Animated equalizer bars shown while listening (CSS drives the bounce).
     micWaves: `<span class="mic-waves" aria-hidden="true"><i></i><i></i><i></i><i></i></span>`,
@@ -278,18 +330,18 @@
   const MODE_META = {
     agent: {
       icon: ICON.bot,
-      label: "Agent mode",
-      desc: "Grok acts directly, asking approval only for changes it judges sensitive",
+      label: "代理模式",
+      desc: "Grok 直接执行，仅在它认为敏感的更改时请求批准",
     },
     plan: {
       icon: ICON.listTree,
-      label: "Plan mode",
-      desc: "Grok explores and proposes a plan; file writes and commands are blocked until you approve it",
+      label: "计划模式",
+      desc: "Grok 探索并提出计划；在你批准前会阻止写入文件与执行命令",
     },
     yolo: {
       icon: ICON.zap,
-      label: "Auto accept",
-      desc: "Grok automatically approves all permission requests (YOLO)",
+      label: "自动接受",
+      desc: "Grok 自动批准所有权限请求（YOLO）",
     },
   };
 
@@ -323,11 +375,9 @@
 
   function formatTime(ts) {
     const d = new Date(ts);
-    let h = d.getHours();
+    const h = d.getHours();
     const m = d.getMinutes();
-    const ampm = h >= 12 ? "PM" : "AM";
-    h = h % 12 || 12;
-    return `${h}:${m.toString().padStart(2, "0")} ${ampm}`;
+    return `${h.toString().padStart(2, "0")}:${m.toString().padStart(2, "0")}`;
   }
 
   function updateModeBtn(modeId) {
@@ -341,9 +391,28 @@
   historyBtn.innerHTML = ICON.clock;
   updateSendButton(); // spinner by default — session is starting up (busy+locked)
   gearBtn.innerHTML = ICON.gear;
+  if (settingsBackBtn) settingsBackBtn.innerHTML = ICON.chevronLeft;
+  {
+    const chev = modelChipBtn && modelChipBtn.querySelector(".model-chip-chevron");
+    if (chev) chev.innerHTML = ICON.chevronDown;
+  }
   addBtn.innerHTML = ICON.plus;
-  scrollBottomBtn.innerHTML = `${ICON.arrowDown}<span class="scroll-bottom-label">Scroll to bottom</span>`;
+  scrollBottomBtn.innerHTML = `${ICON.arrowDown}<span class="scroll-bottom-label">滚动到底部</span>`;
+  if (sessionRailNew) sessionRailNew.innerHTML = ICON.squarePen;
   updateModeBtn("agent");
+
+  // Restore session-rail collapse + width preference (webview state, not host).
+  try {
+    const saved = vscode.getState && vscode.getState();
+    if (saved && typeof saved.sessionRailCollapsed === "boolean") {
+      state.sessionRailCollapsed = saved.sessionRailCollapsed;
+    }
+    if (saved && typeof saved.sessionRailWidth === "number" && Number.isFinite(saved.sessionRailWidth)) {
+      state.sessionRailWidth = clampSessionRailWidth(saved.sessionRailWidth);
+    }
+  } catch (_) { /* ignore */ }
+  applySessionRailWidth();
+  applySessionRailCollapsed(false);
 
   // ---------- markdown ----------
 
@@ -361,12 +430,12 @@
   // handled by delegation (see the .expr-btn branch in the click listener), so this
   // can be plain HTML re-created on every streaming frame without leaking handlers.
   function exprActionsHtml(kind) {
-    const label = kind === "mermaid" ? "diagram" : "LaTeX";
+    const label = kind === "mermaid" ? "图表" : "LaTeX";
     return (
       `<span class="expr-actions" contenteditable="false">` +
-        `<button class="expr-btn" type="button" data-expr-act="copy" title="Copy ${label}">${ICON.copy}</button>` +
-        `<button class="expr-btn" type="button" data-expr-act="download" title="Download as PNG / SVG">${ICON.download}</button>` +
-        `<button class="expr-btn" type="button" data-expr-act="open" title="Open as PNG">${ICON.file}</button>` +
+        `<button class="expr-btn" type="button" data-expr-act="copy" title="复制${label}">${ICON.copy}</button>` +
+        `<button class="expr-btn" type="button" data-expr-act="download" title="下载为 PNG / SVG">${ICON.download}</button>` +
+        `<button class="expr-btn" type="button" data-expr-act="open" title="以 PNG 打开">${ICON.file}</button>` +
       `</span>`
     );
   }
@@ -697,7 +766,7 @@
       if (lang === "mermaid") {
         codeBlocks.push(
           `<div class="code-block mermaid-block">` +
-            `<button class="code-copy-btn" type="button" title="Copy code" aria-label="Copy code">` +
+            `<button class="code-copy-btn" type="button" title="复制代码" aria-label="复制代码">` +
               `<span class="code-copy-glyph">${ICON.copy}</span>` +
             `</button>` +
             `<pre class="mermaid-src"><code>${escapeHtml(code).trimEnd()}</code></pre>` +
@@ -711,7 +780,7 @@
         : `<code>${escapeHtml(code).trimEnd()}</code>`;
       codeBlocks.push(
         `<div class="code-block${isDiff ? " diff" : ""}">` +
-          `<button class="code-copy-btn" type="button" title="Copy code" aria-label="Copy code">` +
+          `<button class="code-copy-btn" type="button" title="复制代码" aria-label="复制代码">` +
             `<span class="code-copy-glyph">${ICON.copy}</span>` +
           `</button>` +
           `<pre>${inner}</pre>` +
@@ -952,39 +1021,86 @@
 
   function closePopovers() {
     modePopover.hidden = true;
-    gearPopover.hidden = true;
+    if (modelEffortPopover) modelEffortPopover.hidden = true;
     addPopover.hidden = true;
     historyPopover.hidden = true;
     contextPopover.hidden = true;
   }
 
-  // Context details on demand (donut click). Deliberately minimal: the exact
-  // token line the donut abbreviates. Richer rows pending user feedback on #39.
+  // Context details on demand (donut click): usage line + compact action.
+  // Compact lives here (not settings) — it's a context-management action.
   function openContextPopover() {
     closePopovers();
     contextPopover.innerHTML = "";
-    const info = (label, value) => {
-      const el = document.createElement("div");
-      el.className = "popover-info";
-      el.innerHTML = `<span>${label}</span><span>${escapeHtml(value)}</span>`;
-      contextPopover.appendChild(el);
-    };
+    contextPopover.classList.add("context-popover");
+
+    const info = document.createElement("div");
+    info.className = "popover-info";
     const used = state.usedTokens || 0;
     const pct = Math.min(100, Math.round((used / state.contextWindow) * 100));
-    info("Context used", `${used.toLocaleString()} / ${state.contextWindow.toLocaleString()} (${pct}%)`);
+    info.innerHTML =
+      `<span>已用上下文</span>` +
+      `<span>${escapeHtml(`${used.toLocaleString()} / ${state.contextWindow.toLocaleString()} (${pct}%)`)}</span>`;
+    contextPopover.appendChild(info);
+
     const fine = document.createElement("div");
     fine.className = "popover-fineprint";
-    fine.textContent = "Counted by the CLI at the end of each turn.";
+    fine.textContent = "由 CLI 在每轮结束时统计。";
     contextPopover.appendChild(fine);
+
+    // Compact conversation — frees context by summarizing older turns.
+    const compactBtn = document.createElement("button");
+    compactBtn.type = "button";
+    compactBtn.className = "context-compact-btn";
+    compactBtn.disabled = !!state.busy;
+    compactBtn.title = state.busy
+      ? "会话就绪后可压缩"
+      : "压缩对话：总结较早内容以释放上下文";
+    compactBtn.innerHTML = `<span class="context-compact-label">压缩对话</span>`;
+    compactBtn.onclick = (e) => {
+      e.stopPropagation();
+      if (state.busy) return;
+      vscode.postMessage({ type: "send", text: "/compact", bare: true });
+      closePopovers();
+    };
+    contextPopover.appendChild(compactBtn);
+
     positionPopover(contextPopover, donutEl);
     contextPopover.hidden = false;
   }
 
-  function positionPopover(popover, btn) {
+  /**
+   * Anchor a floating popover above `btn` inside the composer.
+   * @param {"left"|"right"} [opts.align] — left edge of btn (default) or right
+   *   edge of btn (model/effort card sits above a right-side chip).
+   */
+  function positionPopover(popover, btn, opts) {
+    const align = (opts && opts.align) || "left";
     const composerRect = popover.parentElement.getBoundingClientRect();
     const btnRect = btn.getBoundingClientRect();
     popover.style.top = "auto";
     popover.style.bottom = (composerRect.bottom - btnRect.top + 4) + "px";
+
+    if (align === "right") {
+      // Right-align to the button; grow leftward (chip is in toolbar-right).
+      const rightOffset = composerRect.right - btnRect.right;
+      popover.style.left = "auto";
+      popover.style.right = Math.max(0, rightOffset) + "px";
+      requestAnimationFrame(() => {
+        const pr = popover.getBoundingClientRect();
+        if (pr.left < composerRect.left) {
+          popover.style.right = "auto";
+          popover.style.left = "0px";
+        }
+        const pr2 = popover.getBoundingClientRect();
+        if (pr2.right > composerRect.right) {
+          popover.style.left = Math.max(0, composerRect.width - pr2.width) + "px";
+          popover.style.right = "auto";
+        }
+      });
+      return;
+    }
+
     popover.style.left = (btnRect.left - composerRect.left) + "px";
     popover.style.right = "auto";
     requestAnimationFrame(() => {
@@ -1017,13 +1133,38 @@
     popover.style.minWidth = Math.min(280, available) + "px";
   }
 
-  // ---------- gear popover ----------
+  // ---------- settings page (full page; gear opens this, not a popover) ----------
+
+  function settingsOpen() {
+    return !!(settingsPage && !settingsPage.hidden);
+  }
+
+  function setSettingsTitle(title) {
+    if (settingsPageTitle) settingsPageTitle.textContent = title;
+  }
+
+  function openSettingsPage() {
+    if (!settingsPage || !settingsPageBody) return;
+    closePopovers();
+    settingsPage.hidden = false;
+    document.body.classList.add("settings-open");
+    renderSettingsMain();
+  }
+
+  function closeSettingsPage() {
+    if (!settingsPage) return;
+    settingsPage.hidden = true;
+    document.body.classList.remove("settings-open");
+    state.gearView = "main";
+    if (settingsPageBody) settingsPageBody.innerHTML = "";
+    setSettingsTitle("设置");
+  }
 
   function addSection(label) {
     const el = document.createElement("div");
     el.className = "popover-section";
     el.textContent = label;
-    gearPopover.appendChild(el);
+    settingsPageBody.appendChild(el);
   }
 
   function addGearItem(labelHtml, onclick) {
@@ -1031,7 +1172,7 @@
     el.className = "toolbar-popover-item";
     el.innerHTML = labelHtml;
     el.onclick = (e) => { e.stopPropagation(); onclick(); };
-    gearPopover.appendChild(el);
+    settingsPageBody.appendChild(el);
   }
 
   // A non-clickable, muted info row (e.g. version lines in the About panel).
@@ -1039,85 +1180,28 @@
     const el = document.createElement("div");
     el.className = "popover-info";
     el.innerHTML = labelHtml;
-    gearPopover.appendChild(el);
+    settingsPageBody.appendChild(el);
   }
 
-  // A thin horizontal divider between sections of a popover panel.
+  // A thin horizontal divider between sections of a settings panel.
   function addGearSep() {
     const el = document.createElement("div");
     el.className = "popover-sep";
-    gearPopover.appendChild(el);
+    settingsPageBody.appendChild(el);
   }
 
-  function renderGearMain() {
+  function renderSettingsMain() {
     state.gearView = "main";
-    gearPopover.innerHTML = "";
+    setSettingsTitle("设置");
+    settingsPageBody.innerHTML = "";
 
-    // ── Model + effort header ─────────────────────────────────────────────
-    const modelEffortSection = document.createElement("div");
-    modelEffortSection.className = "popover-section popover-section-first";
-    modelEffortSection.textContent = "Model and Effort";
-    gearPopover.appendChild(modelEffortSection);
-
-    // ── Model + effort row ────────────────────────────────────────────────
-    const row = document.createElement("div");
-    row.className = "model-effort-row";
-
-    // Model + effort both restart or race the session, so they're locked while
-    // a turn is in flight or the session is still priming (the hidden primer) —
-    // the same `busy` signal that disables send/submit.
-    const settingsLocked = state.busy;
-
-    const nameBtn = document.createElement("button");
-    nameBtn.className = "toolbar-btn model-name-btn" + (settingsLocked ? " disabled" : "");
-    const modelName = modelDisplayName(state.currentModelId, state.availableModels) || "Grok Build";
-    nameBtn.innerHTML = `<span class="btn-label">${escapeHtml(truncate(modelName, 16))}</span>`;
-    nameBtn.disabled = settingsLocked;
-    nameBtn.title = settingsLocked
-      ? `${modelName} — available once the session is ready`
-      : `${modelName} — click to change`;
-    if (!settingsLocked) nameBtn.onclick = (e) => { e.stopPropagation(); renderModelPicker(); };
-    row.appendChild(nameBtn);
-
-    const dotsEl = document.createElement("span");
-    dotsEl.className = "effort-dots" + (settingsLocked ? " disabled" : "");
-    const currentIdx = EFFORT_LEVELS.indexOf(state.effort);
-    EFFORT_LEVELS.forEach((id, i) => {
-      const dot = document.createElement("span");
-      dot.className = "effort-dot" + (i <= currentIdx ? " active" : "") + (settingsLocked ? " disabled" : "");
-      // Render the dot as a CSS-shaped span (see chat.css). Avoids the classic
-      // ● vs ○ Unicode size mismatch where the empty glyph is visibly larger.
-      dot.title = settingsLocked
-        ? "Available once the session is ready"
-        : (EFFORT_TOOLTIPS[id] || capitalize(id));
-      if (!settingsLocked) dot.onclick = (e) => {
-        e.stopPropagation();
-        state.effort = state.effort === id ? "" : id;
-        vscode.postMessage({ type: "setEffort", level: state.effort });
-        renderGearMain();
-        gearPopover.hidden = false;
-      };
-      dotsEl.appendChild(dot);
-    });
-    row.appendChild(dotsEl);
-    gearPopover.appendChild(row);
-
-    // ── Session ───────────────────────────────────────────────────────────
-    addSection("Session");
-    addGearItem("<span>Compact conversation</span>", () => {
-      vscode.postMessage({ type: "send", text: "/compact", bare: true });
-      closePopovers();
-    });
-
-    // ── Other ─────────────────────────────────────────────────────────────
-    // Collapses the former Config / Account / Debug sections into sub-views
-    // (mirrors the Model picker), keeping the main menu short.
-    addSection("Other");
-    addGearItem('<span>Version &amp; about</span><span class="popover-chevron">›</span>', () => renderAboutPanel(true));
-    addGearItem('<span>Config &amp; debug</span><span class="popover-chevron">›</span>', () => renderConfigDebugPanel());
-    addGearItem("<span>Log out</span>", () => {
+    // Compact is on the context (donut) card — not here.
+    addSection("其他");
+    addGearItem('<span>版本与关于</span><span class="popover-chevron">›</span>', () => renderAboutPanel(true));
+    addGearItem('<span>配置与调试</span><span class="popover-chevron">›</span>', () => renderConfigDebugPanel());
+    addGearItem("<span>退出登录</span>", () => {
       vscode.postMessage({ type: "logout" });
-      closePopovers();
+      closeSettingsPage();
     });
   }
 
@@ -1126,13 +1210,14 @@
   // async grokUpdateStatus reply re-renders this view (check=false) to fill it in.
   function renderAboutPanel(check) {
     state.gearView = "about";
+    setSettingsTitle("版本与关于");
     if (check) {
       state.grokUpdate = { checking: true };
       vscode.postMessage({ type: "checkGrokUpdate" });
     }
     const u = state.grokUpdate || {};
-    gearPopover.innerHTML = "";
-    addGearItem('<span class="popover-back">← Version &amp; about</span>', renderGearMain);
+    settingsPageBody.innerHTML = "";
+    addGearItem('<span class="popover-back">← 返回设置</span>', renderSettingsMain);
 
     // Updates can be paused for compatibility (issue #22): the host blocks moving
     // the CLI onto an unsupported build on Windows.
@@ -1140,12 +1225,12 @@
 
     // ── Compatibility note (top) ─────────────────────────────────────────
     if (blocked) {
-      addGearInfo(`<span class="popover-warn">${escapeHtml(u.policy.note || "Updates are paused for compatibility.")}</span>`);
+      addGearInfo(`<span class="popover-warn">${escapeHtml(u.policy.note || "出于兼容性考虑，更新已暂停。")}</span>`);
       addGearSep();
     }
 
     // ── Versions + update status ─────────────────────────────────────────
-    addGearInfo(`<span>This extension</span><span class="popover-ver">v${escapeHtml(state.extVersion || "?")}</span>`);
+    addGearInfo(`<span>本扩展</span><span class="popover-ver">v${escapeHtml(state.extVersion || "?")}</span>`);
     // The CLI version comes from the ACP `initialize` handshake, but the native
     // Windows build doesn't report one there — so fall back to the version the
     // update check returns (its `currentVersion`), which is always populated.
@@ -1154,17 +1239,17 @@
 
     let statusHtml, canUpdate = false;
     if (u.checking) {
-      statusHtml = '<span class="loading-dots">Checking for updates</span>';
+      statusHtml = '<span class="loading-dots">正在检查更新</span>';
     } else if (blocked) {
-      statusHtml = '<span class="popover-ver">On the supported version</span>';
+      statusHtml = '<span class="popover-ver">已在受支持版本</span>';
     } else if (u.error) {
-      statusHtml = '<span class="popover-warn">Couldn’t check — try updating anyway</span>';
+      statusHtml = '<span class="popover-warn">无法检查 — 仍可尝试更新</span>';
       canUpdate = true;
     } else if (u.updateAvailable) {
-      statusHtml = `<span class="popover-update-avail">Update available · v${escapeHtml(u.latest || "")}</span>`;
+      statusHtml = `<span class="popover-update-avail">有可用更新 · v${escapeHtml(u.latest || "")}</span>`;
       canUpdate = true;
     } else if (u.current || u.latest) {
-      statusHtml = '<span class="popover-ver">CLI is up to date</span>';
+      statusHtml = '<span class="popover-ver">CLI 已是最新</span>';
     } else {
       statusHtml = '<span class="popover-ver">—</span>';
     }
@@ -1175,16 +1260,16 @@
       const btn = document.createElement("div");
       btn.className = "toolbar-popover-item popover-action disabled";
       btn.setAttribute("aria-disabled", "true");
-      btn.innerHTML = "<span>Update Grok Build CLI</span>";
-      gearPopover.appendChild(btn);
+      btn.innerHTML = "<span>更新 Grok Build CLI</span>";
+      settingsPageBody.appendChild(btn);
     } else if (canUpdate) {
       // The update action only appears when there's actually something to do —
       // when the CLI is up to date the grayed status line above says so on its own.
       const btn = document.createElement("div");
       btn.className = "toolbar-popover-item popover-action";
-      btn.innerHTML = "<span>Update Grok Build CLI</span>";
-      btn.onclick = (e) => { e.stopPropagation(); vscode.postMessage({ type: "updateGrok" }); closePopovers(); };
-      gearPopover.appendChild(btn);
+      btn.innerHTML = "<span>更新 Grok Build CLI</span>";
+      btn.onclick = (e) => { e.stopPropagation(); vscode.postMessage({ type: "updateGrok" }); closeSettingsPage(); };
+      settingsPageBody.appendChild(btn);
     }
 
     // ── Unofficial + trademark fine print ────────────────────────────────
@@ -1192,34 +1277,44 @@
     const fine = document.createElement("div");
     fine.className = "popover-fineprint";
     fine.textContent =
-      "Unofficial · community-built · MIT | " +
-      "A VS Code UI for xAI’s Grok Build CLI - not affiliated with or endorsed by xAI. " +
-      "Grok, Grok Build, and xAI are trademarks of xAI; this project uses those names only to describe what it’s compatible with.";
-    gearPopover.appendChild(fine);
+      "非官方 · 社区构建 · MIT | " +
+      "xAI Grok Build CLI 的 VS Code 界面 — 与 xAI 无隶属或背书关系。" +
+      "Grok、Grok Build 与 xAI 为 xAI 商标；本项目仅用于说明兼容性。";
+    settingsPageBody.appendChild(fine);
 
     // ── Repository link (bottom) ─────────────────────────────────────────
     addGearSep();
     const ghIcon = '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" style="vertical-align:-2px"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>';
     addGearItem(
-      `<span class="popover-gh">${ghIcon} phuryn/grok-build-vscode</span><span class="popover-external">↗</span>`,
-      () => { vscode.postMessage({ type: "openUrl", url: "https://github.com/phuryn/grok-build-vscode" }); closePopovers(); },
+      `<span class="popover-gh">${ghIcon} ziyuhaokun/grok-build-vscode</span><span class="popover-external">↗</span>`,
+      () => { vscode.postMessage({ type: "openUrl", url: "https://github.com/ziyuhaokun/grok-build-vscode" }); closeSettingsPage(); },
     );
   }
 
   // Config & debug: the former Config + Debug items behind one sub-view.
   function renderConfigDebugPanel() {
     state.gearView = "config";
-    gearPopover.innerHTML = "";
-    addGearItem('<span class="popover-back">← Config &amp; debug</span>', renderGearMain);
+    setSettingsTitle("配置与调试");
+    settingsPageBody.innerHTML = "";
+    addGearItem('<span class="popover-back">← 返回设置</span>', renderSettingsMain);
     // Show thinking traces (#26) — a switcher; off by default keeps grok's
     // reasoning out of the way, on reveals it (incl. on already-loaded sessions).
     addGearItem(
-      `<span>Show thinking traces</span><span class="popover-switch${state.showThinking ? " on" : ""}" role="switch" aria-checked="${state.showThinking}"><span class="popover-switch-knob"></span></span>`,
+      `<span>显示思考轨迹</span><span class="popover-switch${state.showThinking ? " on" : ""}" role="switch" aria-checked="${state.showThinking}"><span class="popover-switch-knob"></span></span>`,
       () => {
         state.showThinking = !state.showThinking;
         applyThinkingVisibility();
         vscode.postMessage({ type: "setShowThinking", value: state.showThinking });
         renderConfigDebugPanel(); // re-render so the switch reflects the new state
+      },
+    );
+    addGearItem(
+      `<span>显示回合指标</span><span class="popover-switch${state.showTurnMetrics ? " on" : ""}" role="switch" aria-checked="${state.showTurnMetrics}"><span class="popover-switch-knob"></span></span>`,
+      () => {
+        state.showTurnMetrics = !state.showTurnMetrics;
+        applyTurnMetricsVisibility();
+        vscode.postMessage({ type: "setShowTurnMetrics", value: state.showTurnMetrics });
+        renderConfigDebugPanel();
       },
     );
     // Expand tool details (#41/#45) — the persisted default: pre-open every tool
@@ -1229,7 +1324,7 @@
     // setting takes over (last action wins). Persisted via grok.expandCommandOutputs
     // (the key is unchanged — only the user-facing label widened).
     addGearItem(
-      `<span>Expand tool details</span><span class="popover-switch${state.expandCommandOutputs ? " on" : ""}" role="switch" aria-checked="${state.expandCommandOutputs}"><span class="popover-switch-knob"></span></span>`,
+      `<span>展开工具详情</span><span class="popover-switch${state.expandCommandOutputs ? " on" : ""}" role="switch" aria-checked="${state.expandCommandOutputs}"><span class="popover-switch-knob"></span></span>`,
       () => {
         state.expandCommandOutputs = !state.expandCommandOutputs;
         state.toolExpandOverride = null;
@@ -1239,79 +1334,410 @@
       },
     );
     addGearSep();
-    addGearItem('<span>Open global config</span><span class="popover-external">↗</span>', () => {
+    addGearItem('<span>打开全局配置</span><span class="popover-external">↗</span>', () => {
       vscode.postMessage({ type: "openGlobalConfig" });
-      closePopovers();
+      closeSettingsPage();
     });
-    addGearItem('<span>Open project config</span><span class="popover-external">↗</span>', () => {
+    addGearItem('<span>打开项目配置</span><span class="popover-external">↗</span>', () => {
       vscode.postMessage({ type: "openProjectConfig" });
-      closePopovers();
+      closeSettingsPage();
     });
-    addGearItem('<span>MCP servers</span><span class="popover-external">↗</span>', () => {
+    addGearItem('<span>MCP 服务器</span><span class="popover-external">↗</span>', () => {
       vscode.postMessage({ type: "runMcpList" });
-      closePopovers();
+      closeSettingsPage();
     });
-    addGearItem("<span>Show extension logs</span>", () => {
+    addGearItem("<span>显示扩展日志</span>", () => {
       vscode.postMessage({ type: "showLogs" });
-      closePopovers();
+      closeSettingsPage();
     });
     // One-click view relocation (each destination is a direct move into an
     // extension-owned container — see src/view-move.ts). Our own mover because
     // Cursor's primary-side-bar context menu hides the built-in "Move To".
     addGearSep();
-    addSection("Move view");
-    addGearItem(`<span class="popover-icon-label">${ICON.panelRight} To Secondary Side Bar</span>`, () => {
+    addSection("移动视图");
+    addGearItem(`<span class="popover-icon-label">${ICON.panelRight} 到辅助侧栏</span>`, () => {
       vscode.postMessage({ type: "moveView", location: "auxiliarybar" });
-      closePopovers();
+      closeSettingsPage();
     });
-    addGearItem(`<span class="popover-icon-label">${ICON.panelLeft} To Primary Side Bar</span>`, () => {
+    addGearItem(`<span class="popover-icon-label">${ICON.panelLeft} 到主侧栏</span>`, () => {
       vscode.postMessage({ type: "moveView", location: "sidebar" });
-      closePopovers();
+      closeSettingsPage();
     });
-    addGearItem(`<span class="popover-icon-label">${ICON.panelBottom} To Panel</span>`, () => {
+    addGearItem(`<span class="popover-icon-label">${ICON.panelBottom} 到底部面板</span>`, () => {
       vscode.postMessage({ type: "moveView", location: "panel" });
-      closePopovers();
+      closeSettingsPage();
     });
   }
 
-  function renderModelPicker() {
-    state.gearView = "model";
-    gearPopover.innerHTML = "";
-    addGearItem('<span class="popover-back">← Model</span>', renderGearMain);
+  // Open the settings page straight to Version & about (welcome "about" link).
+  function openAboutPanel() {
+    if (settingsOpen() && state.gearView === "about") return;
+    closePopovers();
+    if (!settingsPage || !settingsPageBody) return;
+    settingsPage.hidden = false;
+    document.body.classList.add("settings-open");
+    renderAboutPanel(true);
+  }
+
+  // ---------- model chip + model/effort card ----------
+  // Reference: pill chip ("Model Effort ▾") + floating card with "Advanced ›"
+  // header (model list) and a blue segmented effort slider with white thumb.
+
+  // Whether the model list under "模型 ›" is expanded inside the floating card.
+  let modelPickerExpanded = false;
+
+  function effortShortLabel(level) {
+    if (!level) return "—";
+    return EFFORT_SHORT[level] || capitalize(level);
+  }
+
+  function updateModelChip() {
+    if (!modelChipBtn || !modelChipName || !modelChipEffort) return;
+    const modelName = modelDisplayName(state.currentModelId, state.availableModels)
+      || state.currentModelId
+      || "Grok Build";
+    modelChipName.textContent = truncate(modelName, 14);
+    modelChipEffort.textContent = effortShortLabel(state.effort);
+    const chevron = modelChipBtn.querySelector(".model-chip-chevron");
+    if (chevron && !chevron.innerHTML) chevron.innerHTML = ICON.chevronDown;
+    const locked = state.busy;
+    modelChipBtn.disabled = locked;
+    modelChipBtn.classList.toggle("disabled", locked);
+    const effortTip = state.effort
+      ? (EFFORT_TOOLTIPS[state.effort] || state.effort)
+      : "未设置推理强度";
+    modelChipBtn.title = locked
+      ? `${modelName} ${effortTip} — 会话就绪后可调`
+      : `${modelName} ${effortTip} — 点击调节`;
+  }
+
+  function effortIndexFromState() {
+    const i = EFFORT_LEVELS.indexOf(state.effort);
+    // Empty effort falls back to visual "none" (index 0) so the thumb has a home.
+    return i >= 0 ? i : 0;
+  }
+
+  /** Commit an effort level to host + chip. Optionally skip full card re-render
+   *  (used by the drag slider so pointer capture isn't torn down mid-gesture). */
+  function setEffortLevel(id, opts) {
+    if (state.busy) return;
+    const reRender = !opts || opts.reRender !== false;
+    if (state.effort === id) {
+      updateModelChip();
+      return;
+    }
+    state.effort = id;
+    vscode.postMessage({ type: "setEffort", level: state.effort });
+    updateModelChip();
+    if (reRender && modelEffortPopover && !modelEffortPopover.hidden) {
+      renderModelEffortCard();
+      modelEffortPopover.hidden = false;
+    }
+  }
+
+  /** Read --effort-pad in px from the slider (fallback 10). */
+  function effortPadPx(sliderEl) {
+    const cs = getComputedStyle(sliderEl);
+    const padRaw = cs.getPropertyValue("--effort-pad").trim();
+    return padRaw.endsWith("px") ? parseFloat(padRaw) : 10;
+  }
+
+  /**
+   * Continuous 0..1 position along the padded rail (not snapped).
+   * Used while dragging so the thumb follows the finger fluidly.
+   */
+  function effortTFromClientX(sliderEl, clientX) {
+    const rect = sliderEl.getBoundingClientRect();
+    const pad = effortPadPx(sliderEl);
+    const usable = Math.max(1, rect.width - pad * 2);
+    const x = Math.min(usable, Math.max(0, clientX - rect.left - pad));
+    return x / usable;
+  }
+
+  function effortIndexFromT(t) {
+    const max = EFFORT_LEVELS.length - 1;
+    if (max <= 0) return 0;
+    return Math.round(Math.max(0, Math.min(1, t)) * max);
+  }
+
+  function effortIndexFromClientX(sliderEl, clientX) {
+    return effortIndexFromT(effortTFromClientX(sliderEl, clientX));
+  }
+
+  /** Keep the Sol gradient full-track-width so color doesn't squash as fill grows. */
+  function syncEffortGradWidth(ui) {
+    if (!ui.fillGrad || !ui.rail) return;
+    const w = ui.rail.clientWidth || ui.rail.getBoundingClientRect().width;
+    if (w > 0) ui.fillGrad.style.width = Math.round(w) + "px";
+  }
+
+  /**
+   * Paint fill / thumb / dots / hint without rebuilding the DOM.
+   * `pct` is continuous 0–100 (drag); when omitted, snaps to `idx`.
+   */
+  function paintEffortSlider(ui, idx, pct) {
+    const max = EFFORT_LEVELS.length - 1;
+    const snapped = max > 0 ? (idx / max) * 100 : 0;
+    const usePct = pct != null ? pct : snapped;
+    syncEffortGradWidth(ui);
+    if (ui.fill) ui.fill.style.width = usePct + "%";
+    if (ui.thumb) ui.thumb.style.left = usePct + "%";
+    if (ui.slider) {
+      ui.slider.style.setProperty("--effort-thumb-pct", usePct + "%");
+      ui.slider.setAttribute("aria-valuenow", String(idx));
+      const id = EFFORT_LEVELS[idx];
+      ui.slider.title = EFFORT_TOOLTIPS[id] || effortShortLabel(id);
+    }
+    if (ui.stops) {
+      // "near" = adjacent stop the thumb is sliding past (proximity pulse).
+      const contIdx = max > 0 ? (usePct / 100) * max : 0;
+      ui.stops.forEach((el, i) => {
+        el.classList.toggle("filled", i <= idx);
+        el.classList.toggle("current", i === idx);
+        const dist = Math.abs(contIdx - i);
+        el.classList.toggle("near", dist > 0.15 && dist < 0.85);
+      });
+    }
+    if (ui.hint) {
+      const id = EFFORT_LEVELS[idx] || "none";
+      const next = EFFORT_CAPTIONS[id] || EFFORT_TOOLTIPS[id] || effortShortLabel(id);
+      // During continuous drag just swap text; snap path can soft-flip.
+      if (ui.hint.textContent !== next) {
+        if (pct == null && ui.hint.textContent) {
+          ui.hint.classList.add("flip");
+          requestAnimationFrame(() => {
+            ui.hint.textContent = next;
+            requestAnimationFrame(() => ui.hint.classList.remove("flip"));
+          });
+        } else {
+          ui.hint.textContent = next;
+        }
+      }
+    }
+    // Live preview on the chip while dragging.
+    if (modelChipEffort) {
+      modelChipEffort.textContent = effortShortLabel(EFFORT_LEVELS[idx]);
+    }
+  }
+
+  /** Play spring-settle + pop when landing on a stop. */
+  function playEffortSnap(ui) {
+    if (!ui.slider) return;
+    ui.slider.classList.remove("snap");
+    // Force reflow so re-adding .snap restarts the keyframe animation.
+    void ui.slider.offsetWidth;
+    ui.slider.classList.add("settling", "snap");
+    clearTimeout(ui._snapTimer);
+    ui._snapTimer = setTimeout(() => {
+      ui.slider.classList.remove("settling", "snap");
+    }, 420);
+  }
+
+  /** Wire pointer capture drag + click-to-position on a built slider. */
+  function wireEffortSlider(ui, locked) {
+    if (locked || !ui.slider) return;
+    const max = EFFORT_LEVELS.length - 1;
+    let idx = effortIndexFromState();
+    let dragging = false;
+    let activePointer = null;
+
+    const paintFromT = (t, commit) => {
+      t = Math.max(0, Math.min(1, t));
+      const next = effortIndexFromT(t);
+      idx = next;
+      // Continuous pct while dragging; snapped paint when committing.
+      paintEffortSlider(ui, idx, commit ? null : t * 100);
+      if (commit) setEffortLevel(EFFORT_LEVELS[idx], { reRender: false });
+    };
+
+    ui.slider.addEventListener("pointerdown", (e) => {
+      if (e.button != null && e.button !== 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+      dragging = true;
+      activePointer = e.pointerId;
+      ui.slider.classList.remove("settling", "snap");
+      ui.slider.classList.add("dragging");
+      try { ui.slider.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
+      paintFromT(effortTFromClientX(ui.slider, e.clientX), false);
+    });
+
+    ui.slider.addEventListener("pointermove", (e) => {
+      if (!dragging || e.pointerId !== activePointer) return;
+      e.preventDefault();
+      e.stopPropagation();
+      paintFromT(effortTFromClientX(ui.slider, e.clientX), false);
+    });
+
+    const endDrag = (e) => {
+      if (!dragging) return;
+      if (e && activePointer != null && e.pointerId !== activePointer) return;
+      dragging = false;
+      ui.slider.classList.remove("dragging");
+      let t;
+      if (e) {
+        try { ui.slider.releasePointerCapture(e.pointerId); } catch (_) { /* ignore */ }
+        t = effortTFromClientX(ui.slider, e.clientX);
+      } else {
+        t = max > 0 ? idx / max : 0;
+      }
+      // Snap to nearest stop with spring + pop.
+      paintFromT(t, true);
+      playEffortSnap(ui);
+      activePointer = null;
+    };
+
+    ui.slider.addEventListener("pointerup", endDrag);
+    ui.slider.addEventListener("pointercancel", endDrag);
+    // Keyboard: arrow keys snap between levels (a11y) with the same pop.
+    ui.slider.tabIndex = 0;
+    ui.slider.addEventListener("keydown", (e) => {
+      let next = idx;
+      if (e.key === "ArrowRight" || e.key === "ArrowUp") next = Math.min(max, idx + 1);
+      else if (e.key === "ArrowLeft" || e.key === "ArrowDown") next = Math.max(0, idx - 1);
+      else if (e.key === "Home") next = 0;
+      else if (e.key === "End") next = max;
+      else return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (next === idx) return;
+      idx = next;
+      paintEffortSlider(ui, idx);
+      setEffortLevel(EFFORT_LEVELS[idx], { reRender: false });
+      playEffortSnap(ui);
+    });
+  }
+
+  function renderModelEffortCard() {
+    if (!modelEffortPopover) return;
+    modelEffortPopover.innerHTML = "";
+    const locked = state.busy;
+    modelEffortPopover.classList.toggle("locked", locked);
+
+    // ── "模型 ›" advanced header (reference: "Advanced ›") ────────────────
+    const adv = document.createElement("button");
+    adv.type = "button";
+    adv.className = "model-effort-advanced" + (modelPickerExpanded ? " expanded" : "");
+    adv.innerHTML =
+      `<span class="model-effort-advanced-label">模型</span>` +
+      `<span class="model-effort-advanced-chevron">${ICON.chevronRight}</span>`;
+    adv.title = modelPickerExpanded ? "收起模型列表" : "选择模型";
+    adv.onclick = (e) => {
+      e.stopPropagation();
+      modelPickerExpanded = !modelPickerExpanded;
+      renderModelEffortCard();
+      modelEffortPopover.hidden = false;
+    };
+    modelEffortPopover.appendChild(adv);
+
+    // ── Expandable model list ─────────────────────────────────────────────
+    const list = document.createElement("div");
+    list.className = "model-effort-models" + (modelPickerExpanded ? " open" : "");
     const models = state.availableModels.length
       ? state.availableModels
       : [{ modelId: state.currentModelId || "grok-build", name: state.currentModelId || "grok-build" }];
     for (const m of models) {
       const el = document.createElement("div");
       const active = m.modelId === state.currentModelId;
-      el.className = "toolbar-popover-item" + (active ? " active" : "");
+      el.className = "model-effort-model-item" + (active ? " active" : "");
       el.innerHTML = `<span>${escapeHtml(truncate(m.name || m.modelId, 28))}</span>${active ? '<span class="popover-check">✓</span>' : ""}`;
       el.title = m.modelId;
-      el.onclick = (e) => {
-        e.stopPropagation();
-        vscode.postMessage({ type: "setModel", modelId: m.modelId });
-        closePopovers();
-      };
-      gearPopover.appendChild(el);
+      if (!locked) {
+        el.onclick = (e) => {
+          e.stopPropagation();
+          vscode.postMessage({ type: "setModel", modelId: m.modelId });
+          modelPickerExpanded = false;
+          // Stay open so the user can still tweak effort after switching.
+          renderModelEffortCard();
+          modelEffortPopover.hidden = false;
+          updateModelChip();
+        };
+      }
+      list.appendChild(el);
     }
+    modelEffortPopover.appendChild(list);
+
+    // ── Sol-style effort: caption above + thick gradient track + large thumb ─
+    const idx = effortIndexFromState();
+    const max = EFFORT_LEVELS.length - 1;
+    const effortId = EFFORT_LEVELS[idx] || "none";
+
+    // Caption ABOVE the slider (Sol: purple impact line, not a footer).
+    const hint = document.createElement("div");
+    hint.className = "effort-slider-hint" + (locked ? " locked" : "");
+    hint.textContent = locked
+      ? "会话就绪后可调推理强度"
+      : (EFFORT_CAPTIONS[effortId] || EFFORT_TOOLTIPS[effortId] || effortShortLabel(effortId));
+    modelEffortPopover.appendChild(hint);
+
+    const slider = document.createElement("div");
+    slider.className = "effort-slider" + (locked ? " disabled" : "");
+    slider.setAttribute("role", "slider");
+    slider.setAttribute("aria-valuemin", "0");
+    slider.setAttribute("aria-valuemax", String(max));
+    slider.setAttribute("aria-valuenow", String(idx));
+    slider.setAttribute("aria-label", "推理强度");
+    slider.title = locked
+      ? "会话就绪后可调"
+      : (EFFORT_TOOLTIPS[state.effort] || effortShortLabel(state.effort));
+
+    const rail = document.createElement("div");
+    rail.className = "effort-slider-rail";
+
+    const track = document.createElement("div");
+    track.className = "effort-slider-track";
+    // Clip wrapper (grows with value) + full-width gradient layer (Sol look).
+    const fill = document.createElement("div");
+    fill.className = "effort-slider-fill";
+    const fillGrad = document.createElement("div");
+    fillGrad.className = "effort-slider-fill-grad";
+    fill.appendChild(fillGrad);
+    track.appendChild(fill);
+    rail.appendChild(track);
+
+    const stopsEl = document.createElement("div");
+    stopsEl.className = "effort-slider-stops";
+    const stopNodes = [];
+    // Same percentage axis as the thumb (i/(n-1)*100%) — not flex space-between,
+    // which inset stops by half their width and misaligned with the thumb.
+    EFFORT_LEVELS.forEach((id, i) => {
+      const stop = document.createElement("span");
+      stop.className = "effort-slider-stop";
+      stop.style.left = (max > 0 ? (i / max) * 100 : 0) + "%";
+      stop.setAttribute("aria-hidden", "true");
+      stop.title = EFFORT_TOOLTIPS[id] || capitalize(id);
+      stopsEl.appendChild(stop);
+      stopNodes.push(stop);
+    });
+    rail.appendChild(stopsEl);
+
+    const thumb = document.createElement("div");
+    thumb.className = "effort-slider-thumb";
+    thumb.setAttribute("aria-hidden", "true");
+    rail.appendChild(thumb);
+
+    slider.appendChild(rail);
+    modelEffortPopover.appendChild(slider);
+
+    const ui = { slider, rail, fill, fillGrad, thumb, stops: stopNodes, hint };
+    // Layout first so rail.clientWidth is valid for gradient sizing.
+    requestAnimationFrame(() => {
+      paintEffortSlider(ui, idx);
+      syncEffortGradWidth(ui);
+    });
+    paintEffortSlider(ui, idx);
+    wireEffortSlider(ui, locked);
   }
 
-  function openGearPopover() {
-    if (!gearPopover.hidden) { closePopovers(); return; }
+  function openModelEffortCard() {
+    if (!modelEffortPopover || !modelChipBtn) return;
+    if (!modelEffortPopover.hidden) { closePopovers(); return; }
     closePopovers();
-    renderGearMain();
-    positionPopover(gearPopover, gearBtn);
-    gearPopover.hidden = false;
-  }
-
-  // Open the gear popover straight to the Version & about panel (used by the
-  // welcome screen's "about" link). No-op if it's already showing About.
-  function openAboutPanel() {
-    if (!gearPopover.hidden && state.gearView === "about") return;
-    closePopovers();
-    renderAboutPanel(true);
-    positionPopover(gearPopover, gearBtn);
-    gearPopover.hidden = false;
+    modelPickerExpanded = false;
+    renderModelEffortCard();
+    // Chip lives in toolbar-right; right-align so the card sits above it.
+    positionPopover(modelEffortPopover, modelChipBtn, { align: "right" });
+    modelEffortPopover.hidden = false;
   }
 
   function openModePopover() {
@@ -1349,7 +1775,7 @@
     addPopover.innerHTML = "";
     const item = document.createElement("div");
     item.className = "toolbar-popover-item";
-    item.innerHTML = `<span class="add-item-icon">${ICON.upload}</span><span>Upload from computer</span>`;
+    item.innerHTML = `<span class="add-item-icon">${ICON.upload}</span><span>从电脑上传</span>`;
     item.onclick = (e) => {
       e.stopPropagation();
       vscode.postMessage({ type: "pickFile" });
@@ -1360,27 +1786,427 @@
     addPopover.hidden = false;
   }
 
-  // Dashboard dot in the history dropdown. Gray (the `none` default) at rest; the
-  // labels double as the dot's tooltip (none → no tooltip).
+  // Dashboard status glyph in the history dropdown + left rail.
+  // Labels double as tooltip / aria-label (none → quiet "空闲", no urgency).
   const DOT_LABEL = {
-    working: "Working",
-    "needs-you": "Needs you",
-    unread: "Finished — unopened",
-    error: "Finished with an error — unopened",
+    working: "运行中 — 代理正在工作",
+    "needs-you": "待处理 — 需要你批准或回答",
+    unread: "有新结果 — 尚未打开",
+    error: "出错结束 — 尚未打开",
+  };
+  /** Short rail badge text (empty for idle). */
+  const DOT_SHORT = {
+    working: "运行中",
+    "needs-you": "待处理",
+    unread: "新消息",
+    error: "出错",
   };
 
-  function applySessionDot(dot, value) {
-    const v = DOT_LABEL[value] ? value : "none";
-    dot.className = "history-row-dot dot-" + v;
-    dot.title = DOT_LABEL[value] || "";
+  function normalizeDot(value) {
+    return DOT_LABEL[value] ? value : "none";
   }
 
-  // Cheap incremental update for a single dot when a `sessionDot` arrives while the
-  // popover is open — no full re-render.
+  function applySessionDot(dot, value) {
+    const v = normalizeDot(value);
+    dot.className = "history-row-dot dot-" + v;
+    dot.setAttribute("data-kind", v);
+    const label = DOT_LABEL[value] || "空闲";
+    // Idle stays quiet (no tooltip clutter); active states explain the glyph.
+    if (v === "none") {
+      dot.removeAttribute("title");
+      dot.setAttribute("aria-label", "空闲");
+    } else {
+      dot.title = label;
+      dot.setAttribute("aria-label", label);
+      // Live region for assistive tech when a row flips into working / needs-you.
+      if (v === "working" || v === "needs-you") dot.setAttribute("role", "status");
+      else dot.removeAttribute("role");
+    }
+  }
+
+  function applySessionStatusBadge(el, value) {
+    if (!el) return;
+    const v = normalizeDot(value);
+    el.setAttribute("data-kind", v);
+    el.textContent = DOT_SHORT[v] || "";
+    if (v === "none") {
+      el.removeAttribute("title");
+      el.setAttribute("aria-hidden", "true");
+    } else {
+      el.title = DOT_LABEL[v] || "";
+      el.removeAttribute("aria-hidden");
+    }
+  }
+
+  // Cheap incremental update for a single status glyph when a `sessionDot` arrives
+  // while the popover is open — no full re-render. Also patches the left session rail
+  // (glyph + short status badge).
   function patchSessionDot(id) {
-    const sel = "[data-session-dot=\"" + (window.CSS && CSS.escape ? CSS.escape(id) : id) + "\"]";
-    const dot = historyPopover.querySelector(sel);
-    if (dot) applySessionDot(dot, state.dots[id]);
+    const esc = window.CSS && CSS.escape ? CSS.escape(id) : id;
+    const sel = "[data-session-dot=\"" + esc + "\"]";
+    const badgeSel = "[data-session-status=\"" + esc + "\"]";
+    const val = state.dots[id];
+    if (historyPopover) {
+      const dot = historyPopover.querySelector(sel);
+      if (dot) applySessionDot(dot, val);
+    }
+    if (sessionRailList) {
+      const railDot = sessionRailList.querySelector(sel);
+      if (railDot) applySessionDot(railDot, val);
+      const badge = sessionRailList.querySelector(badgeSel);
+      if (badge) applySessionStatusBadge(badge, val);
+    }
+  }
+
+  function clampSessionRailWidth(px) {
+    const n = Math.round(Number(px));
+    if (!Number.isFinite(n)) return SESSION_RAIL_DEFAULT_W;
+    // Cap by viewport so chat keeps at least ~half the shell when wide enough.
+    let max = SESSION_RAIL_MAX_W;
+    try {
+      const shell = document.querySelector(".app-shell");
+      const shellW = shell ? shell.clientWidth : 0;
+      if (shellW > 0) max = Math.min(max, Math.max(SESSION_RAIL_MIN_W, Math.floor(shellW * 0.55)));
+    } catch (_) { /* ignore */ }
+    return Math.min(max, Math.max(SESSION_RAIL_MIN_W, n));
+  }
+
+  function persistSessionRailState() {
+    try {
+      const prev = (vscode.getState && vscode.getState()) || {};
+      vscode.setState(Object.assign({}, prev, {
+        sessionRailCollapsed: state.sessionRailCollapsed,
+        sessionRailWidth: state.sessionRailWidth,
+      }));
+    } catch (_) { /* ignore */ }
+  }
+
+  function applySessionRailWidth() {
+    const w = clampSessionRailWidth(state.sessionRailWidth);
+    state.sessionRailWidth = w;
+    document.documentElement.style.setProperty("--session-rail-width", w + "px");
+    if (sessionRailResizer) {
+      sessionRailResizer.setAttribute("aria-valuenow", String(w));
+      sessionRailResizer.setAttribute("aria-valuemin", String(SESSION_RAIL_MIN_W));
+      sessionRailResizer.setAttribute("aria-valuemax", String(SESSION_RAIL_MAX_W));
+    }
+  }
+
+  function applySessionRailCollapsed(persist) {
+    document.body.classList.toggle("session-rail-collapsed", !!state.sessionRailCollapsed);
+    // User explicitly expanded after an auto-collapse media query — keep it open
+    // even on a narrow panel until they collapse again.
+    document.body.classList.toggle("session-rail-force", !state.sessionRailCollapsed);
+    if (sessionRailToggle) {
+      // Same icon either way (left-panel glyph); title + aria convey expand/collapse.
+      sessionRailToggle.innerHTML = ICON.panelLeft;
+      sessionRailToggle.title = state.sessionRailCollapsed ? "展开会话栏" : "折叠会话栏";
+      sessionRailToggle.setAttribute("aria-expanded", state.sessionRailCollapsed ? "false" : "true");
+    }
+    if (sessionRail) {
+      sessionRail.setAttribute("aria-hidden", state.sessionRailCollapsed ? "true" : "false");
+    }
+    if (sessionRailResizer) {
+      sessionRailResizer.setAttribute("aria-hidden", state.sessionRailCollapsed ? "true" : "false");
+      sessionRailResizer.tabIndex = state.sessionRailCollapsed ? -1 : 0;
+    }
+    if (persist) persistSessionRailState();
+  }
+
+  function toggleSessionRail() {
+    state.sessionRailCollapsed = !state.sessionRailCollapsed;
+    applySessionRailCollapsed(true);
+  }
+
+  /** Drag / keyboard resize of the left session rail vs chat column. */
+  function wireSessionRailResizer() {
+    if (!sessionRailResizer) return;
+    let dragging = false;
+    let startX = 0;
+    let startW = 0;
+
+    function onMove(e) {
+      if (!dragging) return;
+      const clientX = e.touches && e.touches[0] ? e.touches[0].clientX : e.clientX;
+      const next = clampSessionRailWidth(startW + (clientX - startX));
+      state.sessionRailWidth = next;
+      applySessionRailWidth();
+      e.preventDefault();
+    }
+    function onUp() {
+      if (!dragging) return;
+      dragging = false;
+      document.body.classList.remove("session-rail-resizing");
+      document.removeEventListener("pointermove", onMove);
+      document.removeEventListener("pointerup", onUp);
+      document.removeEventListener("pointercancel", onUp);
+      document.removeEventListener("touchmove", onMove);
+      document.removeEventListener("touchend", onUp);
+      persistSessionRailState();
+    }
+    function onDown(e) {
+      if (state.sessionRailCollapsed) return;
+      if (e.button != null && e.button !== 0) return;
+      dragging = true;
+      startX = e.touches && e.touches[0] ? e.touches[0].clientX : e.clientX;
+      startW = state.sessionRailWidth;
+      document.body.classList.add("session-rail-resizing");
+      document.addEventListener("pointermove", onMove);
+      document.addEventListener("pointerup", onUp);
+      document.addEventListener("pointercancel", onUp);
+      // touch fallback when pointer events are incomplete in some hosts
+      document.addEventListener("touchmove", onMove, { passive: false });
+      document.addEventListener("touchend", onUp);
+      try { sessionRailResizer.setPointerCapture && e.pointerId != null && sessionRailResizer.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
+      e.preventDefault();
+    }
+
+    sessionRailResizer.addEventListener("pointerdown", onDown);
+    sessionRailResizer.addEventListener("dblclick", (e) => {
+      e.preventDefault();
+      state.sessionRailWidth = SESSION_RAIL_DEFAULT_W;
+      applySessionRailWidth();
+      persistSessionRailState();
+    });
+    sessionRailResizer.addEventListener("keydown", (e) => {
+      if (state.sessionRailCollapsed) return;
+      const step = e.shiftKey ? 24 : 12;
+      let next = state.sessionRailWidth;
+      if (e.key === "ArrowLeft") next -= step;
+      else if (e.key === "ArrowRight") next += step;
+      else if (e.key === "Home") next = SESSION_RAIL_MIN_W;
+      else if (e.key === "End") next = SESSION_RAIL_MAX_W;
+      else return;
+      e.preventDefault();
+      state.sessionRailWidth = clampSessionRailWidth(next);
+      applySessionRailWidth();
+      persistSessionRailState();
+    });
+  }
+  wireSessionRailResizer();
+
+  // Priority for the left rail: needs-you → working → error/unread → active → rest.
+  function railDotRank(id) {
+    const d = state.dots[id];
+    if (d === "needs-you") return 0;
+    if (d === "working") return 1;
+    if (d === "error") return 2;
+    if (d === "unread") return 3;
+    if (id === state.activeSessionId) return 4;
+    return 5;
+  }
+
+  function isSessionPinned(s) {
+    return !!(s && typeof s.pinnedAt === "number" && s.pinnedAt > 0);
+  }
+  function isSessionArchived(s) {
+    return !!(s && typeof s.archivedAt === "number" && s.archivedAt > 0);
+  }
+
+  /** Sort: pinned first (newer pin first) → status rank → last activity. */
+  function compareSessionsForUi(a, b) {
+    const ap = isSessionPinned(a) ? 1 : 0;
+    const bp = isSessionPinned(b) ? 1 : 0;
+    if (ap !== bp) return bp - ap;
+    if (ap && bp && (b.pinnedAt || 0) !== (a.pinnedAt || 0)) {
+      return (b.pinnedAt || 0) - (a.pinnedAt || 0);
+    }
+    const ra = railDotRank(a.id);
+    const rb = railDotRank(b.id);
+    if (ra !== rb) return ra - rb;
+    return (b.updatedAt || 0) - (a.updatedAt || 0);
+  }
+
+  function sessionsForRail() {
+    const all = (state.sessions || []).slice();
+    const active = all.filter((s) => !isSessionArchived(s));
+    active.sort(compareSessionsForUi);
+    // Cap the rail so it stays scannable; full history stays in the clock popover.
+    return active.slice(0, 40);
+  }
+
+  function archivedSessionsForRail() {
+    const list = (state.sessions || []).filter(isSessionArchived);
+    list.sort(compareSessionsForUi);
+    return list.slice(0, 40);
+  }
+
+  function makeSessionActionBtn(opts) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "session-rail-action" + (opts.active ? " active" : "") + (opts.danger ? " danger" : "");
+    btn.innerHTML = opts.icon;
+    btn.title = opts.title;
+    btn.setAttribute("aria-label", opts.title);
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      opts.onClick();
+    };
+    return btn;
+  }
+
+  function updateSessionTitle() {
+    if (!sessionTitleEl) return;
+    const id = state.activeSessionId;
+    if (!id) {
+      sessionTitleEl.textContent = "";
+      sessionTitleEl.title = "";
+      return;
+    }
+    const entry = (state.sessions || []).find((s) => s.id === id);
+    const name = (entry && entry.displayName) || "会话";
+    sessionTitleEl.textContent = name;
+    sessionTitleEl.title = name;
+  }
+
+  function appendSessionRailRow(s, opts) {
+    const active = s.id === state.activeSessionId;
+    const pinned = isSessionPinned(s);
+    const archived = isSessionArchived(s);
+    const row = document.createElement("div");
+    row.className = "session-rail-row"
+      + (active ? " active" : "")
+      + (pinned ? " pinned" : "")
+      + (archived ? " archived" : "");
+    row.setAttribute("role", "listitem");
+    row.setAttribute("data-session-id", s.id);
+    row.title = s.displayName || "未命名";
+
+    const main = document.createElement("button");
+    main.type = "button";
+    main.className = "session-rail-row-main";
+    main.title = s.displayName || "未命名";
+
+    const dot = document.createElement("span");
+    dot.setAttribute("data-session-dot", s.id);
+    applySessionDot(dot, state.dots[s.id]);
+    main.appendChild(dot);
+
+    if (pinned && !archived) {
+      const pinMark = document.createElement("span");
+      pinMark.className = "session-rail-pin-mark";
+      pinMark.innerHTML = ICON.pinFilled;
+      pinMark.setAttribute("aria-hidden", "true");
+      main.appendChild(pinMark);
+    }
+
+    const name = document.createElement("span");
+    name.className = "session-rail-row-name";
+    name.textContent = s.displayName || "未命名";
+    main.appendChild(name);
+
+    const badge = document.createElement("span");
+    badge.className = "session-rail-status";
+    badge.setAttribute("data-session-status", s.id);
+    applySessionStatusBadge(badge, state.dots[s.id]);
+    main.appendChild(badge);
+
+    main.onclick = () => {
+      if (active) return;
+      vscode.postMessage({ type: "resumeSession", id: s.id });
+    };
+    row.appendChild(main);
+
+    const actions = document.createElement("div");
+    actions.className = "session-rail-actions";
+    if (!archived) {
+      actions.appendChild(makeSessionActionBtn({
+        icon: pinned ? ICON.pinFilled : ICON.pin,
+        title: pinned ? "取消置顶" : "置顶",
+        active: pinned,
+        onClick: () => vscode.postMessage({ type: "pinSession", id: s.id, pinned: !pinned }),
+      }));
+    }
+    actions.appendChild(makeSessionActionBtn({
+      icon: ICON.archive,
+      title: archived ? "取消归档" : "归档",
+      active: archived,
+      onClick: () => vscode.postMessage({ type: "archiveSession", id: s.id, archived: !archived }),
+    }));
+    row.appendChild(actions);
+    sessionRailList.appendChild(row);
+  }
+
+  function renderSessionRail() {
+    if (!sessionRailList) return;
+    sessionRailList.innerHTML = "";
+    const list = sessionsForRail();
+    const archived = archivedSessionsForRail();
+    if (list.length === 0 && archived.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "session-rail-empty";
+      empty.textContent = "暂无会话";
+      sessionRailList.appendChild(empty);
+      updateSessionTitle();
+      updateSessionRailArchiveToggle(0);
+      return;
+    }
+    for (const s of list) appendSessionRailRow(s);
+    if (archived.length > 0 && state.sessionRailShowArchived) {
+      const sep = document.createElement("div");
+      sep.className = "session-rail-section";
+      const sepLabel = document.createElement("span");
+      sepLabel.textContent = "已归档";
+      sep.appendChild(sepLabel);
+      const clearArch = document.createElement("button");
+      clearArch.type = "button";
+      clearArch.className = "session-rail-section-action";
+      clearArch.textContent = "一键删除";
+      clearArch.title = "永久删除全部已归档会话";
+      clearArch.onclick = (e) => {
+        e.stopPropagation();
+        vscode.postMessage({ type: "clearArchivedSessions" });
+      };
+      sep.appendChild(clearArch);
+      sessionRailList.appendChild(sep);
+      for (const s of archived) appendSessionRailRow(s, { archived: true });
+    }
+    updateSessionRailArchiveToggle(archived.length);
+    updateSessionTitle();
+  }
+
+  function updateSessionRailArchiveToggle(count) {
+    const footer = sessionRailHistory && sessionRailHistory.parentElement;
+    if (!footer) return;
+    let btn = document.getElementById("session-rail-archived");
+    let clearBtn = document.getElementById("session-rail-clear-archived");
+    if (count <= 0) {
+      if (btn) btn.remove();
+      if (clearBtn) clearBtn.remove();
+      state.sessionRailShowArchived = false;
+      return;
+    }
+    if (!btn) {
+      btn = document.createElement("button");
+      btn.id = "session-rail-archived";
+      btn.type = "button";
+      btn.className = "session-rail-link";
+      footer.appendChild(btn);
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        state.sessionRailShowArchived = !state.sessionRailShowArchived;
+        renderSessionRail();
+      };
+    }
+    const open = !!state.sessionRailShowArchived;
+    btn.textContent = open ? `隐藏归档（${count}）` : `归档（${count}）`;
+    btn.title = open ? "收起已归档会话" : "显示已归档会话";
+
+    // Always available when there are archived sessions (no need to expand first).
+    if (!clearBtn) {
+      clearBtn = document.createElement("button");
+      clearBtn.id = "session-rail-clear-archived";
+      clearBtn.type = "button";
+      clearBtn.className = "session-rail-link session-rail-link-danger";
+      footer.appendChild(clearBtn);
+      clearBtn.onclick = (e) => {
+        e.stopPropagation();
+        vscode.postMessage({ type: "clearArchivedSessions" });
+      };
+    }
+    clearBtn.textContent = `删除全部归档（${count}）`;
+    clearBtn.title = "永久删除全部已归档会话（不可恢复）";
   }
 
   // Live references to the popover's list + footer, so a `sessions` message can repaint
@@ -1405,7 +2231,7 @@
     const search = document.createElement("input");
     search.type = "text";
     search.className = "history-search";
-    search.placeholder = "Search sessions…";
+    search.placeholder = "搜索会话…";
     search.value = state.sessionSearch;
     search.oninput = () => {
       state.sessionSearch = search.value;
@@ -1440,8 +2266,8 @@
     footer.hidden = true;
     const clearBtn = document.createElement("button");
     clearBtn.className = "history-clear-all";
-    clearBtn.innerHTML = ICON.trash + "<span>Clear all history</span>";
-    clearBtn.title = "Delete all sessions in this workspace's history";
+    clearBtn.innerHTML = ICON.trash + "<span>清除全部历史</span>";
+    clearBtn.title = "删除此工作区的全部历史会话";
     clearBtn.onclick = (e) => {
       e.stopPropagation();
       vscode.postMessage({ type: "clearAllSessions" });
@@ -1454,12 +2280,18 @@
     renderSessionRows();
   }
 
+  /** History popover never lists archived sessions (rail has its own archived section). */
+  function sessionsForHistory() {
+    return (state.sessions || []).filter((s) => !isSessionArchived(s));
+  }
+
   function updateHistoryFooter() {
     if (!historyFooterEl) return;
     // A non-active session exists if a loaded row isn't the active one, or there are
     // still-unloaded later pages (which sort after the active session, so they're all
-    // non-active by construction).
-    const loadedClearable = state.sessions.some((s) => s.id !== state.activeSessionId);
+    // non-active by construction). Archived sessions are excluded from history.
+    const visible = sessionsForHistory();
+    const loadedClearable = visible.some((s) => s.id !== state.activeSessionId);
     const moreUnloaded = state.sessionTotal > state.sessions.length;
     historyFooterEl.hidden = !(loadedClearable || moreUnloaded);
   }
@@ -1468,17 +2300,18 @@
     const list = historyListEl;
     if (!list) return;
     list.innerHTML = "";
-    if (state.sessions.length === 0) {
+    const visible = sessionsForHistory();
+    if (visible.length === 0) {
       const empty = document.createElement("div");
       empty.className = "history-empty";
-      empty.textContent = state.sessionSearch.trim() ? "No matches." : "No sessions yet.";
+      empty.textContent = state.sessionSearch.trim() ? "无匹配项。" : "暂无会话。";
       list.appendChild(empty);
     } else {
-      for (const s of state.sessions) list.appendChild(renderSessionRow(s));
+      for (const s of visible) list.appendChild(renderSessionRow(s));
       if (state.sessionHasMore) {
         const more = document.createElement("div");
         more.className = "history-more";
-        more.textContent = state.sessionLoading ? "Loading…" : "Scroll for more";
+        more.textContent = state.sessionLoading ? "加载中…" : "滚动加载更多";
         list.appendChild(more);
       }
     }
@@ -1525,14 +2358,14 @@
       } else {
         const name = document.createElement("div");
         name.className = "history-row-name";
-        name.textContent = s.displayName || "Untitled";
+        name.textContent = s.displayName || "未命名";
         name.title = s.rawSummary || s.displayName || "";
         main.appendChild(name);
 
         const meta = document.createElement("div");
         meta.className = "history-row-meta";
         const parts = [];
-        if (s.numMessages) parts.push(`${s.numMessages} msg`);
+        if (s.numMessages) parts.push(`${s.numMessages} 条消息`);
         parts.push(formatRelativeTime(s.updatedAt));
         meta.textContent = parts.join(" · ");
         main.appendChild(meta);
@@ -1550,10 +2383,35 @@
 
       const actions = document.createElement("div");
       actions.className = "history-row-actions";
+      const pinned = isSessionPinned(s);
+      const archived = isSessionArchived(s);
+      if (pinned || archived) {
+        row.classList.add(pinned ? "pinned" : "archived");
+      }
+      if (!archived) {
+        const pinBtn = document.createElement("button");
+        pinBtn.className = "history-action-btn" + (pinned ? " active" : "");
+        pinBtn.innerHTML = pinned ? ICON.pinFilled : ICON.pin;
+        pinBtn.title = pinned ? "取消置顶" : "置顶";
+        pinBtn.onclick = (e) => {
+          e.stopPropagation();
+          vscode.postMessage({ type: "pinSession", id: s.id, pinned: !pinned });
+        };
+        actions.appendChild(pinBtn);
+      }
+      const archBtn = document.createElement("button");
+      archBtn.className = "history-action-btn" + (archived ? " active" : "");
+      archBtn.innerHTML = ICON.archive;
+      archBtn.title = archived ? "取消归档" : "归档";
+      archBtn.onclick = (e) => {
+        e.stopPropagation();
+        vscode.postMessage({ type: "archiveSession", id: s.id, archived: !archived });
+      };
+      actions.appendChild(archBtn);
       const renameBtn = document.createElement("button");
       renameBtn.className = "history-action-btn";
       renameBtn.innerHTML = ICON.pencil;
-      renameBtn.title = "Rename";
+      renameBtn.title = "重命名";
       renameBtn.onclick = (e) => {
         e.stopPropagation();
         state.renamingSessionId = s.id;
@@ -1566,7 +2424,7 @@
         const delBtn = document.createElement("button");
         delBtn.className = "history-action-btn history-action-danger";
         delBtn.innerHTML = ICON.trash;
-        delBtn.title = "Delete";
+        delBtn.title = "删除";
         delBtn.onclick = (e) => {
           e.stopPropagation();
           vscode.postMessage({ type: "deleteSession", id: s.id, name: s.displayName });
@@ -1617,7 +2475,7 @@
       const onb = $("welcome-onboarding");
       if (onb) onb.innerHTML = "";
       const ver = $("welcome-version");
-      if (ver) { ver.classList.add("loading-dots"); ver.textContent = "Starting"; }
+      if (ver) { ver.classList.add("loading-dots"); ver.textContent = "正在启动"; }
     }
     state.welcomeVisible = true;
     state.pendingDiffByToolCallId.clear();
@@ -1638,6 +2496,7 @@
     state.replaying = false;
     state.planHistoryQueue = [];
     state.permissionHistoryQueue = [];
+    state.turnMetricsQueue = [];
     state.userMsgCount = 0;
     state.suppressReplayTurn = false;
     state.skipUserBubble = false;
@@ -1672,34 +2531,34 @@
     const ver = $("welcome-version");
     if (!onb) return;
     if (mode === "missing-cli") {
-      if (ver) { ver.classList.remove("loading-dots"); ver.textContent = "CLI not installed"; }
+      if (ver) { ver.classList.remove("loading-dots"); ver.textContent = "未安装 CLI"; }
       const installCmd = info.platform === "win32"
         ? "irm https://x.ai/cli/install.ps1 | iex"
         : "curl -fsSL https://x.ai/cli/install.sh | bash";
       onb.innerHTML =
         `<div class="onb">` +
-          `<p class="onb-heading">Install the Grok CLI</p>` +
+          `<p class="onb-heading">安装 Grok CLI</p>` +
           `<div class="onb-cmd">` +
             `<code>${installCmd}</code>` +
-            `<button class="onb-copy" type="button" title="Copy" data-cmd="${installCmd}">${ICON.copy}</button>` +
+            `<button class="onb-copy" type="button" title="复制" data-cmd="${installCmd}">${ICON.copy}</button>` +
           `</div>` +
-          `<button class="onb-action" type="button" data-act="runInstall">Open terminal &amp; run</button>` +
-          `<button class="onb-action onb-secondary" type="button" data-act="recheck">Re-check connection</button>` +
+          `<button class="onb-action" type="button" data-act="runInstall">打开终端并运行</button>` +
+          `<button class="onb-action onb-secondary" type="button" data-act="recheck">重新检查连接</button>` +
         `</div>`;
     } else if (mode === "auth-required") {
-      if (ver) { ver.classList.remove("loading-dots"); ver.textContent = "Authentication required"; }
+      if (ver) { ver.classList.remove("loading-dots"); ver.textContent = "需要登录"; }
       onb.innerHTML =
         `<div class="onb">` +
-          `<p class="onb-heading">Sign in to continue</p>` +
-          `<p class="onb-desc"><strong>SuperGrok or X Premium+ subscription</strong> &mdash; either unlocks the <em>Grok Build</em> entitlement.</p>` +
-          `<button class="onb-action" type="button" data-act="runLogin">Open terminal &amp; run <code>grok login</code></button>` +
-          `<p class="onb-or">or</p>` +
-          `<p class="onb-desc"><strong>API key</strong> &mdash; pay per token. Get a key at <a href="https://console.x.ai" class="onb-link">console.x.ai</a>, then add to your shell or a workspace <code>.env</code>:</p>` +
+          `<p class="onb-heading">登录以继续</p>` +
+          `<p class="onb-desc"><strong>SuperGrok 或 X Premium+ 订阅</strong> &mdash; 任一均可解锁 <em>Grok Build</em> 权限。</p>` +
+          `<button class="onb-action" type="button" data-act="runLogin">打开终端并运行 <code>grok login</code></button>` +
+          `<p class="onb-or">或</p>` +
+          `<p class="onb-desc"><strong>API 密钥</strong> &mdash; 按 token 计费。在 <a href="https://console.x.ai" class="onb-link">console.x.ai</a> 获取密钥，然后写入 shell 或工作区 <code>.env</code>：</p>` +
           `<div class="onb-cmd">` +
             `<code>XAI_API_KEY=your-key-here</code>` +
-            `<button class="onb-copy" type="button" title="Copy" data-cmd="XAI_API_KEY=">${ICON.copy}</button>` +
+            `<button class="onb-copy" type="button" title="复制" data-cmd="XAI_API_KEY=">${ICON.copy}</button>` +
           `</div>` +
-          `<button class="onb-action onb-secondary" type="button" data-act="recheck">Re-check connection</button>` +
+          `<button class="onb-action onb-secondary" type="button" data-act="recheck">重新检查连接</button>` +
         `</div>`;
     } else {
       onb.innerHTML = "";
@@ -1710,14 +2569,14 @@
     el.classList.add("collapsible");
     const expandBtn = document.createElement("button");
     expandBtn.className = "msg-expand-btn";
-    expandBtn.textContent = "Show more";
+    expandBtn.textContent = "显示更多";
     container.appendChild(expandBtn);
     expandBtn.onclick = () => {
       el.classList.remove("collapsible");
       expandBtn.style.display = "none";
       const collapseBtn = document.createElement("button");
       collapseBtn.className = "msg-collapse-btn";
-      collapseBtn.textContent = "Show less";
+      collapseBtn.textContent = "收起";
       container.appendChild(collapseBtn);
       collapseBtn.onclick = () => {
         el.classList.add("collapsible");
@@ -1736,7 +2595,7 @@
   function makeMsgChipTag(pathStr, chip) {
     const tag = document.createElement("span");
     tag.className = "msg-chip";
-    const name = chip?.imageIndex != null ? `Image #${chip.imageIndex}` : (pathStr.split(/[\\/]/).pop() || pathStr);
+    const name = chip?.imageIndex != null ? `图片 #${chip.imageIndex}` : (pathStr.split(/[\\/]/).pop() || pathStr);
     const icon = chip?.imageIndex != null ? ICON.image : ICON.file;
     const hasSel = chip?.selectionStart && chip?.selectionEnd;
     const range = hasSel
@@ -1746,8 +2605,8 @@
       : "";
     const lineNote = hasSel
       ? chip.selectionStart === chip.selectionEnd
-        ? ` (line ${chip.selectionStart})`
-        : ` (lines ${chip.selectionStart}-${chip.selectionEnd})`
+        ? `（第 ${chip.selectionStart} 行）`
+        : `（第 ${chip.selectionStart}-${chip.selectionEnd} 行）`
       : "";
     tag.innerHTML = icon + `<span>${escapeHtml(name + range)}</span>`;
     tag.title = (chip?.originRelPath || chip?.path || pathStr) + lineNote;
@@ -1786,7 +2645,7 @@
       const copyBtn = document.createElement("button");
       copyBtn.className = "msg-action-btn msg-copy-btn";
       copyBtn.type = "button";
-      copyBtn.title = "Copy message";
+      copyBtn.title = "复制消息";
       copyBtn.innerHTML = `<span class="msg-action-glyph">${ICON.copy}</span>`;
       const ts = document.createElement("span");
       ts.className = "msg-timestamp";
@@ -1803,7 +2662,12 @@
         // with the end-of-turn time). Code blocks keep their own copy buttons.
         actions.hidden = true;
         if (state.turnAgentActionsEl && state.turnAgentActionsEl !== actions) {
-          state.turnAgentActionsEl.remove();
+          // Drop intermediate-segment footer + any metrics card on that segment
+          // (only the turn's final agent bubble keeps the always-on metrics card).
+          const prev = state.turnAgentActionsEl;
+          const prevMsg = prev.parentElement;
+          prev.remove();
+          prevMsg?.querySelector(":scope > .msg-turn-metrics-card")?.remove();
         }
         state.turnAgentActionsEl = actions;
       } else {
@@ -1824,35 +2688,150 @@
     return body;
   }
 
+  // --- per-turn metrics (mirrors src/turn-metrics.ts formatters) ---
+  function formatDurationMs(ms) {
+    if (!Number.isFinite(ms) || ms < 0) return "—";
+    if (ms < 1000) return `${Math.max(1, Math.round(ms))}ms`;
+    const s = ms / 1000;
+    if (s < 10) return `${s.toFixed(1)}s`;
+    if (s < 60) return `${Math.round(s)}s`;
+    const m = Math.floor(s / 60);
+    const rem = Math.round(s % 60);
+    return `${m}:${String(rem).padStart(2, "0")}`;
+  }
+  function formatTokensPerSec(rate) {
+    if (!Number.isFinite(rate) || rate <= 0) return "—";
+    if (rate >= 100) return `${Math.round(rate)}`;
+    return rate.toFixed(1);
+  }
+  function formatTurnMetricsTooltip(m) {
+    if (!m) return "";
+    const lines = [];
+    if (m.ttftMs != null) lines.push(`首字耗时：${formatDurationMs(m.ttftMs)}`);
+    if (m.durationMs != null) lines.push(`对话耗时：${formatDurationMs(m.durationMs)}`);
+    if (m.generationMs != null) lines.push(`生成窗口：${formatDurationMs(m.generationMs)}（已扣除工具/本地处理与等待）`);
+    if (m.tokensPerSec != null) lines.push(`吞吐：${formatTokensPerSec(m.tokensPerSec)} tok/s`);
+    const fmt = (n) => (n != null && Number.isFinite(n) ? Math.round(n).toLocaleString("zh-CN") : null);
+    const bits = [
+      fmt(m.inputTokens) != null ? `输入 ${fmt(m.inputTokens)}` : null,
+      fmt(m.outputTokens) != null ? `输出 ${fmt(m.outputTokens)}` : null,
+      fmt(m.reasoningTokens) != null ? `思考 ${fmt(m.reasoningTokens)}` : null,
+      fmt(m.cachedReadTokens) != null ? `缓存读 ${fmt(m.cachedReadTokens)}` : null,
+    ].filter(Boolean);
+    if (bits.length) lines.push(bits.join(" · "));
+    if (m.totalTokens != null) lines.push(`上下文 ${fmt(m.totalTokens)}`);
+    if (m.modelId) lines.push(`模型 ${m.modelId}`);
+    if (m.cancelled) lines.push("本轮已取消");
+    return lines.join("\n");
+  }
+
+  function takeRestoredTurnMetrics(afterUserMessage) {
+    if (!state.turnMetricsQueue.length) return null;
+    const idx = state.turnMetricsQueue.findIndex(
+      (m) => m && m.afterUserMessage === afterUserMessage,
+    );
+    if (idx < 0) return null;
+    return state.turnMetricsQueue.splice(idx, 1)[0];
+  }
+
+  function metricItem(label, value) {
+    const item = document.createElement("span");
+    item.className = "msg-metric-pill";
+    const k = document.createElement("span");
+    k.className = "msg-metric-k";
+    k.textContent = label;
+    const v = document.createElement("span");
+    v.className = "msg-metric-v";
+    v.textContent = value;
+    item.appendChild(k);
+    item.appendChild(document.createTextNode(" "));
+    item.appendChild(v);
+    return item;
+  }
+
+  /**
+   * Always-visible metrics meta-line under the agent turn (sibling of
+   * msg-actions — .msg-actions is hover-only and would hide children).
+   * Quiet inline text, not a bordered card.
+   */
+  function applyTurnMetricsToFooter(actionsEl, metrics) {
+    if (!actionsEl || !metrics) return;
+    const msgEl = actionsEl.parentElement;
+    if (!msgEl) return;
+    let card = msgEl.querySelector(":scope > .msg-turn-metrics-card");
+    if (!card) {
+      card = document.createElement("div");
+      card.className = "msg-turn-metrics-card";
+      card.setAttribute("role", "status");
+      // After actions so copy/timestamp stay above; line is always painted.
+      if (actionsEl.nextSibling) msgEl.insertBefore(card, actionsEl.nextSibling);
+      else msgEl.appendChild(card);
+    }
+    card.replaceChildren();
+    if (metrics.ttftMs != null) {
+      card.appendChild(metricItem("首字", formatDurationMs(metrics.ttftMs)));
+    }
+    if (metrics.durationMs != null) {
+      card.appendChild(metricItem("耗时", formatDurationMs(metrics.durationMs)));
+    }
+    if (metrics.tokensPerSec != null) {
+      card.appendChild(metricItem("吞吐", `${formatTokensPerSec(metrics.tokensPerSec)} tok/s`));
+    }
+    if (metrics.cancelled) {
+      card.appendChild(metricItem("状态", "已取消"));
+    }
+    // If nothing to show (e.g. empty compact edge), drop the shell.
+    if (!card.childElementCount) {
+      card.remove();
+      return;
+    }
+    card.title = formatTurnMetricsTooltip(metrics);
+    card.hidden = !state.showTurnMetrics;
+  }
+
+  function applyTurnMetricsVisibility() {
+    document.querySelectorAll(".msg-turn-metrics-card").forEach((el) => {
+      el.hidden = !state.showTurnMetrics;
+    });
+  }
+
   // Show the current turn's (single) agent footer — called at every turn-end
   // signal: promptComplete/agentEnd/agentError live, the next user message or
   // replay end on restore. Stamps the time at reveal so it reads as the
   // turn's END time, not the moment the last segment happened to start.
-  function revealTurnFooter() {
+  // Optional `metrics` (live promptComplete) or restored queue by userMsgCount.
+  function revealTurnFooter(metrics) {
     const a = state.turnAgentActionsEl;
-    if (!a || !a.hidden) return;
+    if (!a || !a.hidden) {
+      // Footer already visible (e.g. second end signal) — still attach metrics.
+      if (a && metrics) applyTurnMetricsToFooter(a, metrics);
+      return;
+    }
     a.hidden = false;
     const ts = a.querySelector(".msg-timestamp");
     if (ts && !state.replaying) ts.textContent = formatTime(Date.now());
+    let m = metrics;
+    if (!m && state.replaying) m = takeRestoredTurnMetrics(state.userMsgCount);
+    if (m) applyTurnMetricsToFooter(a, m);
   }
 
   const TOOL_VERB = {
-    read_file: "Read", file_read: "Read",
-    write_file: "Write", file_write: "Write", write: "Write",
-    bash: "Run", execute: "Run", run_command: "Run", run_terminal_command: "Run",
-    shell: "Run", run_bash: "Run",
-    list_dir: "List", list_directory: "List",
-    search_files: "Search", grep: "Search", ripgrep: "Search",
-    search_replace: "Edit", edit_file: "Edit", str_replace: "Edit",
-    web_search: "Web search", search_web: "Web search",
-    web_fetch: "Fetch", webfetch: "Fetch",
+    read_file: "读取", file_read: "读取",
+    write_file: "写入", file_write: "写入", write: "写入",
+    bash: "运行", execute: "运行", run_command: "运行", run_terminal_command: "运行",
+    shell: "运行", run_bash: "运行",
+    list_dir: "列出", list_directory: "列出",
+    search_files: "搜索", grep: "搜索", ripgrep: "搜索",
+    search_replace: "编辑", edit_file: "编辑", str_replace: "编辑",
+    web_search: "网页搜索", search_web: "网页搜索",
+    web_fetch: "抓取", webfetch: "抓取",
   };
 
   // Verb by ACP kind — the fallback when the tool name isn't in TOOL_VERB (a tool
   // we didn't predict still gets a sensible verb from its kind).
   const KIND_VERB = {
-    read: "Read", search: "Search", edit: "Edit", write: "Write",
-    delete: "Delete", execute: "Run", fetch: "Generate",
+    read: "读取", search: "搜索", edit: "编辑", write: "写入",
+    delete: "删除", execute: "运行", fetch: "生成",
   };
 
   function toolName(call) {
@@ -1868,7 +2847,7 @@
   }
   function prettyPath(p) {
     if (!p) return "";
-    if (p === "." || p === "./") return "root folder";
+    if (p === "." || p === "./") return "根目录";
     return p.split("/").pop() || p;
   }
   // Directory target for a list_dir call. Unlike prettyPath (basename only, right
@@ -1880,7 +2859,7 @@
   function prettyDir(p) {
     if (!p) return "";
     let s = String(p).replace(/\\/g, "/").replace(/\/+$/, "").replace(/^\.\//, "");
-    if (s === "" || s === ".") return "root folder";
+    if (s === "" || s === ".") return "根目录";
     const isAbs = s.startsWith("/") || /^[A-Za-z]:\//.test(s);
     if (isAbs) s = s.split("/").pop();
     return s + "/";
@@ -1923,9 +2902,9 @@
       case "execute": return "command";
     }
     const v = TOOL_VERB[n];
-    if (v === "Read" || v === "List" || v === "Search") return "explore";
-    if (v === "Edit" || v === "Write") return "edit";
-    if (v === "Web search" || v === "Fetch") return "web";
+    if (v === "读取" || v === "列出" || v === "搜索") return "explore";
+    if (v === "编辑" || v === "写入") return "edit";
+    if (v === "网页搜索" || v === "抓取") return "web";
     return "command";
   }
   function summarizeTools(calls) {
@@ -1941,13 +2920,13 @@
     }
     n.edit = editFiles.size;
     const parts = [];
-    if (n.explore) parts.push(`explored ${n.explore} item${n.explore === 1 ? "" : "s"}`);
-    if (n.edit) parts.push(`edited ${n.edit} file${n.edit === 1 ? "" : "s"}`);
-    if (n.delete) parts.push(`deleted ${n.delete} file${n.delete === 1 ? "" : "s"}`);
-    if (n.generate) parts.push(`generated ${n.generate} item${n.generate === 1 ? "" : "s"}`);
-    if (n.web) parts.push("searched web");
-    if (n.command) parts.push(`ran ${n.command} command${n.command === 1 ? "" : "s"}`);
-    return parts.length ? parts.join(", ").replace(/^./, (c) => c.toUpperCase()) : "Tool calls";
+    if (n.explore) parts.push(`探索了 ${n.explore} 项`);
+    if (n.edit) parts.push(`编辑了 ${n.edit} 个文件`);
+    if (n.delete) parts.push(`删除了 ${n.delete} 个文件`);
+    if (n.generate) parts.push(`生成了 ${n.generate} 项`);
+    if (n.web) parts.push("搜索了网页");
+    if (n.command) parts.push(`运行了 ${n.command} 条命令`);
+    return parts.length ? parts.join("，") : "工具调用";
   }
 
   function inProgressLabel(call) {
@@ -1955,24 +2934,24 @@
     const kind = toolKind(call);
     const filePath = toolFilePath(call);
     if (/^(list_dir|list_directory)$/.test(name)) {
-      return filePath ? `Listing ${prettyDir(filePath)}` : "Listing files";
+      return filePath ? `正在列出 ${prettyDir(filePath)}` : "正在列出文件";
     }
     if (/^(read_file|file_read)$/.test(name) || kind === "read") {
-      return filePath ? `Reading ${prettyPath(filePath)}` : "Reading file";
+      return filePath ? `正在读取 ${prettyPath(filePath)}` : "正在读取文件";
     }
-    if (/^(web_search|search_web)$/.test(name)) return "Searching web";
-    if (/^(web_fetch|webfetch)$/.test(name)) return "Fetching page";
-    if (/^(grep|ripgrep|search_files)$/.test(name) || kind === "search") return "Searching";
+    if (/^(web_search|search_web)$/.test(name)) return "正在搜索网页";
+    if (/^(web_fetch|webfetch)$/.test(name)) return "正在抓取页面";
+    if (/^(grep|ripgrep|search_files)$/.test(name) || kind === "search") return "正在搜索";
     if (/^(write_file|file_write|write|edit_file|search_replace|str_replace)$/.test(name) || kind === "edit" || kind === "write") {
-      return filePath ? `Editing ${prettyPath(filePath)}` : "Editing file";
+      return filePath ? `正在编辑 ${prettyPath(filePath)}` : "正在编辑文件";
     }
-    if (kind === "delete") return filePath ? `Deleting ${prettyPath(filePath)}` : "Deleting file";
-    if (kind === "fetch") return "Generating";
+    if (kind === "delete") return filePath ? `正在删除 ${prettyPath(filePath)}` : "正在删除文件";
+    if (kind === "fetch") return "正在生成";
     if (/^(bash|execute|run_command|run_terminal_command|shell|run_bash)$/.test(name) || kind === "execute") {
-      return "Running command";
+      return "正在运行命令";
     }
     // A tool we didn't predict still shows — but never echo a long title verbatim.
-    return name && name.length < 30 ? `Running ${name}` : "Running tool";
+    return name && name.length < 30 ? `正在运行 ${name}` : "正在运行工具";
   }
 
   function toolLabel(call) {
@@ -2001,13 +2980,13 @@
     } else if (url) {
       target = clamp(url.replace(/^https?:\/\//i, ""));
     } else if (filePath) {
-      const isList = /^(list_dir|list_directory)$/.test(name) || verb === "List";
+      const isList = /^(list_dir|list_directory)$/.test(name) || verb === "列出";
       const isRead = name === "read_file" || name === "file_read" || kind === "read";
       if (isList) {
         target = prettyDir(filePath);
       } else if (isRead && r.offset != null && r.limit != null) {
         const end = Number(r.offset) + Number(r.limit) - 1;
-        target = `${prettyPath(filePath)} lines ${r.offset}-${end}`;
+        target = `${prettyPath(filePath)} 第 ${r.offset}-${end} 行`;
       } else {
         target = prettyPath(filePath);
       }
@@ -2254,7 +3233,7 @@
   function wireCommandToggle(rowEl, details, title) {
     rowEl.classList.add("has-details"); // hover highlight + chevron = "this one is clickable"
     rowEl.classList.toggle("expanded", !details.hidden);
-    rowEl.title = title || "Show full command and output";
+    rowEl.title = title || "显示完整命令与输出";
     rowEl.addEventListener("click", (e) => {
       if (e.target.closest("a, button")) return; // preview links keep their own click
       if (e.target.closest(".tool-item-details")) return; // selecting text inside must not collapse
@@ -2281,7 +3260,7 @@
     inRow.className = "cmd-io";
     const inTag = document.createElement("span");
     inTag.className = "cmd-io-tag";
-    inTag.textContent = "IN";
+    inTag.textContent = "输入";
     inRow.appendChild(inTag);
     const cmd = document.createElement("pre");
     cmd.className = "tool-cmd";
@@ -2305,7 +3284,7 @@
     outRow.className = "cmd-io cmd-out";
     const tag = document.createElement("span");
     tag.className = "cmd-io-tag";
-    tag.textContent = "OUT";
+    tag.textContent = "输出";
     outRow.appendChild(tag);
     const body = document.createElement("div");
     body.className = "cmd-out-body";
@@ -2317,12 +3296,12 @@
       outRow.classList.add("failed");
       const mark = document.createElement("div");
       mark.className = "cmd-out-marker";
-      mark.textContent = `[Error] exit ${msg.exitCode}`;
+      mark.textContent = `[错误] 退出码 ${msg.exitCode}`;
       body.appendChild(mark);
     } else if (msg.exitCode == null) {
       const mark = document.createElement("div");
       mark.className = "cmd-out-marker muted";
-      mark.textContent = "[Cancelled] no exit code";
+      mark.textContent = "[已取消] 无退出码";
       body.appendChild(mark);
     } else if (!hasOutput) {
       // exit 0 with nothing on stdout: a bare "(no output)" pre read as broken.
@@ -2330,7 +3309,7 @@
       // clearer, and there's no empty <pre> to feel like a gap.
       const mark = document.createElement("div");
       mark.className = "cmd-out-marker ok";
-      mark.textContent = "✓ done · no output";
+      mark.textContent = "✓ 完成 · 无输出";
       body.appendChild(mark);
     }
     // Only render the output <pre> when there's actually output — a marker alone
@@ -2344,7 +3323,7 @@
     if (msg.truncated) {
       const note = document.createElement("div");
       note.className = "cmd-out-marker muted";
-      note.textContent = "output truncated — grok saw the same cut";
+      note.textContent = "输出已截断 — Grok 看到的也是相同截断";
       body.appendChild(note);
     }
     outRow.appendChild(body);
@@ -2419,7 +3398,7 @@
     if (rows.length > shown || result.truncated) {
       const more = document.createElement("div");
       more.className = "tool-diff-more";
-      more.textContent = "... " + (rows.length - shown) + " more line(s) - open diff for the full change";
+      more.textContent = "… 还有 " + (rows.length - shown) + " 行 — 打开 diff 查看完整变更";
       wrap.appendChild(more);
     }
     return wrap;
@@ -2464,7 +3443,7 @@
       details.appendChild(buildInlineDiffRegion(diff, result));
       const preview = document.createElement("button");
       preview.className = "preview-link";
-      preview.textContent = "open diff →";
+      preview.textContent = "打开 diff →";
       preview.onclick = (e) => {
         e.stopPropagation(); // don't toggle the row/group expand
         vscode.postMessage({ type: "openDiff", path: diff.path, oldText: diff.oldText, newText: diff.newText });
@@ -2472,7 +3451,7 @@
       details.appendChild(preview);
     }
     item.appendChild(details);
-    wireCommandToggle(item, details, "Show the diff");
+    wireCommandToggle(item, details, "显示 diff");
     scrollToBottom();
   }
 
@@ -2566,7 +3545,7 @@
     if (existing) existing.remove();
     const el = document.createElement("div");
     el.className = "session-context-banner";
-    el.textContent = "Context from previous session applied";
+    el.textContent = "已应用上一会话的上下文";
     messagesEl.appendChild(el);
     scrollToBottom();
   }
@@ -2591,7 +3570,7 @@
     const copyBtn = document.createElement("button");
     copyBtn.type = "button";
     copyBtn.className = "generated-media-btn";
-    copyBtn.title = "Copy path";
+    copyBtn.title = "复制路径";
     copyBtn.innerHTML = ICON.copy;
     copyBtn.onclick = (e) => {
       e.stopPropagation();
@@ -2605,7 +3584,7 @@
     const openBtn = document.createElement("button");
     openBtn.type = "button";
     openBtn.className = "generated-media-btn";
-    openBtn.title = "Open in VS Code";
+    openBtn.title = "在 VS Code 中打开";
     openBtn.innerHTML = ICON.file;
     openBtn.onclick = (e) => {
       e.stopPropagation();
@@ -2642,10 +3621,10 @@
       } else {
         const img = document.createElement("img");
         img.src = msg.src;
-        img.alt = "Generated image";
+        img.alt = "生成的图片";
         img.loading = "lazy";
         if (msg.path) {
-          img.title = "Open " + msg.path;
+          img.title = "打开 " + msg.path;
           img.style.cursor = "pointer";
           img.onclick = () => vscode.postMessage({ type: "openFile", path: msg.path });
         }
@@ -2655,7 +3634,7 @@
     } else if (msg.url) {
       const link = document.createElement("button");
       link.className = "preview-link";
-      link.textContent = isVideo ? "open generated video ↗" : "open generated image ↗";
+      link.textContent = isVideo ? "打开生成的视频 ↗" : "打开生成的图片 ↗";
       link.onclick = () => vscode.postMessage({ type: "openUrl", url: msg.url });
       el.appendChild(link);
     }
@@ -2737,11 +3716,11 @@
     const result = cleanSubagentOutput(info.output || "");
     if (result) {
       const body = el.querySelector(".subagent-result");
-      body.innerHTML = `<div class="subagent-result-label">Output of the subagent:</div>` + renderMarkdown(result);
+      body.innerHTML = `<div class="subagent-result-label">子代理输出：</div>` + renderMarkdown(result);
       applyAutoDir(body);
       const row = el.querySelector(".subagent-row");
       row.classList.add("expandable");
-      row.title = "Show the subagent's result";
+      row.title = "显示子代理结果";
       row.onclick = () => { body.hidden = !body.hidden; };
     }
   }
@@ -2755,7 +3734,7 @@
     el.innerHTML =
       `<div class="subagent-row">` +
         `<span class="subagent-badge">${ICON.listTree || "🤖"}</span>` +
-        `<span class="subagent-label">Subagent</span>` +
+        `<span class="subagent-label">子代理</span>` +
         `<span class="subagent-sep">·</span>` +
         `<span class="subagent-title"></span>` +
         BLINK_DOTS +
@@ -2862,7 +3841,7 @@
       hdr.className = "thinking-header";
       // Chevron on the RIGHT (after the label), same glyph as tool groups; expand
       // state is driven by the `.expanded` class (CSS rotates it), like tools.
-      hdr.innerHTML = `<span class="thinking-icon">${ICON.brain}</span><span class="thinking-label">Thinking</span>${BLINK_DOTS}<span class="thinking-chevron" aria-hidden="true">${ICON.chevronRight}</span>`;
+      hdr.innerHTML = `<span class="thinking-icon">${ICON.brain}</span><span class="thinking-label">思考中</span>${BLINK_DOTS}<span class="thinking-chevron" aria-hidden="true">${ICON.chevronRight}</span>`;
       const body = document.createElement("div");
       body.className = "thinking-body";
       body.hidden = true;
@@ -2936,8 +3915,8 @@
       const label = state.activeThoughtHdrEl.querySelector(".thinking-label");
       if (label) {
         label.textContent = state.replaying
-          ? "Thought"
-          : `Thought for ${Math.round((Date.now() - state.thoughtStartTime) / 1000)}s`;
+          ? "已思考"
+          : `思考了 ${Math.round((Date.now() - state.thoughtStartTime) / 1000)} 秒`;
       }
       state.thoughtStartTime = null;
     }
@@ -3030,7 +4009,7 @@
       ...selBlocks.selections.map((s) =>
         makeMsgChipTag(s.path, { selectionStart: s.start, selectionEnd: s.end })),
       ...imageTags.images.map((im) =>
-        makeMsgChipTag(`Image #${im.index}`, { imageIndex: im.index, path: im.path })),
+        makeMsgChipTag(`图片 #${im.index}`, { imageIndex: im.index, path: im.path })),
     ];
     if (chipTags.length) {
       const chipsRow = document.createElement("div");
@@ -3117,7 +4096,7 @@
     const el = document.createElement("div");
     el.className = "plan-processing";
     el.innerHTML = '<span class="plan-processing-dots"><span></span><span></span><span></span></span>';
-    el.setAttribute("aria-label", "Grok is processing");
+    el.setAttribute("aria-label", "Grok 正在处理");
     messagesEl.appendChild(el);
     state.planProcessingEl = el;
     scrollToBottom();
@@ -3144,8 +4123,8 @@
     el.className = "grokking";
     // No blink-dots here — the spinning orbit icon is Grokking's "waiting" motion
     // (Thinking / tools use the dots for discrete progress instead).
-    el.innerHTML = `<span class="grokking-icon">${ICON.orbit}</span><span class="grokking-label">Grokking</span>`;
-    el.setAttribute("aria-label", "Grok is working");
+    el.innerHTML = `<span class="grokking-icon">${ICON.orbit}</span><span class="grokking-label">思考中</span>`;
+    el.setAttribute("aria-label", "Grok 正在工作");
     messagesEl.appendChild(el);
     state.grokkingEl = el;
     scrollToBottom();
@@ -3172,7 +4151,7 @@
     clearWelcome();
     const el = document.createElement("div");
     el.className = "thinking-indicator";
-    el.innerHTML = `<span class="thinking-indicator-icon">${ICON.brain}</span><span class="thinking-indicator-label">Thinking</span>${BLINK_DOTS}`;
+    el.innerHTML = `<span class="thinking-indicator-icon">${ICON.brain}</span><span class="thinking-indicator-label">思考中</span>${BLINK_DOTS}`;
     el.setAttribute("aria-label", "Grok is thinking");
     messagesEl.appendChild(el);
     state.thinkingIndicatorEl = el;
@@ -3274,9 +4253,9 @@
 
   // Verb shown on a resolved (minimized) permission card.
   const PERM_VERB = {
-    allow_always: "Allowed",
-    allow_once: "Allowed",
-    reject_once: "Rejected",
+    allow_always: "已允许",
+    allow_once: "已允许",
+    reject_once: "已拒绝",
   };
 
   // Replace a permission card with a single muted, non-interactive line once the
@@ -3289,7 +4268,7 @@
     line.className = "perm-resolved-line perm-" + (kind === "reject_once" ? "rejected" : "allowed");
     const verb = document.createElement("span");
     verb.className = "perm-resolved-verb";
-    verb.textContent = PERM_VERB[kind] || "Answered";
+    verb.textContent = PERM_VERB[kind] || "已回答";
     line.appendChild(verb);
     const what = document.createElement("span");
     what.className = "perm-resolved-what";
@@ -3305,7 +4284,7 @@
     // grok's continuation after the answer renders BELOW this card, not appended
     // to the bubble that was streaming above it.
     commitAgentTurn();
-    const cardTitle = req.toolCall?.title || `permission: ${req.toolCall?.kind || "tool"}`;
+    const cardTitle = req.toolCall?.title || `权限：${req.toolCall?.kind || "工具"}`;
     const el = document.createElement("div");
     el.className = "card permission";
     // Tag the card so a buffered `permissionResolved` (replayed when this session
@@ -3326,7 +4305,7 @@
       subtitle.className = "card-subtitle";
       const oldLines = (diff.oldText || "").split("\n").length;
       const newLines = (diff.newText || "").split("\n").length;
-      subtitle.textContent = `${diff.path} — ${oldLines} → ${newLines} lines`;
+      subtitle.textContent = `${diff.path} — ${oldLines} → ${newLines} 行`;
       el.appendChild(subtitle);
 
       const openDiff = () =>
@@ -3340,7 +4319,7 @@
       const preview = document.createElement("button");
       preview.className = "preview-link";
       // Auto-opens below; the button stays so you can re-open if you closed it.
-      preview.textContent = "open diff →";
+      preview.textContent = "打开 diff →";
       preview.onclick = openDiff;
       el.appendChild(preview);
       // Open the diff automatically when the card appears, so reviewing an edit
@@ -3389,7 +4368,7 @@
   function answerLineEl(labels) {
     const ans = document.createElement("div");
     ans.className = "question-answer";
-    ans.textContent = labels ? "✓ " + labels : "(skipped)";
+    ans.textContent = labels ? "✓ " + labels : "（已跳过）";
     return ans;
   }
 
@@ -3407,7 +4386,7 @@
     const el = document.createElement("div");
     el.className = "card question";
 
-    const title = buildQuestionHead(el, "Grok is asking");
+    const title = buildQuestionHead(el, "Grok 正在提问");
 
     // selections[i] = array of chosen labels for question i.
     const selections = questions.map(() => []);
@@ -3419,7 +4398,7 @@
     // buttons + Submit + Skip, retitle, and append the chosen answer per block.
     const collapse = (skipped) => {
       el.classList.add("resolved");
-      title.textContent = skipped ? "Skipped" : "You answered";
+      title.textContent = skipped ? "已跳过" : "你已回答";
       const actions = el.querySelector(".card-actions");
       if (actions) actions.remove();
       if (skip) skip.remove();
@@ -3488,7 +4467,7 @@
       actions.className = "card-actions";
       submitBtn = document.createElement("button");
       submitBtn.className = "primary";
-      submitBtn.textContent = "Submit";
+      submitBtn.textContent = "提交";
       submitBtn.disabled = true;
       submitBtn.onclick = submit;
       actions.appendChild(submitBtn);
@@ -3497,7 +4476,7 @@
 
     skip = document.createElement("button");
     skip.className = "question-skip";
-    skip.textContent = "Skip";
+    skip.textContent = "跳过";
     skip.onclick = () => {
       vscode.postMessage({ type: "questionCancel", requestId: req.id });
       collapse(true);
@@ -3636,9 +4615,9 @@
   // ---------- plan card ----------
 
   const VERDICT_LABEL = {
-    approved: "Approved",
-    rejected: "Rejected",
-    abandoned: "Cancelled",
+    approved: "已批准",
+    rejected: "已拒绝",
+    abandoned: "已取消",
   };
 
   function pathBaseName(p) {
@@ -3667,7 +4646,7 @@
     const toggle = document.createElement("button");
     toggle.type = "button";
     toggle.className = "plan-toggle";
-    const setToggle = () => { toggle.textContent = body.hidden ? "Show plan" : "Hide plan"; };
+    const setToggle = () => { toggle.textContent = body.hidden ? "显示计划" : "隐藏计划"; };
     setToggle();
     toggle.onclick = () => { body.hidden = !body.hidden; setToggle(); };
     return toggle;
@@ -3699,7 +4678,7 @@
     }
     const status = document.createElement("div");
     status.className = "plan-verdict-label plan-verdict-" + verdict;
-    status.textContent = VERDICT_LABEL[verdict] ?? "Resolved";
+    status.textContent = VERDICT_LABEL[verdict] ?? "已处理";
     el.appendChild(status);
   }
 
@@ -3715,12 +4694,12 @@
     el.dataset.planReqId = String(req.id);
     const title = document.createElement("div");
     title.className = "card-title";
-    title.textContent = "Plan ready for review";
+    title.textContent = "计划待审阅";
     el.appendChild(title);
 
     const sub = document.createElement("div");
     sub.className = "card-subtitle";
-    sub.textContent = "Nothing has been written yet. Approve, reject with feedback, or cancel to leave plan mode.";
+    sub.textContent = "尚未写入任何内容。可批准、附反馈拒绝，或取消以退出计划模式。";
     el.appendChild(sub);
 
     const planText = req.plan || "";
@@ -3728,7 +4707,7 @@
 
     const body = document.createElement("div");
     body.className = "plan-body";
-    body.innerHTML = planText ? renderMarkdown(planText) : "(empty plan)";
+    body.innerHTML = planText ? renderMarkdown(planText) : "（空计划）";
     applyAutoDir(body);
     renderMermaidIn(body);
     el.appendChild(body);
@@ -3737,7 +4716,7 @@
     feedback.className = "plan-feedback";
     feedback.rows = 2;
     feedback.setAttribute("dir", "auto");
-    feedback.placeholder = "Optional comment — Grok decides what to do with it";
+    feedback.placeholder = "可选备注 — 由 Grok 决定如何处理";
     el.appendChild(feedback);
 
     const actions = document.createElement("div");
@@ -3760,9 +4739,9 @@
       };
       return b;
     };
-    actions.appendChild(mk("Approve & implement", "primary", "approved", true));
-    actions.appendChild(mk("Reject", "", "rejected", true));
-    actions.appendChild(mk("Cancel", "secondary", "abandoned", true));
+    actions.appendChild(mk("批准并实施", "primary", "approved", true));
+    actions.appendChild(mk("拒绝", "", "rejected", true));
+    actions.appendChild(mk("取消", "secondary", "abandoned", true));
     el.appendChild(actions);
     messagesEl.appendChild(el);
     scrollToBottom();
@@ -3778,15 +4757,15 @@
     el.className = "card plan plan-history";
     const title = document.createElement("div");
     title.className = "card-title";
-    title.textContent = "Plan from this session";
+    title.textContent = "本会话中的计划";
     el.appendChild(title);
 
     const sub = document.createElement("div");
     sub.className = "card-subtitle";
     const verdictLabel = VERDICT_LABEL[verdict];
     sub.textContent = verdictLabel
-      ? `Restored from the previous session — you ${verdictLabel.toLowerCase()} this plan.`
-      : "Restored from the previous session.";
+      ? `从上一会话恢复 — 你${verdictLabel}了此计划。`
+      : "从上一会话恢复。";
     el.appendChild(sub);
 
     addPlanFileLink(el, planPath, planName);
@@ -3800,7 +4779,7 @@
       const body = document.createElement("div");
       body.className = "plan-body";
       body.hidden = true;
-      body.innerHTML = text ? renderMarkdown(text) : "(empty plan)";
+      body.innerHTML = text ? renderMarkdown(text) : "（空计划）";
       applyAutoDir(body);
       renderMermaidIn(body);
 
@@ -3839,8 +4818,8 @@
         : "";
       const rangeTitle = hasSel
         ? chip.selectionStart === chip.selectionEnd
-          ? ` (line ${chip.selectionStart})`
-          : ` (lines ${chip.selectionStart}-${chip.selectionEnd})`
+          ? `（第 ${chip.selectionStart} 行）`
+          : `（第 ${chip.selectionStart}-${chip.selectionEnd} 行）`
         : "";
       const label = range ? `${fileName}:${range}` : fileName;
       // Explicit attachments — files, images, AND selections sent via the "Add
@@ -3862,7 +4841,7 @@
         const rm = document.createElement("button");
         rm.type = "button";
         rm.className = "attachment-remove";
-        rm.title = "Remove";
+        rm.title = "移除";
         rm.textContent = "×";
         rm.onclick = () => vscode.postMessage({ type: "removeChip", id: chip.id });
         el.appendChild(rm);
@@ -3896,7 +4875,7 @@
     else if (pct > 70) color = "var(--vscode-charts-yellow, #d7ba7d)";
     donutArc.setAttribute("stroke", color);
     donutLabel.textContent = `${toK(used)}/${toK(max)}`;
-    donutLabel.title = `${used.toLocaleString()} / ${max.toLocaleString()} tokens`;
+    donutLabel.title = `${used.toLocaleString()} / ${max.toLocaleString()} 个 token`;
   }
 
   // ---------- slash autocomplete ----------
@@ -3963,23 +4942,23 @@
     // readiness flag, `busy` always clears, so the control can never get stuck.
     modeBtn.disabled = state.busy;
     modeBtn.classList.toggle("disabled", state.busy);
-    modeBtn.title = state.busy ? "Mode — available once the session is ready" : "Pick mode";
+    modeBtn.title = state.busy ? "模式 — 会话就绪后可用" : "选择模式";
     if (!state.busy) {
       sendBtn.innerHTML = ICON.arrowUp;
-      sendBtn.title = "Send";
+      sendBtn.title = "发送";
       sendBtn.disabled = false;
     } else if (state.busyLocked) {
       sendBtn.innerHTML = ICON.spinner;
-      sendBtn.title = "Initializing…";
+      sendBtn.title = "初始化中…";
       sendBtn.classList.add("initializing");
       sendBtn.disabled = true;
     } else if (input.value.trim()) {
       sendBtn.innerHTML = ICON.arrowUp;
-      sendBtn.title = "Queue — sends when Grok finishes";
+      sendBtn.title = "排队 — Grok 完成后发送";
       sendBtn.disabled = false;
     } else {
       sendBtn.innerHTML = ICON.square;
-      sendBtn.title = "Stop";
+      sendBtn.title = "停止";
       sendBtn.classList.add("stop");
       sendBtn.disabled = false;
     }
@@ -4058,21 +5037,21 @@
     micBtn.classList.toggle("connecting", state.mic === "connecting");
     if (state.mic === "listening") {
       micBtn.innerHTML = ICON.micWaves;
-      micBtn.title = "Listening — say 'grok send' to submit, or click to stop";
+      micBtn.title = "正在聆听 — 说「grok send」提交，或点击停止";
       micBtn.disabled = false;
     } else if (state.mic === "connecting") {
       micBtn.innerHTML = ICON.spinner;
-      micBtn.title = "Starting mic… wait for the waves before speaking";
+      micBtn.title = "正在启动麦克风… 出现波形后再说话";
       micBtn.disabled = false; // clickable to cancel
     } else if (state.mic === "transcribing") {
       micBtn.innerHTML = ICON.spinner;
-      micBtn.title = "Transcribing…";
+      micBtn.title = "转写中…";
       micBtn.disabled = true;
     } else {
       micBtn.innerHTML = ICON.mic;
       micBtn.title = state.voiceConfigured
-        ? "Voice control"
-        : "Voice control — click to set up (needs an xAI API key)";
+        ? "语音控制"
+        : "语音控制 — 点击设置（需要 xAI API 密钥）";
       micBtn.disabled = false;
     }
     // "needs setup" dot only when idle and no key is configured.
@@ -4218,13 +5197,13 @@
     hdr.className = "queued-hdr";
     const tag = document.createElement("span");
     tag.className = "queued-tag";
-    tag.innerHTML = `${ICON.clock}<span>Queued</span>`;
-    tag.title = "Sends when Grok finishes";
+    tag.innerHTML = `${ICON.clock}<span>已排队</span>`;
+    tag.title = "Grok 完成后发送";
     const actions = document.createElement("span");
     actions.className = "queued-actions";
     const editBtn = document.createElement("button");
     editBtn.className = "queued-action";
-    editBtn.title = "Edit — back to the composer";
+    editBtn.title = "编辑 — 回到输入框";
     editBtn.innerHTML = ICON.pencil;
     editBtn.onclick = () => {
       vscode.postMessage({ type: "dequeueSend", index: 0 });
@@ -4234,7 +5213,7 @@
     };
     const rmBtn = document.createElement("button");
     rmBtn.className = "queued-action";
-    rmBtn.title = "Remove from queue";
+    rmBtn.title = "从队列移除";
     rmBtn.innerHTML = ICON.x;
     rmBtn.onclick = () => vscode.postMessage({ type: "dequeueSend", index: 0 });
     actions.appendChild(editBtn);
@@ -4271,15 +5250,25 @@
         state.cwd = msg.cwd || "";
         state.extVersion = msg.extVersion || "";
         if (typeof msg.showThinking === "boolean") state.showThinking = msg.showThinking;
+        if (typeof msg.showTurnMetrics === "boolean") {
+          state.showTurnMetrics = msg.showTurnMetrics;
+          applyTurnMetricsVisibility();
+        }
         if (typeof msg.expandCommandOutputs === "boolean") state.expandCommandOutputs = msg.expandCommandOutputs;
         applyThinkingVisibility();
+        updateModelChip();
         break;
       case "showThinking":
         // Live toggle (grok.showThinking). Initial value also arrives via
         // initialState + is baked into the <body class> by the host to avoid a flash.
         state.showThinking = !!msg.value;
         applyThinkingVisibility();
-        if (state.gearView === "config") renderConfigDebugPanel(); // keep the switch in sync
+        if (settingsOpen() && state.gearView === "config") renderConfigDebugPanel(); // keep the switch in sync
+        break;
+      case "showTurnMetrics":
+        state.showTurnMetrics = !!msg.value;
+        applyTurnMetricsVisibility();
+        if (settingsOpen() && state.gearView === "config") renderConfigDebugPanel();
         break;
       case "fontScale":
         // Live chat-only zoom (grok.chatFontScale). Initial value is baked into
@@ -4305,7 +5294,7 @@
           policy: msg.policy || null,
         };
         if (msg.current) state.cliVersion = msg.current;
-        if (!gearPopover.hidden && state.gearView === "about") renderAboutPanel(false);
+        if (settingsOpen() && state.gearView === "about") renderAboutPanel(false);
         break;
       case "initialized": {
         // The ACP handshake is done, but grok isn't ready for the user until the
@@ -4315,7 +5304,7 @@
         state.cliVersion = msg.info.version || "";
         state.startingPhase = true;
         const verEl = $("welcome-version");
-        if (verEl) { verEl.classList.add("loading-dots"); verEl.textContent = "Starting"; }
+        if (verEl) { verEl.classList.add("loading-dots"); verEl.textContent = "正在启动"; }
         const onb = $("welcome-onboarding");
         if (onb) onb.innerHTML = "";
         break;
@@ -4325,7 +5314,7 @@
         // spawns; overwritten by "starting…" once grok connects, then
         // "connected · v<new version>" once the primer finishes.
         const verEl = $("welcome-version");
-        if (verEl) { verEl.classList.add("loading-dots"); verEl.textContent = "Updating Grok Build CLI"; }
+        if (verEl) { verEl.classList.add("loading-dots"); verEl.textContent = "正在更新 Grok Build CLI"; }
         break;
       }
       case "session": {
@@ -4334,6 +5323,8 @@
         const m = state.availableModels.find((x) => x.modelId === msg.currentModelId);
         if (m?.totalContextTokens) state.contextWindow = m.totalContextTokens;
         updateDonut(0);
+        updateModelChip();
+        if (modelEffortPopover && !modelEffortPopover.hidden) renderModelEffortCard();
         break;
       }
       case "modelChanged": {
@@ -4344,6 +5335,8 @@
         // donut keeps showing the wrong ceiling and an inflated percentage.
         const m = state.availableModels.find((x) => x.modelId === msg.modelId);
         if (m && m.totalContextTokens) { state.contextWindow = m.totalContextTokens; updateDonut(); }
+        updateModelChip();
+        if (modelEffortPopover && !modelEffortPopover.hidden) renderModelEffortCard();
         break;
       }
       case "modeChanged":
@@ -4498,6 +5491,10 @@
         // of historical plan cards from appendUserChunk / live userMessage.
         state.planHistoryQueue = (msg.plans || []).slice();
         state.userMsgCount = 0;
+        break;
+      case "turnMetricsHistoryQueue":
+        // Per-turn metrics persisted by the extension (CLI doesn't replay prompt meta).
+        state.turnMetricsQueue = (msg.metrics || []).slice();
         break;
       case "planProcessing":
         showPlanProcessing();
@@ -4659,8 +5656,8 @@
       case "planBlocked":
         addPlanNotice(
           msg.kind === "terminal"
-            ? `Plan mode blocked a command: ${msg.target}`
-            : `Plan mode blocked a write to ${msg.target}`,
+            ? `计划模式已拦截命令：${msg.target}`
+            : `计划模式已拦截写入：${msg.target}`,
         );
         break;
       case "promptComplete":
@@ -4671,7 +5668,7 @@
         // turn ends emitting promptComplete; afterTurn's follow-up turn then
         // runs and emits its own agentEnd at the end, which clears busy).
         commitAgentTurn();
-        revealTurnFooter(); // the turn is over — show its copy/timestamp footer
+        revealTurnFooter(msg.metrics); // footer + 首字/耗时/tok/s when host sent metrics
         // The host strips totalTokens:0 before it gets here — grok reports 0
         // for /session-info (context untouched) AND /compact (context shrunk,
         // not emptied), so 0 is never a real measurement (gateZeroTokenMeta,
@@ -4697,7 +5694,7 @@
         state.expandCommandOutputs = !!msg.value;
         state.toolExpandOverride = null;
         applyExpandCommandOutputs();
-        if (state.gearView === "config") renderConfigDebugPanel(); // keep the switch in sync
+        if (settingsOpen() && state.gearView === "config") renderConfigDebugPanel(); // keep the switch in sync
         break;
       case "setAllToolDetails":
         // Command Palette: Grok: Expand/Collapse All Tool Details — one-shot,
@@ -4720,7 +5717,7 @@
         let details = pending && pending.details;
         if (pending) pending.done = true;
         if (!details) {
-          addToToolGroup({ title: truncate(`Run ${msg.command}`, 120), kind: "execute", rawInput: { command: msg.command } });
+          addToToolGroup({ title: truncate(`运行 ${msg.command}`, 120), kind: "execute", rawInput: { command: msg.command } });
           const fallback = state.pendingCommandDetails[state.pendingCommandDetails.length - 1];
           if (fallback && !fallback.done && fallback.command === wanted) {
             fallback.done = true;
@@ -4756,7 +5753,7 @@
         hideGrokking(); // turn ended (possibly before any content)
         hideThinkingIndicator();
         hidePlanProcessing();
-        revealTurnFooter();
+        revealTurnFooter(msg.metrics);
         addError(msg.text);
         state.busy = false;
         updateSendButton();
@@ -4768,14 +5765,15 @@
         // empty) would otherwise orphan the dots forever — content-based
         // clearing never fires.
         hidePlanProcessing();
-        revealTurnFooter();
+        // Metrics usually arrive on promptComplete first; agentEnd is a backstop.
+        revealTurnFooter(msg.metrics);
         state.busy = false;
         updateSendButton();
         break;
       case "exit":
         hideGrokking();
         hidePlanProcessing();
-        addError(`Grok exited (code ${msg.code}). Click the new session button to restart.`);
+        addError(`Grok 已退出（代码 ${msg.code}）。点击新建会话按钮以重新开始。`);
         state.busy = false;
         updateSendButton();
         break;
@@ -4806,19 +5804,20 @@
             if (verEl) {
               const ver = state.cliVersion ? ` · v${state.cliVersion}` : "";
               verEl.classList.remove("loading-dots"); // settled — no animated dots
-              verEl.textContent = `Connected${ver}`;
+              verEl.textContent = `已连接${ver}`;
             }
           }
         }
-        // Refresh the gear popover's model/effort lock state if it's open.
-        if (!gearPopover.hidden) renderGearMain();
+        // Refresh the model chip + open card lock state when busy flips.
+        updateModelChip();
+        if (modelEffortPopover && !modelEffortPopover.hidden) renderModelEffortCard();
         break;
       case "summarizing": {
         clearWelcome();
         const si = document.createElement("div");
         si.id = "summarizing-indicator";
         si.className = "session-context-banner loading-dots";
-        si.textContent = "Summarizing";
+        si.textContent = "正在总结";
         messagesEl.appendChild(si);
         scrollToBottom();
         break;
@@ -4875,12 +5874,17 @@
         state.sessionNextOffset = typeof msg.nextOffset === "number" ? msg.nextOffset : null;
         state.sessionLoading = false;
         if (open) renderSessionRows();
+        // Always refresh the left rail — it is the primary switcher, not the popover.
+        renderSessionRail();
         break;
       }
       case "sessionDot":
         if (msg.dot && msg.dot !== "none") state.dots[msg.id] = msg.dot;
         else delete state.dots[msg.id];
-        if (!historyPopover.hidden) patchSessionDot(msg.id);
+        // Patch dots in place (popover + rail), then re-render the rail so
+        // needs-you / working rows re-sort to the top.
+        patchSessionDot(msg.id);
+        renderSessionRail();
         break;
       default:
         // No case ran. Either the host posted a type outside the contract (drift
@@ -4914,24 +5918,60 @@
     micBtn.onclick = (e) => { e.stopPropagation(); toggleMic(); };
     renderMic();
   }
-  newBtn.onclick = () => {
+  function startNewSession() {
+    closeSettingsPage();
     resetForNewSession();
     vscode.postMessage({ type: "newSession" });
-  };
+  }
+  newBtn.onclick = () => startNewSession();
+  if (sessionRailNew) sessionRailNew.onclick = (e) => { e.stopPropagation(); startNewSession(); };
+  if (sessionRailToggle) {
+    sessionRailToggle.onclick = (e) => { e.stopPropagation(); toggleSessionRail(); };
+  }
+  if (sessionRailHistory) {
+    sessionRailHistory.onclick = (e) => {
+      e.stopPropagation();
+      // Expand rail is irrelevant; open the full history popover from the top bar.
+      openHistoryPopover();
+    };
+  }
   modeBtn.onclick = (e) => { e.stopPropagation(); if (state.busy) return; openModePopover(); };
-  gearBtn.onclick = (e) => { e.stopPropagation(); openGearPopover(); };
+  gearBtn.onclick = (e) => {
+    e.stopPropagation();
+    if (settingsOpen()) closeSettingsPage();
+    else openSettingsPage();
+  };
+  if (settingsBackBtn) {
+    settingsBackBtn.onclick = (e) => {
+      e.stopPropagation();
+      if (state.gearView === "main") closeSettingsPage();
+      else renderSettingsMain();
+    };
+  }
+  if (modelChipBtn) {
+    modelChipBtn.onclick = (e) => {
+      e.stopPropagation();
+      if (state.busy) return;
+      openModelEffortCard();
+    };
+  }
 
-  // Welcome screen's "about" link → open the gear popover's Version & about panel.
+  // Welcome screen's "about" link → open the settings page's Version & about view.
   const welcomeAboutLink = $("welcome-about-link");
   if (welcomeAboutLink) welcomeAboutLink.onclick = (e) => { e.preventDefault(); e.stopPropagation(); openAboutPanel(); };
   addBtn.onclick = (e) => { e.stopPropagation(); openAddPopover(); };
   historyBtn.onclick = (e) => { e.stopPropagation(); openHistoryPopover(); };
+
+  // Keep the left rail warm: pull the first page of sessions on boot (and host
+  // refreshes keep it in sync via the sessions handler).
+  requestSessions(0);
+  renderSessionRail();
   donutEl.onclick = (e) => {
     e.stopPropagation();
     if (contextPopover.hidden) openContextPopover(); else closePopovers();
   };
   modePopover.addEventListener("click", (e) => e.stopPropagation());
-  gearPopover.addEventListener("click", (e) => e.stopPropagation());
+  if (modelEffortPopover) modelEffortPopover.addEventListener("click", (e) => e.stopPropagation());
   contextPopover.addEventListener("click", (e) => e.stopPropagation());
   addPopover.addEventListener("click", (e) => e.stopPropagation());
   historyPopover.addEventListener("click", (e) => e.stopPropagation());

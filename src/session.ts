@@ -1,5 +1,6 @@
 import { AcpClient } from "./acp";
 import type { HostMsg } from "./protocol";
+import type { TurnTimingState } from "./turn-metrics";
 
 /** Live state for the dashboard dot. `cold` (no live process) is represented by
  *  the absence of a Session, so it isn't in this union. */
@@ -176,4 +177,11 @@ export class Session {
    * (maybeFlushQueuedSends) fires even while the session is backgrounded.
    */
   queuedSends: string[] = [];
+
+  /**
+   * Live per-turn timing for footer metrics (TTFT / duration / tok/s). Set just
+   * before a user-visible `client.prompt` (after primer), cleared when the turn
+   * ends. Hidden turns (primer, /session-info) never set this.
+   */
+  turnTiming?: TurnTimingState;
 }

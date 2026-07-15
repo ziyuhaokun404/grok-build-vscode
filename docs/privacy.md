@@ -31,11 +31,12 @@ There is no SDK and no third-party tracker — just one small, dependency-free H
 Telemetry sends **only when both** of these are on:
 
 1. VS Code's global telemetry setting — `telemetry.telemetryLevel` (anything other than `off`), and
-2. the extension's own `grok.telemetry.enabled` (default `true`).
+2. the extension's own `grok.telemetry.enabled` (default `false`), and
+3. a configured Aptabase app key in `src/telemetry.ts` (empty by default in this fork — no third-party project ships with the binary).
 
-Either one set to off stops **all** sending.
+Any one set to off / empty stops **all** sending.
 
-> **Note on Aptabase build modes.** Events from a published/installed build report as **Release**; events from a development host (running the extension from source) report as **Debug**. In the Aptabase dashboard these are two separate streams toggled by the Bug/Rocket icon — Release data won't appear while the dashboard is in Debug view, and vice-versa.
+> **Note on Aptabase build modes.** When keys are configured, events from a published/installed build report as **Release**; events from a development host report as **Debug**.
 
 ## How to opt out
 

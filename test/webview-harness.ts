@@ -19,39 +19,71 @@ const chatSrc = read("../media/chat.js");
 
 // Mirror of getHtml()'s <body> — only the ids chat.js queries at startup matter.
 export const BODY = `
-  <header class="top-bar">
-    <button id="history-btn"></button>
-    <button id="new-btn"></button>
-    <div id="history-popover" hidden></div>
-  </header>
-  <main id="messages" class="messages">
-    <div class="welcome" id="welcome">
-      <p id="welcome-version" class="loading-dots">Starting</p>
-      <div id="welcome-onboarding"></div>
-    </div>
-  </main>
-  <footer class="composer">
-    <button id="scroll-bottom-btn" class="scroll-bottom-btn"></button>
-    <div class="composer-card">
-      <div id="attachments"></div>
-      <div class="composer-input-wrap">
-        <div id="input-highlight"></div>
-        <textarea id="input"></textarea>
-        <button id="mic-btn"></button>
+  <div class="app-shell">
+    <aside id="session-rail" class="session-rail">
+      <div class="session-rail-header">
+        <span class="session-rail-title">会话</span>
+        <button id="session-rail-new"></button>
       </div>
-      <button id="add-btn"></button>
-      <button id="gear-btn"></button>
-      <div id="donut"><svg><circle id="donut-arc"/></svg><span id="donut-label"></span></div>
-      <div id="chips"></div>
-      <button id="mode-btn"></button>
-      <button id="send-btn"></button>
+      <div id="session-rail-list"></div>
+      <div class="session-rail-footer">
+        <button id="session-rail-history">全部历史…</button>
+      </div>
+    </aside>
+    <div id="session-rail-resizer" class="session-rail-resizer" role="separator" aria-orientation="vertical" aria-label="调整会话栏宽度" tabindex="0"></div>
+    <div class="main-col">
+      <header class="top-bar">
+        <button id="session-rail-toggle"></button>
+        <span id="session-title"></span>
+        <div class="top-bar-spacer"></div>
+        <button id="history-btn"></button>
+        <button id="new-btn"></button>
+        <div id="history-popover" hidden></div>
+      </header>
+      <main id="messages" class="messages">
+        <div class="welcome" id="welcome">
+          <p id="welcome-version" class="loading-dots">Starting</p>
+          <div id="welcome-onboarding"></div>
+        </div>
+      </main>
+      <section id="settings-page" class="settings-page" hidden>
+        <header class="settings-page-header">
+          <button id="settings-back-btn"></button>
+          <span id="settings-page-title">设置</span>
+        </header>
+        <div id="settings-page-body"></div>
+      </section>
+      <footer class="composer">
+        <button id="scroll-bottom-btn" class="scroll-bottom-btn"></button>
+        <div class="composer-card">
+          <div id="attachments"></div>
+          <div class="composer-input-wrap">
+            <div id="input-highlight"></div>
+            <textarea id="input"></textarea>
+            <button id="mic-btn"></button>
+          </div>
+          <button id="add-btn"></button>
+          <button id="gear-btn"></button>
+          <div id="donut"><svg><circle id="donut-arc"/></svg><span id="donut-label"></span></div>
+          <div id="chips"></div>
+          <button id="model-chip-btn">
+            <span class="model-chip-text">
+              <span id="model-chip-name"></span>
+              <span id="model-chip-effort"></span>
+            </span>
+            <span class="model-chip-chevron"></span>
+          </button>
+          <button id="mode-btn"></button>
+          <button id="send-btn"></button>
+        </div>
+        <div id="mode-popover" hidden></div>
+        <div id="model-effort-popover" hidden></div>
+        <div id="add-popover" hidden></div>
+        <div id="context-popover" hidden></div>
+        <div id="slash-popover" hidden></div>
+      </footer>
     </div>
-    <div id="mode-popover" hidden></div>
-    <div id="gear-popover" hidden></div>
-    <div id="add-popover" hidden></div>
-    <div id="context-popover" hidden></div>
-    <div id="slash-popover" hidden></div>
-  </footer>`;
+  </div>`;
 
 export interface Posted { type: string; [k: string]: unknown }
 

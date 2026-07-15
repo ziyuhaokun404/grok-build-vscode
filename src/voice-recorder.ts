@@ -92,7 +92,7 @@ export class VoiceRecorder {
         settled = true;
         reject(
           err.code === "ENOENT"
-            ? new Error("ffmpeg was not found. Install ffmpeg (https://ffmpeg.org) or set grok.ffmpegPath.")
+            ? new Error("未找到 ffmpeg。请安装 ffmpeg（https://ffmpeg.org）或设置 grok.ffmpegPath。")
             : err,
         );
       });
@@ -102,7 +102,7 @@ export class VoiceRecorder {
         if (settled) return;
         settled = true;
         this.proc = undefined;
-        reject(new Error(`ffmpeg exited (code ${code}) before recording started. ${stderr.slice(-300).trim()}`));
+        reject(new Error(`ffmpeg 在录音开始前退出（代码 ${code}）。${stderr.slice(-300).trim()}`));
       });
       // No early failure within the grace window → treat as recording.
       setTimeout(() => {

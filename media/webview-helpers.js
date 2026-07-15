@@ -14,12 +14,12 @@
   // copy and test/protocol.test.ts asserts the two are set-equal in both
   // directions (and that chat.js actually handles every host type).
   const HOST_MESSAGE_TYPES = [
-    "initialState", "showThinking", "fontScale", "grokUpdateStatus", "initialized",
+    "initialState", "showThinking", "showTurnMetrics", "fontScale", "grokUpdateStatus", "initialized",
     "cliUpdating", "session", "modelChanged", "modeChanged", "openModePopover",
     "voiceState", "voiceConfigured", "voicePartial", "voiceSubmit", "voiceTranscript",
     "voiceError", "chips", "commandsUpdate", "userMessage", "agentStart", "thoughtChunk",
     "messageChunk", "media", "userMessageChunk", "historyReplay", "permissionHistoryQueue",
-    "planHistoryQueue", "planProcessing", "toolCall", "toolCallUpdate", "permissionRequest",
+    "planHistoryQueue", "turnMetricsHistoryQueue", "planProcessing", "toolCall", "toolCallUpdate", "permissionRequest",
     "permissionResolved", "exitPlanRequest", "planResolved", "questionRequest", "planNotice", "planBlocked",
     "promptComplete", "contextUsage", "commandOutput", "expandCommandOutputs", "setAllToolDetails", "focusInput", "agentReset", "agentError", "agentEnd", "exit", "setBusy", "summarizing",
     "sessionContext", "clearMessages", "onboarding", "error", "xaiNotification", "subagentUpdate", "sessions",
@@ -29,12 +29,13 @@
     "ready", "send", "newSession", "cancel", "pickModel", "setMode", "removeChip",
     "toggleChip", "openFile", "openUrl", "openDiff", "exportExpr", "setEffort",
     "openGlobalConfig", "openProjectConfig", "runMcpList", "showLogs", "moveView",
-    "setShowThinking", "setExpandCommandOutputs",
+    "setShowThinking", "setShowTurnMetrics", "setExpandCommandOutputs",
     "dropFile", "permissionAnswer", "exitPlanAnswer", "questionAnswer", "questionCancel",
     "setModel", "runInstallCmd", "runGrokLogin", "logout", "checkGrokUpdate", "updateGrok",
-    "recheckConnection", "listSessions", "resumeSession", "renameSession", "deleteSession",
-    "clearAllSessions", "pickFile", "pasteImage", "voiceStart", "voiceStop",
-    "queueSend", "dequeueSend", "clearQueuedSends",
+    "recheckConnection", "listSessions", "resumeSession", "renameSession", "pinSession",
+    "archiveSession", "deleteSession", "clearAllSessions", "clearArchivedSessions",
+    "pickFile", "pasteImage", "voiceStart", "voiceStop", "queueSend", "dequeueSend",
+    "clearQueuedSends",
   ];
   const HOST_MESSAGE_TYPE_SET = new Set(HOST_MESSAGE_TYPES);
   /** True when `type` is a host->webview message the contract knows about. A
@@ -58,13 +59,13 @@
     const base = typeof now === "number" ? now : Date.now();
     const diff = base - ts;
     const sec = Math.round(diff / 1000);
-    if (sec < 60) return `${sec}s ago`;
+    if (sec < 60) return `${sec} 秒前`;
     const min = Math.round(sec / 60);
-    if (min < 60) return `${min}m ago`;
+    if (min < 60) return `${min} 分钟前`;
     const hr = Math.round(min / 60);
-    if (hr < 24) return `${hr}h ago`;
+    if (hr < 24) return `${hr} 小时前`;
     const day = Math.round(hr / 24);
-    if (day < 7) return `${day}d ago`;
+    if (day < 7) return `${day} 天前`;
     return new Date(ts).toLocaleDateString();
   }
 
@@ -233,8 +234,8 @@
     let s = name != null ? String(name).trim() : "";
     if (s.length > 48) s = s.slice(0, 47).replace(/\s+$/, "") + "…";
     if (s) return s;
-    if (r.is_background === true || r.background === true) return "background task";
-    return "Subagent";
+    if (r.is_background === true || r.background === true) return "后台任务";
+    return "子代理";
   }
 
   // True when the scroll viewport is at (or within `threshold` px of) the
@@ -314,7 +315,7 @@
       const v = raw[k];
       if (typeof v === "string" && v.trim()) return v.trim();
     }
-    return "Tool call failed.";
+    return "工具调用失败。";
   }
 
   // Scannable program label for a command tool row: the executable (first token,

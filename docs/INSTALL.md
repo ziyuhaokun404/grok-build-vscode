@@ -25,13 +25,13 @@ grok login
 ## Install the extension from the command line
 
 ```bash
-code --install-extension PawelHuryn.grok-vscode-phuryn
+code --install-extension ziyuhaokun.grok-vscode-ziyuhaokun
 ```
 
 ## Build from source
 
 ```bash
-git clone https://github.com/phuryn/grok-build-vscode.git
+git clone https://github.com/ziyuhaokun/grok-build-vscode.git
 cd grok-build-vscode
 npm install
 ./scripts/install.sh        # Windows: pwsh scripts\install.ps1
@@ -45,7 +45,7 @@ Remove it from the Extensions view, or:
 
 ```bash
 ./scripts/uninstall.sh [cli]          # Windows: pwsh scripts\uninstall.ps1 [-Cli name]
-code --uninstall-extension PawelHuryn.grok-vscode-phuryn
+code --uninstall-extension ziyuhaokun.grok-vscode-ziyuhaokun
 ```
 
 The uninstall scripts take the same optional CLI argument as install.

@@ -25,6 +25,7 @@ import type { ModelInfo, PromptResultMeta, PermissionRequest, ExitPlanRequest, Q
 import type { FileChip } from "./chips";
 import type { SessionListEntry } from "./sessions";
 import type { Dot } from "./session-pool";
+import type { TurnMetrics } from "./turn-metrics";
 
 /** grok's tool-call payload as it comes off the wire (acp emits it untyped). The
  *  webview reads a handful of fields; the index signature keeps assignment from
@@ -49,8 +50,9 @@ export interface PlanHistoryItem {
 
 /** host -> webview */
 export type HostMsg =
-  | { type: "initialState"; effort: string; cwd: string; useCtrlEnter: boolean; extVersion: string; showThinking: boolean; expandCommandOutputs: boolean }
+  | { type: "initialState"; effort: string; cwd: string; useCtrlEnter: boolean; extVersion: string; showThinking: boolean; expandCommandOutputs: boolean; showTurnMetrics: boolean }
   | { type: "showThinking"; value: boolean }
+  | { type: "showTurnMetrics"; value: boolean }
   | { type: "fontScale"; value: number }
   | { type: "grokUpdateStatus"; current?: string | null; latest?: string | null; updateAvailable?: boolean; policy?: unknown; error?: string }
   | { type: "initialized"; info: { cliPath: string; cwd: string; version: string | null; init: { protocolVersion?: unknown } } }
@@ -90,14 +92,16 @@ export type HostMsg =
   | { type: "questionRequest"; req: QuestionRequest }
   | { type: "planNotice"; text: string }
   | { type: "planBlocked"; kind: string; target: string }
-  | { type: "promptComplete"; meta: PromptResultMeta }
+  | { type: "promptComplete"; meta: PromptResultMeta; metrics?: TurnMetrics }
   // Context size read from grok's on-disk signals.json — the source that has a
   // real count when the turn meta can't: a cold restore (no turn yet) and a
   // /compact turn (its meta reports 0, stripped by gateZeroTokenMeta).
   | { type: "contextUsage"; used: number; window?: number }
   | { type: "agentReset" }
-  | { type: "agentError"; text: string }
-  | { type: "agentEnd"; meta?: PromptResultMeta }
+  | { type: "agentError"; text: string; metrics?: TurnMetrics }
+  | { type: "agentEnd"; meta?: PromptResultMeta; metrics?: TurnMetrics }
+  // Saved per-turn metrics for session/load restore (CLI does not replay prompt meta).
+  | { type: "turnMetricsHistoryQueue"; metrics: TurnMetrics[] }
   | { type: "exit"; code: number | null }
   | { type: "setBusy"; value: boolean; locked?: boolean }
   | { type: "summarizing" }
@@ -154,6 +158,7 @@ export type WebviewMsg =
   | { type: "showLogs" }
   | { type: "moveView"; location: "panel" | "sidebar" | "auxiliarybar" }
   | { type: "setShowThinking"; value: boolean }
+  | { type: "setShowTurnMetrics"; value: boolean }
   | { type: "setExpandCommandOutputs"; value: boolean }
   | { type: "dropFile"; path: string; shift: boolean }
   | { type: "permissionAnswer"; requestId: number | string; optionId: string }
@@ -170,8 +175,11 @@ export type WebviewMsg =
   | { type: "listSessions"; offset?: number; limit?: number; query?: string }
   | { type: "resumeSession"; id: string }
   | { type: "renameSession"; id: string; name: string }
+  | { type: "pinSession"; id: string; pinned: boolean }
+  | { type: "archiveSession"; id: string; archived: boolean }
   | { type: "deleteSession"; id: string; name?: string }
   | { type: "clearAllSessions" }
+  | { type: "clearArchivedSessions" }
   | { type: "pickFile" }
   | { type: "pasteImage"; mimeType: string; data: string }
   | { type: "voiceStart" }
@@ -187,13 +195,14 @@ export type WebviewMsg =
 // error). The runtime arrays are just the keys, so they can never drift from the
 // union without failing the build.
 const HOST_MESSAGE_TYPE_MAP: Record<HostMsg["type"], true> = {
-  initialState: true, showThinking: true, fontScale: true, grokUpdateStatus: true,
+  initialState: true, showThinking: true, showTurnMetrics: true, fontScale: true, grokUpdateStatus: true,
   initialized: true, cliUpdating: true, session: true, modelChanged: true,
   modeChanged: true, openModePopover: true, voiceState: true, voiceConfigured: true,
   voicePartial: true, voiceSubmit: true, voiceTranscript: true, voiceError: true,
   chips: true, commandsUpdate: true, userMessage: true, agentStart: true,
   thoughtChunk: true, messageChunk: true, media: true, userMessageChunk: true,
   historyReplay: true, permissionHistoryQueue: true, planHistoryQueue: true,
+  turnMetricsHistoryQueue: true,
   planProcessing: true, toolCall: true, toolCallUpdate: true, permissionRequest: true,
   permissionResolved: true, exitPlanRequest: true, planResolved: true, questionRequest: true,
   planNotice: true, planBlocked: true, promptComplete: true, contextUsage: true, agentReset: true,
@@ -208,12 +217,13 @@ const WEBVIEW_MESSAGE_TYPE_MAP: Record<WebviewMsg["type"], true> = {
   setMode: true, removeChip: true, toggleChip: true, openFile: true, openUrl: true,
   openDiff: true, exportExpr: true, setEffort: true, openGlobalConfig: true,
   openProjectConfig: true, runMcpList: true, showLogs: true, moveView: true,
-  setShowThinking: true, setExpandCommandOutputs: true,
+  setShowThinking: true, setShowTurnMetrics: true, setExpandCommandOutputs: true,
   dropFile: true, permissionAnswer: true, exitPlanAnswer: true, questionAnswer: true,
   questionCancel: true, setModel: true, runInstallCmd: true, runGrokLogin: true,
   logout: true, checkGrokUpdate: true, updateGrok: true, recheckConnection: true,
-  listSessions: true, resumeSession: true, renameSession: true, deleteSession: true,
-  clearAllSessions: true, pickFile: true, pasteImage: true, voiceStart: true,
+  listSessions: true, resumeSession: true, renameSession: true, pinSession: true,
+  archiveSession: true, deleteSession: true, clearAllSessions: true,
+  clearArchivedSessions: true, pickFile: true, pasteImage: true, voiceStart: true,
   voiceStop: true, queueSend: true, dequeueSend: true, clearQueuedSends: true,
 };
 

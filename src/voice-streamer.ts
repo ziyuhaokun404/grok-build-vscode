@@ -120,7 +120,7 @@ export class VoiceStreamer extends EventEmitter {
         if (settled) return;
         settled = true;
         rej(e.code === "ENOENT"
-          ? new Error("ffmpeg was not found. Install ffmpeg (https://ffmpeg.org) or set grok.ffmpegPath.")
+          ? new Error("未找到 ffmpeg。请安装 ffmpeg（https://ffmpeg.org）或设置 grok.ffmpegPath。")
           : e);
       });
       // No immediate spawn error within the grace window → capture is live.

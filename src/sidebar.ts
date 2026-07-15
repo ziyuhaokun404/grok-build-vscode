@@ -59,6 +59,16 @@ import { planReviewFileBaseName, sanitizePlanReviewFilePart } from "./plan-revie
 import { GROK_PRIMER, isPrimerText } from "./grok-primer";
 import { HostMsg, WebviewMsg } from "./protocol";
 import {
+  beginHumanWait,
+  beginShellWait,
+  beginTurnTiming,
+  computeTurnMetrics,
+  endHumanWait,
+  endShellWait,
+  markFirstToken,
+  type TurnMetrics,
+} from "./turn-metrics";
+import {
   SessionListEntry,
   SessionMetaOverrides,
   carrySessionName,
@@ -248,7 +258,7 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
       void this.onMessage(m).catch((e) => {
         const msg = (e as Error)?.message ?? String(e);
         this.output.appendLine(`[webview] ${m.type} failed: ${msg}`);
-        void vscode.window.showErrorMessage(`Grok: ${m.type} failed — ${msg}`);
+        void vscode.window.showErrorMessage(`Grok：${m.type} 失败 — ${msg}`);
       });
     });
     this.watchActiveEditor();
@@ -273,6 +283,12 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
       }
       if (e.affectsConfiguration("grok.showThinking")) {
         this.postShowThinking();
+      }
+      if (e.affectsConfiguration("grok.showTurnMetrics")) {
+        this.post({
+          type: "showTurnMetrics",
+          value: vscode.workspace.getConfiguration("grok").get<boolean>("showTurnMetrics", true),
+        });
       }
       if (e.affectsConfiguration("grok.expandCommandOutputs")) {
         this.post({
@@ -312,7 +328,7 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
         void this.trackAttach(this.pickFileFromComputer());
       } else {
         void vscode.window.showInformationMessage(
-          "Grok: open a file in the editor first, then run this command.",
+          "Grok：请先在编辑器中打开一个文件，再运行此命令。",
         );
       }
       return;
@@ -335,17 +351,17 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
 
   async pickModel(): Promise<void> {
     if (!this.focused.client || !this.focused.client.availableModels.length) {
-      vscode.window.showInformationMessage("Start a session first.");
+      vscode.window.showInformationMessage("请先启动一个会话。");
       return;
     }
     const items = this.focused.client.availableModels.map((m) => ({
       label: m.name ?? m.modelId,
-      description: m.modelId === this.focused.client!.currentModelId ? "$(check) current" : "",
+      description: m.modelId === this.focused.client!.currentModelId ? "$(check) 当前" : "",
       detail: m.description,
       modelId: m.modelId,
     }));
     const picked = await vscode.window.showQuickPick(items, {
-      placeHolder: "Pick a Grok model",
+      placeHolder: "选择 Grok 模型",
     });
     if (picked) await this.switchModel(picked.modelId);
   }
@@ -372,7 +388,7 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
       await cfg.update("defaultModel", modelId, vscode.ConfigurationTarget.Global);
     } catch (e) {
       if (!isIncompatibleAgentError(e)) {
-        vscode.window.showErrorMessage(`Failed to set model: ${(e as Error).message}`);
+        vscode.window.showErrorMessage(`设置模型失败：${(e as Error).message}`);
         return;
       }
       if (!this.focused.hasHistory) {
@@ -386,7 +402,7 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
         this.discardRestartedEmptySession(discardId);
         return;
       }
-      const mode = await this.pickRestartMode("Switching to this model requires a new session.");
+      const mode = await this.pickRestartMode("切换到此模型需要新建会话。");
       if (!mode) return; // dismissed — keep the current model
       await cfg.update("defaultModel", modelId, vscode.ConfigurationTarget.Global);
       await this.restartSession(mode);
@@ -487,10 +503,10 @@ See design doc for the full state machine diagram.`;
   private noticeAlwaysApproveOnce(): void {
     if (this.alwaysApproveNoticeShown) return;
     this.alwaysApproveNoticeShown = true;
-    const OPEN = "Open config.toml";
+    const OPEN = "打开 config.toml";
     void vscode.window
       .showInformationMessage(
-        'Grok: "always-approve" is set in your grok config.toml, so tool actions are auto-approved for every session (CLI and extension). The mode shows "Auto accept" to reflect this — the extension can\'t override a global config setting per-session.',
+        "Grok：你的 grok config.toml 中设置了 always-approve，因此所有会话（CLI 与扩展）的工具操作都会被自动批准。模式显示为「自动接受」以反映这一点 — 扩展无法按会话覆盖全局配置。",
         OPEN,
       )
       .then((pick) => {
@@ -546,7 +562,7 @@ See design doc for the full state machine diagram.`;
       this.setPlanActive(session, true); // posts displayMode → "plan"
       if (session.client) {
         try { await session.client.setMode("plan"); }
-        catch (e) { vscode.window.showErrorMessage(`Couldn't switch mode: ${(e as Error).message}`); }
+        catch (e) { vscode.window.showErrorMessage(`无法切换模式：${(e as Error).message}`); }
       }
       return;
     }
@@ -554,7 +570,7 @@ See design doc for the full state machine diagram.`;
     this.setPlanActive(session, false); // posts displayMode → "agent"
     if (session.client) {
       try { await session.client.setMode(ACT_MODE_ID); }
-      catch (e) { vscode.window.showErrorMessage(`Couldn't switch mode: ${(e as Error).message}`); }
+      catch (e) { vscode.window.showErrorMessage(`无法切换模式：${(e as Error).message}`); }
     }
   }
 
@@ -631,12 +647,14 @@ See design doc for the full state machine diagram.`;
         try {
           await this.ensurePrimed(client, session, gen);
           if (gen !== session.gen) return;
+          this.beginUserTurnTiming(session);
           const meta = await client.prompt(promptToGrok);
           if (gen !== session.gen) return;
           this.emit(session, { type: "agentEnd", meta });
           this.setStatus(session, "done");
         } catch (err) {
           if (gen !== session.gen) return;
+          this.finishTurnMetrics(session, undefined, { cancelled: true });
           const e = err as any;
           this.emit(session, { type: "agentError", text: e?.data?.message ?? e?.message ?? String(err) });
           this.setStatus(session, "error");
@@ -672,7 +690,7 @@ See design doc for the full state machine diagram.`;
       if (!feedback) {
         this.emit(session, {
           type: "planNotice",
-          text: "Plan rejected — staying in Plan mode.",
+          text: "计划已拒绝 — 仍停留在计划模式。",
         });
         this.emit(session, { type: "planProcessing" });
       }
@@ -685,12 +703,14 @@ See design doc for the full state machine diagram.`;
         try {
           await this.ensurePrimed(client, session, gen);
           if (gen !== session.gen) return;
+          this.beginUserTurnTiming(session);
           const meta = await client.prompt(promptToGrok);
           if (gen !== session.gen) return;
           this.emit(session, { type: "agentEnd", meta });
           this.setStatus(session, "done");
         } catch (err) {
           if (gen !== session.gen) return;
+          this.finishTurnMetrics(session, undefined, { cancelled: true });
           const e = err as any;
           this.emit(session, { type: "agentError", text: e?.data?.message ?? e?.message ?? String(err) });
           this.setStatus(session, "error");
@@ -707,7 +727,7 @@ See design doc for the full state machine diagram.`;
     if (!feedback) {
       this.emit(session, {
         type: "planNotice",
-        text: "Plan abandoned — switched to Agent mode.",
+        text: "计划已取消 — 已切换到代理模式。",
       });
     }
     const promptToGrok = feedback ? `[Plan cancelled] ${feedback}` : "[Plan cancelled]";
@@ -736,12 +756,14 @@ See design doc for the full state machine diagram.`;
       this.emit(session, { type: "agentStart" });
       this.setStatus(session, "working");
       try {
+        this.beginUserTurnTiming(session);
         const meta = await client.prompt(promptToGrok);
         if (gen !== session.gen) return;
         this.emit(session, { type: "agentEnd", meta });
         this.setStatus(session, "done");
       } catch (err) {
         if (gen !== session.gen) return;
+        this.finishTurnMetrics(session, undefined, { cancelled: true });
         const e = err as any;
         this.emit(session, { type: "agentError", text: e?.data?.message ?? e?.message ?? String(err) });
         this.setStatus(session, "error");
@@ -805,6 +827,61 @@ See design doc for the full state machine diagram.`;
       [sid]: { ...cur, lastPlanVerdict: verdict, plans },
     };
     void this.context.globalState.update(SESSION_META_KEY, next);
+  }
+
+  /** Start host-side timing for a user-visible turn (after primer, before prompt). */
+  private beginUserTurnTiming(session: Session, opts?: { isCompact?: boolean }): void {
+    session.turnTiming = beginTurnTiming(Date.now(), session.userMessageCount, opts);
+  }
+
+  private noteFirstToken(session: Session, kind: "thought" | "message", text: string): void {
+    if (!session.turnTiming) return;
+    if (session.suppressContent || session.suppressPlanReject) return;
+    if (!text) return;
+    markFirstToken(session.turnTiming, Date.now(), kind);
+  }
+
+  /** Finalize timing + optional persist; clears session.turnTiming. */
+  private finishTurnMetrics(
+    session: Session,
+    meta: import("./acp-dispatch").PromptResultMeta | undefined,
+    opts?: { cancelled?: boolean },
+  ): TurnMetrics | undefined {
+    const timing = session.turnTiming;
+    if (!timing) return undefined;
+    session.turnTiming = undefined;
+    const metrics = computeTurnMetrics(timing, Date.now(), meta, opts);
+    this.persistTurnMetrics(session, metrics);
+    return metrics;
+  }
+
+  private persistTurnMetrics(session: Session, metrics: TurnMetrics): void {
+    const sid = session.activeSessionId ?? session.client?.sessionId;
+    if (!sid || metrics.afterUserMessage == null) return;
+    const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    const cur = overrides[sid] ?? {};
+    const prev = cur.turnMetrics ?? [];
+    // Replace same-turn entry if re-finished (cancel then complete edge cases).
+    const filtered = prev.filter((m) => m.afterUserMessage !== metrics.afterUserMessage);
+    // Cap growth for very long sessions.
+    const nextList = [...filtered, {
+      afterUserMessage: metrics.afterUserMessage,
+      ttftMs: metrics.ttftMs,
+      durationMs: metrics.durationMs,
+      generationMs: metrics.generationMs,
+      tokensPerSec: metrics.tokensPerSec,
+      inputTokens: metrics.inputTokens,
+      outputTokens: metrics.outputTokens,
+      reasoningTokens: metrics.reasoningTokens,
+      cachedReadTokens: metrics.cachedReadTokens,
+      totalTokens: metrics.totalTokens,
+      modelId: metrics.modelId,
+      cancelled: metrics.cancelled,
+    }].slice(-200);
+    void this.context.globalState.update(SESSION_META_KEY, {
+      ...overrides,
+      [sid]: { ...cur, turnMetrics: nextList },
+    });
   }
 
   /** Persist an answered permission card (title + allowed/rejected + position) so
@@ -943,14 +1020,14 @@ See design doc for the full state machine diagram.`;
 
       // download: let the user pick the format/variant (two SVG variants share the
       // .svg extension, so a save-dialog filter can't distinguish them — quick-pick).
-      const mark = (which: string) => (msg.current === which ? "  (current theme)" : "");
+      const mark = (which: string) => (msg.current === which ? "  （当前主题）" : "");
       const items = [
-        { label: "PNG", description: "raster, VS Code theme background", fmt: "png" },
-        { label: `SVG — for dark background${mark("dark")}`, description: "transparent, light ink", fmt: "svgDark" },
-        { label: `SVG — for light background${mark("light")}`, description: "transparent, dark ink", fmt: "svgLight" },
+        { label: "PNG", description: "位图，VS Code 主题背景", fmt: "png" },
+        { label: `SVG — 适合深色背景${mark("dark")}`, description: "透明，浅色线条", fmt: "svgDark" },
+        { label: `SVG — 适合浅色背景${mark("light")}`, description: "透明，深色线条", fmt: "svgLight" },
       ];
       const pick = await vscode.window.showQuickPick(items, {
-        placeHolder: `Export ${base} as…`,
+        placeHolder: `将 ${base} 导出为…`,
       });
       if (!pick) return;
 
@@ -961,7 +1038,7 @@ See design doc for the full state machine diagram.`;
         ? vscode.Uri.joinPath(folder, defaultName)
         : vscode.Uri.file(defaultName);
       const filters: Record<string, string[]> =
-        ext === "png" ? { "PNG image": ["png"] } : { "SVG image": ["svg"] };
+        ext === "png" ? { "PNG 图片": ["png"] } : { "SVG 图片": ["svg"] };
       const target = await vscode.window.showSaveDialog({ defaultUri, filters });
       if (!target) return;
 
@@ -974,7 +1051,7 @@ See design doc for the full state machine diagram.`;
       }
     } catch (e) {
       this.output.appendLine(`[export] failed: ${(e as Error).message}`);
-      void vscode.window.showErrorMessage(`Export failed: ${(e as Error).message}`);
+      void vscode.window.showErrorMessage(`导出失败：${(e as Error).message}`);
     }
   }
 
@@ -992,11 +1069,11 @@ See design doc for the full state machine diagram.`;
       return;
     }
     const choice = await vscode.window.showWarningMessage(
-      "Sign out of Grok? This clears the CLI's cached credentials.",
+      "退出 Grok 登录？这将清除 CLI 缓存的凭据。",
       { modal: true },
-      "Sign Out",
+      "退出登录",
     );
-    if (choice !== "Sign Out") return;
+    if (choice !== "退出登录") return;
     // Tear down every live session first so no client's `exit` (or in-flight
     // turn) races the onboarding state we're about to show, then reset focus to a
     // fresh, unstarted session.
@@ -1138,10 +1215,8 @@ See design doc for the full state machine diagram.`;
       if (stderr?.trim()) this.output.appendLine(stderr.trim());
       void vscode.window.showInformationMessage(
         reason === "reactive"
-          ? `Grok CLI ${fromVersion} failed to start a session (issue #22). Switched to the ` +
-              `supported version ${GROK_STDIO_DOWNGRADE_TARGET} and retrying.`
-          : `Grok CLI ${fromVersion} has the issue #22 stdio bug that prevents the extension from ` +
-              `starting a session. Pinned to the supported version ${GROK_STDIO_DOWNGRADE_TARGET}.`,
+          ? `Grok CLI ${fromVersion} 无法启动会话（问题 #22）。已切换到受支持版本 ${GROK_STDIO_DOWNGRADE_TARGET} 并重试。`
+          : `Grok CLI ${fromVersion} 存在问题 #22 的 stdio 缺陷，导致扩展无法启动会话。已固定到受支持版本 ${GROK_STDIO_DOWNGRADE_TARGET}。`,
       );
       return true;
     } catch (e) {
@@ -1160,7 +1235,7 @@ See design doc for the full state machine diagram.`;
       vscode.workspace.getConfiguration("grok").get<string>("cliPath", ""),
     );
     if (!cliPath) {
-      this.post({ type: "grokUpdateStatus", error: "grok CLI not found" });
+      this.post({ type: "grokUpdateStatus", error: "未找到 grok CLI" });
       return;
     }
     // Compute the update policy from the installed version (issue #22) so the menu
@@ -1205,7 +1280,7 @@ See design doc for the full state machine diagram.`;
     const policy = grokUpdatePolicy(await this.readGrokVersion(cliPath), process.platform);
     if (!policy.allow) {
       void vscode.window.showInformationMessage(
-        policy.note ?? "Grok CLI updates are paused for compatibility.",
+        policy.note ?? "出于兼容性考虑，Grok CLI 更新已暂停。",
       );
       return;
     }
@@ -1220,11 +1295,11 @@ See design doc for the full state machine diagram.`;
     ).length;
     if (busy > 0) {
       const choice = await vscode.window.showWarningMessage(
-        `Updating the Grok Build CLI will stop ${busy} session${busy === 1 ? "" : "s"} currently in progress. Continue?`,
+        `更新 Grok Build CLI 将中止当前进行中的 ${busy} 个会话。是否继续？`,
         { modal: true },
-        "Update Anyway",
+        "仍然更新",
       );
-      if (choice !== "Update Anyway") return;
+      if (choice !== "仍然更新") return;
     }
     const resumeId = this.focused.activeSessionId;
     // Free the binary: every pooled session's process holds it open (a hard lock
@@ -1262,7 +1337,7 @@ See design doc for the full state machine diagram.`;
           continue;
         }
         this.output.appendLine(`grok update failed: ${msg}`);
-        void vscode.window.showWarningMessage(`Grok Build update failed: ${msg}`);
+        void vscode.window.showWarningMessage(`Grok Build 更新失败：${msg}`);
         return;
       }
     }
@@ -1274,11 +1349,11 @@ See design doc for the full state machine diagram.`;
   private async pickRestartMode(message: string): Promise<"clear" | "summarize" | undefined> {
     const choice = await vscode.window.showInformationMessage(
       message,
-      "Summarize & Restart",
-      "Just Restart",
+      "总结并重启",
+      "直接重启",
     );
     if (!choice) return undefined;
-    return choice === "Just Restart" ? "clear" : "summarize";
+    return choice === "直接重启" ? "clear" : "summarize";
   }
 
   /** Restart the session. "clear" drops the visible history; "summarize" first
@@ -1512,6 +1587,7 @@ See design doc for the full state machine diagram.`;
       // Hidden host-initiated turns (post-/compact /session-info) need the
       // reply text; the emit below is suppressed for them (suppressContent).
       if (session.captureAgentText !== undefined) session.captureAgentText += text;
+      this.noteFirstToken(session, "message", text);
       this.emit(session, { type: "messageChunk", text });
     });
     client.on("userMessageChunk", (text: string) => {
@@ -1557,6 +1633,7 @@ See design doc for the full state machine diagram.`;
     client.on("thoughtChunk", (text: string) => {
       if (gen !== session.gen) return;
       session.inUserMessage = false;
+      this.noteFirstToken(session, "thought", text);
       this.emit(session, { type: "thoughtChunk", text });
     });
     client.on("mediaContent", (m: MediaRef) => {
@@ -1582,18 +1659,40 @@ See design doc for the full state machine diagram.`;
       const label = summarizeBackgroundCommand(cmd);
       const text = `Grok background task ${ok ? "completed" : `exited (code ${exit})`}${label ? `: ${label}` : ""}`;
       this.output.appendLine(`[task] ${text}`);
-      void vscode.window.showInformationMessage(text, "Show Logs").then((choice) => {
-        if (choice === "Show Logs") this.output.show();
+      void vscode.window.showInformationMessage(text, "显示日志").then((choice) => {
+        if (choice === "显示日志") this.output.show();
       });
     });
     client.on("toolCall", (u) => {
       if (gen !== session.gen) return;
       session.inUserMessage = false;
+      // Any tool wall time is not model generation (read/search/edit/shell/…) —
+      // deduct from the tok/s window so local/host work does not inflate generationMs.
+      const id = typeof u?.toolCallId === "string" ? u.toolCallId : "";
+      if (session.turnTiming && id) {
+        beginShellWait(session.turnTiming, id, Date.now());
+      }
       this.emit(session, { type: "toolCall", call: u });
     });
     client.on("toolCallUpdate", (u) => {
       if (gen !== session.gen) return;
       session.inUserMessage = false;
+      const id = typeof u?.toolCallId === "string" ? u.toolCallId : "";
+      const st = String(u?.status ?? "").toLowerCase();
+      if (session.turnTiming && id) {
+        // Some streams only surface progress via updates — arm on in-flight statuses.
+        if (st === "completed" || st === "failed" || st === "cancelled") {
+          endShellWait(session.turnTiming, id, Date.now());
+        } else if (
+          st === "pending" ||
+          st === "in_progress" ||
+          st === "running" ||
+          st === "inprogress" ||
+          st === ""
+        ) {
+          beginShellWait(session.turnTiming, id, Date.now());
+        }
+      }
       this.emit(session, { type: "toolCallUpdate", call: u });
     });
     client.on("plan", (u) => {
@@ -1608,7 +1707,10 @@ See design doc for the full state machine diagram.`;
     });
     client.on("promptComplete", (meta) => {
       if (gen !== session.gen) return;
-      this.emit(session, { type: "promptComplete", meta: gateZeroTokenMeta(meta) });
+      const gated = gateZeroTokenMeta(meta);
+      // Hidden turns never started turnTiming — metrics stay undefined.
+      const metrics = this.finishTurnMetrics(session, gated);
+      this.emit(session, { type: "promptComplete", meta: gated, metrics });
       // A zero report (stripped above) is /compact or /session-info; neither
       // warrants a donut update here. /session-info leaves the context
       // untouched, and after /compact the fresh count comes from the hidden
@@ -1654,7 +1756,7 @@ See design doc for the full state machine diagram.`;
           client.respondPermission(req.id, rejectId);
           this.emit(session, {
             type: "planNotice",
-            text: `Plan mode declined a ${req.toolCall?.kind ?? "tool"} request — approve the plan first.`,
+            text: `计划模式已拒绝 ${req.toolCall?.kind ?? "工具"} 请求 — 请先批准计划。`,
           });
           return;
         }
@@ -1667,10 +1769,11 @@ See design doc for the full state machine diagram.`;
       }
       // Remember it so the answer can be persisted for replay on resume.
       session.pendingPermissions.set(req.id, {
-        title: req.toolCall?.title || `permission: ${req.toolCall?.kind || "tool"}`,
+        title: req.toolCall?.title || `权限：${req.toolCall?.kind || "工具"}`,
         toolCallId: req.toolCall?.toolCallId,
         options: (req.options ?? []).map((o) => ({ optionId: o.optionId, kind: o.kind })),
       });
+      if (session.turnTiming) beginHumanWait(session.turnTiming, Date.now());
       this.emit(session, { type: "permissionRequest", req });
       this.setStatus(session, "needs-you");
     });
@@ -1684,12 +1787,14 @@ See design doc for the full state machine diagram.`;
     });
     client.on("exitPlanRequest", (req: ExitPlanRequest) => {
       if (gen !== session.gen) return;
+      if (session.turnTiming) beginHumanWait(session.turnTiming, Date.now());
       void this.postExitPlanRequest(req, session, gen);
     });
     client.on("questionRequest", (req: QuestionRequest) => {
       if (gen !== session.gen) return;
       // Questions are read-only and need a human — surface them in every mode
       // (plan/YOLO included); there's no sensible auto-answer.
+      if (session.turnTiming) beginHumanWait(session.turnTiming, Date.now());
       this.emit(session, { type: "questionRequest", req });
       this.setStatus(session, "needs-you");
     });
@@ -1720,6 +1825,10 @@ See design doc for the full state machine diagram.`;
         const savedPerms = overrides[resumeId]?.permissions ?? [];
         if (savedPerms.length > 0) {
           this.emit(session, { type: "permissionHistoryQueue", permissions: savedPerms });
+        }
+        const savedMetrics = overrides[resumeId]?.turnMetrics ?? [];
+        if (savedMetrics.length > 0) {
+          this.emit(session, { type: "turnMetricsHistoryQueue", metrics: savedMetrics });
         }
         const saved = overrides[resumeId]?.plans ?? [];
         if (saved.length > 0) {
@@ -1807,7 +1916,7 @@ See design doc for the full state machine diagram.`;
             `[startup] Default model '${defaultModel}' is not available in the CLI. Using '${client.currentModelId}' instead.`,
           );
           vscode.window.showWarningMessage(
-            `Grok default model '${defaultModel}' is not available. Falling back to '${client.currentModelId}'. Please update your 'grok.defaultModel' setting.`,
+            `Grok 默认模型「${defaultModel}」不可用。将回退到「${client.currentModelId}」。请更新你的 grok.defaultModel 设置。`,
           );
         }
       }
@@ -1868,12 +1977,12 @@ See design doc for the full state machine diagram.`;
         this.emit(session, {
           type: "error",
           text:
-            `Failed to start Grok: ${msg}. This matches the Grok CLI 0.2.61–0.2.70 stdio ` +
-            `regression (issue #22, fixed in ${GROK_STDIO_DOWNGRADE_TARGET}). Workaround: run ` +
-            `\`grok update --version ${GROK_STDIO_DOWNGRADE_TARGET}\` in a terminal, then start a new session.`,
+            `无法启动 Grok：${msg}。这符合 Grok CLI 0.2.61–0.2.70 的 stdio ` +
+            `回归问题（issue #22，已在 ${GROK_STDIO_DOWNGRADE_TARGET} 修复）。变通办法：在终端运行 ` +
+            `\`grok update --version ${GROK_STDIO_DOWNGRADE_TARGET}\`，然后新建会话。`,
         });
       } else {
-        this.emit(session, { type: "error", text: `Failed to start Grok: ${msg}` });
+        this.emit(session, { type: "error", text: `无法启动 Grok：${msg}` });
       }
       return undefined;
     }
@@ -1892,6 +2001,7 @@ See design doc for the full state machine diagram.`;
         await this.newFocusedSession();
         break;
       case "cancel":
+        if (this.focused.turnTiming) this.focused.turnTiming.cancelled = true;
         await this.focused.client?.cancel("user Stop click");
         break;
       case "queueSend": {
@@ -1991,6 +2101,7 @@ See design doc for the full state machine diagram.`;
         await this.trackAttach(this.addPastedImage(msg.data, msg.mimeType));
         break;
       case "permissionAnswer":
+        if (this.focused.turnTiming) endHumanWait(this.focused.turnTiming, Date.now());
         this.focused.client?.respondPermission(msg.requestId, msg.optionId);
         // Record the resolution in the session buffer so re-focusing this session
         // replays the card collapsed instead of active (the live collapse is a
@@ -2003,13 +2114,16 @@ See design doc for the full state machine diagram.`;
         this.setStatus(this.focused, "working"); // turn resumes after the answer
         break;
       case "exitPlanAnswer":
+        if (this.focused.turnTiming) endHumanWait(this.focused.turnTiming, Date.now());
         this.handleExitPlan(msg.requestId, msg.verdict, msg.comment);
         break;
       case "questionAnswer":
+        if (this.focused.turnTiming) endHumanWait(this.focused.turnTiming, Date.now());
         this.focused.client?.respondQuestion(msg.requestId, msg.answers ?? {}, msg.annotations ?? {});
         this.setStatus(this.focused, "working");
         break;
       case "questionCancel":
+        if (this.focused.turnTiming) endHumanWait(this.focused.turnTiming, Date.now());
         this.focused.client?.respondQuestionCancelled(msg.requestId);
         this.setStatus(this.focused, "working");
         break;
@@ -2033,7 +2147,7 @@ See design doc for the full state machine diagram.`;
           break;
         }
 
-        const mode = await this.pickRestartMode("Changing reasoning effort requires restarting the session.");
+        const mode = await this.pickRestartMode("更改推理强度需要重启会话。");
         if (!mode) break; // dismissed
         await cfg2.update("defaultEffort", newLevel, vscode.ConfigurationTarget.Global);
         await this.restartSession(mode);
@@ -2105,6 +2219,11 @@ See design doc for the full state machine diagram.`;
           .getConfiguration("grok")
           .update("showThinking", !!msg.value, vscode.ConfigurationTarget.Global);
         break;
+      case "setShowTurnMetrics":
+        await vscode.workspace
+          .getConfiguration("grok")
+          .update("showTurnMetrics", !!msg.value, vscode.ConfigurationTarget.Global);
+        break;
       case "setExpandCommandOutputs":
         await vscode.workspace
           .getConfiguration("grok")
@@ -2158,11 +2277,20 @@ See design doc for the full state machine diagram.`;
       case "renameSession":
         this.renameSession(msg.id, msg.name);
         break;
+      case "pinSession":
+        this.setSessionPinned(msg.id, !!msg.pinned);
+        break;
+      case "archiveSession":
+        this.setSessionArchived(msg.id, !!msg.archived);
+        break;
       case "deleteSession":
         await this.deleteSession(msg.id, msg.name);
         break;
       case "clearAllSessions":
         await this.clearAllSessions();
+        break;
+      case "clearArchivedSessions":
+        await this.clearArchivedSessions();
         break;
       case "pickFile":
         await this.trackAttach(this.pickFileFromComputer());
@@ -2265,7 +2393,7 @@ See design doc for the full state machine diagram.`;
     }
     if (liveEmpty.size) {
       for (const e of pageEntries) {
-        if (!e.customName && liveEmpty.has(e.id)) e.displayName = "New session";
+        if (!e.customName && liveEmpty.has(e.id)) e.displayName = "新会话";
       }
     }
 
@@ -2305,8 +2433,14 @@ See design doc for the full state machine diagram.`;
     const now = Date.now();
     const customName = overrides[id]?.customName?.trim() || undefined;
     const firstMsg = (session.firstUserMessageForTitle || "").trim();
-    const displayName = customName || (firstMsg ? fallbackName(firstMsg, now) : "New session");
+    const displayName = customName || (firstMsg ? fallbackName(firstMsg, now) : "新会话");
     const ts = session.lastActiveAt || now;
+    const pinnedAt = typeof overrides[id]?.pinnedAt === "number" && overrides[id]!.pinnedAt! > 0
+      ? overrides[id]!.pinnedAt
+      : undefined;
+    const archivedAt = typeof overrides[id]?.archivedAt === "number" && overrides[id]!.archivedAt! > 0
+      ? overrides[id]!.archivedAt
+      : undefined;
     return {
       id,
       cwd,
@@ -2317,6 +2451,8 @@ See design doc for the full state machine diagram.`;
       createdAt: ts,
       numMessages: session.userMessageCount,
       modelId: undefined,
+      pinnedAt,
+      archivedAt,
     };
   }
 
@@ -2366,14 +2502,54 @@ See design doc for the full state machine diagram.`;
     this.postSessionsList();
   }
 
+  /** Toggle pin: when pinned, sort above others in the rail / history. Extension meta only. */
+  private setSessionPinned(id: string, pinned: boolean): void {
+    if (!id) return;
+    const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    const next: SessionMetaOverrides = { ...overrides };
+    const cur = { ...(next[id] ?? {}) };
+    if (pinned) {
+      cur.pinnedAt = Date.now();
+      // Pinning an archived session brings it back into the active list.
+      delete cur.archivedAt;
+    } else {
+      delete cur.pinnedAt;
+    }
+    if (Object.keys(cur).length === 0) delete next[id];
+    else next[id] = cur;
+    void this.context.globalState.update(SESSION_META_KEY, next);
+    this.sessionCache.delete(id);
+    this.postSessionsList();
+  }
+
+  /** Toggle archive: hidden from the main rail until the user expands archived. */
+  private setSessionArchived(id: string, archived: boolean): void {
+    if (!id) return;
+    const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    const next: SessionMetaOverrides = { ...overrides };
+    const cur = { ...(next[id] ?? {}) };
+    if (archived) {
+      cur.archivedAt = Date.now();
+      // Archive clears pin so it doesn't fight the active sort.
+      delete cur.pinnedAt;
+    } else {
+      delete cur.archivedAt;
+    }
+    if (Object.keys(cur).length === 0) delete next[id];
+    else next[id] = cur;
+    void this.context.globalState.update(SESSION_META_KEY, next);
+    this.sessionCache.delete(id);
+    this.postSessionsList();
+  }
+
   private async deleteSession(id: string, name?: string): Promise<void> {
-    const label = name ? `session "${name}"` : "this session";
+    const label = name ? `会话「${name}」` : "此会话";
     const choice = await vscode.window.showWarningMessage(
-      `Delete ${label}? This cannot be undone.`,
+      `删除${label}？此操作无法撤销。`,
       { modal: true },
-      "Delete",
+      "删除",
     );
-    if (choice !== "Delete") return;
+    if (choice !== "删除") return;
     const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
     try {
       deleteSessionDir({
@@ -2418,15 +2594,15 @@ See design doc for the full state machine diagram.`;
       (e) => e.id !== exceptId,
     ).length;
     if (clearableCount === 0) {
-      void vscode.window.showInformationMessage("No history to clear.");
+      void vscode.window.showInformationMessage("没有可清除的历史。");
       return;
     }
     const choice = await vscode.window.showWarningMessage(
-      `Delete ${clearableCount} session${clearableCount === 1 ? "" : "s"} from this workspace's history? This cannot be undone.`,
+      `从此工作区历史中删除 ${clearableCount} 个会话？此操作无法撤销。`,
       { modal: true },
-      "Delete All",
+      "全部删除",
     );
-    if (choice !== "Delete All") return;
+    if (choice !== "全部删除") return;
 
     let removed: string[] = [];
     try {
@@ -2459,6 +2635,64 @@ See design doc for the full state machine diagram.`;
     this.postSessionsList();
   }
 
+  /**
+   * Permanently delete every *archived* session in this workspace (disk dir + meta).
+   * Skips the focused/live session even if it is archived (CLI would re-persist it).
+   */
+  private async clearArchivedSessions(): Promise<void> {
+    const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+    const grokHome = resolveGrokHome(process.env);
+    const exceptId = this.focused?.activeSessionId;
+    const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    const archivedIds = Object.entries(overrides)
+      .filter(([, meta]) => typeof meta?.archivedAt === "number" && meta.archivedAt! > 0)
+      .map(([id]) => id)
+      .filter((id) => id && id !== exceptId);
+
+    if (archivedIds.length === 0) {
+      void vscode.window.showInformationMessage("没有可删除的归档会话。");
+      return;
+    }
+
+    const choice = await vscode.window.showWarningMessage(
+      `永久删除 ${archivedIds.length} 个已归档会话？此操作无法撤销。`,
+      { modal: true },
+      "删除全部归档",
+    );
+    if (choice !== "删除全部归档") return;
+
+    const removed: string[] = [];
+    for (const id of archivedIds) {
+      try {
+        deleteSessionDir({ fs: defaultFs, grokHome, cwd, id });
+        removed.push(id);
+      } catch (e) {
+        this.output.appendLine(`[sessions] clear-archived failed for ${id}: ${(e as Error).message}`);
+      }
+    }
+
+    if (removed.length) {
+      const next = { ...this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {}) };
+      let changed = false;
+      for (const id of removed) {
+        this.sessionCache.delete(id);
+        if (next[id]) {
+          delete next[id];
+          changed = true;
+        }
+      }
+      if (changed) await this.context.globalState.update(SESSION_META_KEY, next);
+    }
+
+    const gone = new Set(removed);
+    for (const s of [...this.pool]) {
+      if (s !== this.focused && s.activeSessionId && gone.has(s.activeSessionId)) {
+        this.disposeSession(s);
+      }
+    }
+    this.postSessionsList();
+  }
+
   private async pickFileFromComputer(): Promise<void> {
     const picked = await vscode.window.showOpenDialog({
       canSelectFiles: true,
@@ -2473,7 +2707,7 @@ See design doc for the full state machine diagram.`;
       } catch (e) {
         // Per-file: one unreadable pick must not abort the rest of a multi-select.
         this.output.appendLine(`[image] could not attach ${uri.fsPath}: ${(e as Error).message}`);
-        void vscode.window.showErrorMessage(`Grok: could not attach ${path.basename(uri.fsPath)} — ${(e as Error).message}`);
+        void vscode.window.showErrorMessage(`Grok：无法附加 ${path.basename(uri.fsPath)} — ${(e as Error).message}`);
       }
     }
     this.revealAndFocusComposer();
@@ -2547,7 +2781,7 @@ See design doc for the full state machine diagram.`;
     try {
       const enabled = shouldSendTelemetry(
         vscode.env.isTelemetryEnabled,
-        vscode.workspace.getConfiguration("grok").get<boolean>("telemetry.enabled", true),
+        vscode.workspace.getConfiguration("grok").get<boolean>("telemetry.enabled", false),
       );
       if (!enabled) return;
       const cfg = vscode.workspace.getConfiguration("grok");
@@ -2589,13 +2823,13 @@ See design doc for the full state machine diagram.`;
   /** Show actionable guidance for setting up the voice API key. */
   private async promptVoiceKeySetup(): Promise<void> {
     const pick = await vscode.window.showErrorMessage(
-      "Voice control needs an xAI API key (Speech-to-Text) — a separate console.x.ai developer key, not your Grok CLI login. Set grok.voiceApiKey, or GROK_VOICE_API_KEY / XAI_API_KEY in your workspace .env.",
-      "Open Settings",
-      "Get a Key",
+      "语音控制需要 xAI API 密钥（语音转文字）— 这是 console.x.ai 上的独立开发者密钥，不是 Grok CLI 登录。请设置 grok.voiceApiKey，或在工作区 .env 中设置 GROK_VOICE_API_KEY / XAI_API_KEY。",
+      "打开设置",
+      "获取密钥",
     );
-    if (pick === "Open Settings") {
+    if (pick === "打开设置") {
       await vscode.commands.executeCommand("workbench.action.openSettings", "grok.voiceApiKey");
-    } else if (pick === "Get a Key") {
+    } else if (pick === "获取密钥") {
       await vscode.env.openExternal(vscode.Uri.parse("https://console.x.ai"));
     }
   }
@@ -2632,8 +2866,8 @@ See design doc for the full state machine diagram.`;
       this.output.appendLine(`[voice] start failed: ${msg}`);
       // ffmpeg-missing is the common, fixable case — offer a jump to its setting.
       if (/ffmpeg/i.test(msg)) {
-        const pick = await vscode.window.showErrorMessage(msg, "Open Settings");
-        if (pick === "Open Settings") {
+        const pick = await vscode.window.showErrorMessage(msg, "打开设置");
+        if (pick === "打开设置") {
           await vscode.commands.executeCommand("workbench.action.openSettings", "grok.ffmpegPath");
         }
       } else {
@@ -2693,7 +2927,7 @@ See design doc for the full state machine diagram.`;
       if (!isCurrent()) return;
       this.output.appendLine(`[voice] stream error: ${e.message}`);
       if (!this.voiceFinalizing) {
-        vscode.window.showErrorMessage(`Voice transcription failed: ${e.message}`);
+        vscode.window.showErrorMessage(`语音转写失败：${e.message}`);
         this.post({ type: "voiceError" });
       }
       this.voiceStreamer = undefined;
@@ -2711,8 +2945,8 @@ See design doc for the full state machine diagram.`;
       const msg = (e as Error).message;
       this.output.appendLine(`[voice] stream start failed: ${msg}`);
       if (/ffmpeg/i.test(msg)) {
-        const pick = await vscode.window.showErrorMessage(msg, "Open Settings");
-        if (pick === "Open Settings") {
+        const pick = await vscode.window.showErrorMessage(msg, "打开设置");
+        if (pick === "打开设置") {
           await vscode.commands.executeCommand("workbench.action.openSettings", "grok.ffmpegPath");
         }
       } else {
@@ -2791,7 +3025,7 @@ See design doc for the full state machine diagram.`;
       wavPath = await this.voiceRecorder.stop();
     } catch (e) {
       this.output.appendLine(`[voice] stop failed: ${(e as Error).message}`);
-      vscode.window.showErrorMessage(`Voice recording failed: ${(e as Error).message}`);
+      vscode.window.showErrorMessage(`语音录音失败：${(e as Error).message}`);
       this.post({ type: "voiceError" });
       return;
     }
@@ -2803,7 +3037,7 @@ See design doc for the full state machine diagram.`;
       const sendPhrase = vscode.workspace.getConfiguration("grok").get<string>("voiceSendPhrase", DEFAULT_SEND_PHRASE);
       const { text, send } = parseVoiceCommand(raw, sendPhrase);
       if (!text && !send) {
-        vscode.window.showInformationMessage("Voice control: nothing was transcribed (silence?).");
+        vscode.window.showInformationMessage("语音控制：未识别到内容（是否静音？）。");
         this.post({ type: "voiceError" });
         return;
       }
@@ -3001,20 +3235,20 @@ See design doc for the full state machine diagram.`;
   private async addPastedImage(base64: string, mimeType: string): Promise<void> {
     try {
       if (!isVisionMime(mimeType)) {
-        void vscode.window.showErrorMessage(`Grok: unsupported image type ${mimeType} — use PNG, JPEG, GIF, or WebP.`);
+        void vscode.window.showErrorMessage(`Grok：不支持的图片类型 ${mimeType} — 请使用 PNG、JPEG、GIF 或 WebP。`);
         return;
       }
       const bytes = Buffer.from(base64, "base64");
       if (bytes.length === 0) return;
       if (bytes.length > MAX_VISION_IMAGE_BYTES) {
-        void vscode.window.showErrorMessage("Grok: pasted image exceeds the 20 MiB vision limit.");
+        void vscode.window.showErrorMessage("Grok：粘贴的图片超过 20 MiB 视觉输入上限。");
         return;
       }
       await this.stageImageAttachment(bytes, mimeType);
       this.revealAndFocusComposer();
     } catch (e) {
       this.output.appendLine(`[image] paste failed: ${(e as Error).message}`);
-      void vscode.window.showErrorMessage(`Grok: could not attach the pasted image — ${(e as Error).message}`);
+      void vscode.window.showErrorMessage(`Grok：无法附加粘贴的图片 — ${(e as Error).message}`);
     }
   }
 
@@ -3117,7 +3351,7 @@ See design doc for the full state machine diagram.`;
         if (gen !== session.gen) return;
         this.emit(session, {
           type: "agentError",
-          text: `Could not read ${chip.relPath} (${(e as Error).message}). Remove the attachment and try again.`,
+          text: `无法读取 ${chip.relPath}（${(e as Error).message}）。请移除该附件后重试。`,
         });
         return;
       }
@@ -3191,15 +3425,17 @@ See design doc for the full state machine diagram.`;
       // indicator covers the gap. If the eager primer failed, this retries it.
       await this.ensurePrimed(client, session, gen);
       if (gen !== session.gen) return;
+      // t0 after primer so priming wait is not counted as TTFT.
+      this.beginUserTurnTiming(session, { isCompact: slashCommand === "compact" });
       const meta = await client.prompt(promptBlocks);
-      if (gen !== session.gen) return; // session was switched mid-turn
+      if (gen !== session.gen) { session.turnTiming = undefined; return; } // session was switched mid-turn
       if (slashCommand === "compact") {
         // A native /compact streams no agent content (research/compact.md), so
         // the turn would end with a blank bubble and no sign it worked. Paint a
         // live-only confirmation into that empty bubble. Deliberately not
         // persisted: grok's own history has no such message, so re-focus (which
         // replays the session buffer) keeps it but a disk restore won't.
-        this.emit(session, { type: "messageChunk", text: "Compacted." });
+        this.emit(session, { type: "messageChunk", text: "已压缩。" });
         // The compact turn's own meta reports 0 (stripped) and signals.json
         // still holds the pre-compact count, so the donut would sit stale
         // until the next turn — fetch the fresh size now via a hidden
@@ -3237,10 +3473,14 @@ See design doc for the full state machine diagram.`;
         });
       }
     } catch (err) {
-      if (gen !== session.gen) return; // prompt rejected because we disposed the old client — don't leak the error into the new session
+      if (gen !== session.gen) { session.turnTiming = undefined; return; } // prompt rejected because we disposed the old client — don't leak the error into the new session
+      // promptComplete may not fire on hard failure — still close the footer clock.
+      const errMetrics = this.finishTurnMetrics(session, undefined, {
+        cancelled: !!session.turnTiming?.cancelled,
+      });
       const e = err as any;
       const message = e?.data?.message ?? e?.message ?? String(err);
-      this.emit(session, { type: "agentError", text: message });
+      this.emit(session, { type: "agentError", text: message, metrics: errMetrics });
       this.setStatus(session, "error");
     } finally {
       // If the user approved/declined a plan mid-turn, the follow-up action was
@@ -3283,6 +3523,7 @@ See design doc for the full state machine diagram.`;
       extVersion: (this.context.extension.packageJSON as { version?: string })?.version ?? "",
       showThinking: cfg.get("showThinking", false),
       expandCommandOutputs: cfg.get("expandCommandOutputs", false),
+      showTurnMetrics: cfg.get("showTurnMetrics", true),
     });
     // Sync the active-editor context chip into the fresh webview (the config
     // gate + no-editor case live inside refreshImplicitChip).
@@ -3783,7 +4024,7 @@ See design doc for the full state machine diagram.`;
       webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, "resources", file));
 
     return `<!DOCTYPE html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
 <meta charset="UTF-8" />
 <meta http-equiv="Content-Security-Policy"
@@ -3802,56 +4043,89 @@ See design doc for the full state machine diagram.`;
 </head>
 <body class="${this.showThinking() ? "" : "thinking-hidden"}" style="--chat-zoom: ${this.chatFontScale()}">
 
-  <header class="top-bar">
-    <button id="history-btn" class="icon-btn" title="Session history"></button>
-    <button id="new-btn" class="icon-btn" title="New session"></button>
-    <div id="history-popover" class="toolbar-popover history-popover" hidden></div>
-  </header>
-
-  <main id="messages" class="messages">
-    <div class="welcome" id="welcome">
-      <span class="welcome-mark" role="img" aria-label="Grok" style="--welcome-mark:url('${resourceUri("grok-icon.svg")}')"></span>
-      <h2>Grok Build (Community)</h2>
-      <p class="welcome-byline muted">by Paweł Huryn (<a href="https://www.productcompass.pm/" class="muted-link">The Product Compass</a>)</p>
-      <p id="welcome-version" class="muted loading-dots">Starting</p>
-      <div id="welcome-onboarding"></div>
-    </div>
-  </main>
-
-  <footer class="composer">
-    <button id="scroll-bottom-btn" class="scroll-bottom-btn" type="button" title="Scroll to bottom"></button>
-    <div class="composer-card">
-      <div id="attachments" class="attachments"></div>
-      <div class="composer-input-wrap">
-        <div id="input-highlight" class="input-highlight" aria-hidden="true" dir="auto"></div>
-        <textarea id="input" placeholder="Ask Grok..." rows="2" dir="auto"></textarea>
-        <button id="mic-btn" class="mic-btn" title="Voice control"></button>
+  <div class="app-shell">
+    <aside id="session-rail" class="session-rail" aria-label="会话列表">
+      <div class="session-rail-header">
+        <span class="session-rail-title">会话</span>
+        <button id="session-rail-new" class="icon-btn" type="button" title="新建会话"></button>
       </div>
-      <div class="composer-toolbar">
-        <div class="toolbar-left">
-          <button id="add-btn" class="icon-btn" title="Add context"></button>
-          <button id="gear-btn" class="icon-btn" title="Settings"></button>
-          <div class="context-donut" id="donut" title="Context usage">
-            <svg width="16" height="16" viewBox="0 0 16 16">
-              <circle cx="8" cy="8" r="6" fill="none" stroke="var(--vscode-editorWidget-border,#444)" stroke-width="3"/>
-              <circle id="donut-arc" cx="8" cy="8" r="6" fill="none" stroke="var(--vscode-charts-green,#4ec9b0)" stroke-width="3" stroke-dasharray="0 999" transform="rotate(-90 8 8)"/>
-            </svg>
-            <span id="donut-label" class="small muted">0%</span>
+      <div id="session-rail-list" class="session-rail-list" role="list"></div>
+      <div class="session-rail-footer">
+        <button id="session-rail-history" class="session-rail-link" type="button">全部历史…</button>
+      </div>
+    </aside>
+    <div id="session-rail-resizer" class="session-rail-resizer" role="separator" aria-orientation="vertical" aria-label="调整会话栏宽度" title="拖动调整会话栏宽度" tabindex="0"></div>
+    <div class="main-col">
+      <header class="top-bar">
+        <button id="session-rail-toggle" class="icon-btn" type="button" title="折叠会话栏"></button>
+        <span id="session-title" class="session-title muted"></span>
+        <div class="top-bar-spacer"></div>
+        <button id="history-btn" class="icon-btn" title="会话历史"></button>
+        <button id="new-btn" class="icon-btn" title="新建会话"></button>
+        <div id="history-popover" class="toolbar-popover history-popover" hidden></div>
+      </header>
+
+      <main id="messages" class="messages">
+        <div class="welcome" id="welcome">
+          <span class="welcome-mark" role="img" aria-label="Grok" style="--welcome-mark:url('${resourceUri("grok-icon.svg")}')"></span>
+          <h2>Grok Build（社区版）</h2>
+          <p class="welcome-byline muted">by ziyuhaokun</p>
+          <p id="welcome-version" class="muted loading-dots">正在启动</p>
+          <div id="welcome-onboarding"></div>
+        </div>
+      </main>
+
+      <section id="settings-page" class="settings-page" hidden>
+        <header class="settings-page-header">
+          <button id="settings-back-btn" class="icon-btn" type="button" title="返回对话"></button>
+          <span id="settings-page-title" class="settings-page-title">设置</span>
+        </header>
+        <div id="settings-page-body" class="settings-page-body"></div>
+      </section>
+
+      <footer class="composer">
+        <button id="scroll-bottom-btn" class="scroll-bottom-btn" type="button" title="滚动到底部"></button>
+        <div class="composer-card">
+          <div id="attachments" class="attachments"></div>
+          <div class="composer-input-wrap">
+            <div id="input-highlight" class="input-highlight" aria-hidden="true" dir="auto"></div>
+            <textarea id="input" placeholder="向 Grok 提问…" rows="2" dir="auto"></textarea>
+            <button id="mic-btn" class="mic-btn" title="语音控制"></button>
           </div>
-          <div id="chips"></div>
+          <div class="composer-toolbar">
+            <div class="toolbar-left">
+              <button id="add-btn" class="icon-btn" title="添加上下文"></button>
+              <button id="gear-btn" class="icon-btn" title="设置"></button>
+              <div class="context-donut" id="donut" title="上下文用量">
+                <svg width="16" height="16" viewBox="0 0 16 16">
+                  <circle cx="8" cy="8" r="6" fill="none" stroke="var(--vscode-editorWidget-border,#444)" stroke-width="3"/>
+                  <circle id="donut-arc" cx="8" cy="8" r="6" fill="none" stroke="var(--vscode-charts-green,#4ec9b0)" stroke-width="3" stroke-dasharray="0 999" transform="rotate(-90 8 8)"/>
+                </svg>
+                <span id="donut-label" class="small muted">0%</span>
+              </div>
+              <div id="chips"></div>
+            </div>
+            <div class="toolbar-right">
+              <button id="model-chip-btn" class="model-chip-btn" type="button" title="模型与推理强度">
+                <span class="model-chip-text">
+                  <span id="model-chip-name" class="model-chip-name">Grok Build</span>
+                  <span id="model-chip-effort" class="model-chip-effort">—</span>
+                </span>
+                <span class="model-chip-chevron" aria-hidden="true"></span>
+              </button>
+              <button id="mode-btn" class="toolbar-btn" title="选择模式"></button>
+              <button id="send-btn" class="send"></button>
+            </div>
+          </div>
         </div>
-        <div class="toolbar-right">
-          <button id="mode-btn" class="toolbar-btn" title="Pick mode"></button>
-          <button id="send-btn" class="send"></button>
-        </div>
-      </div>
+        <div id="mode-popover" class="toolbar-popover" hidden></div>
+        <div id="model-effort-popover" class="toolbar-popover model-effort-popover" hidden></div>
+        <div id="add-popover" class="toolbar-popover" hidden></div>
+        <div id="context-popover" class="toolbar-popover" hidden></div>
+        <div id="slash-popover" class="slash-popover" hidden></div>
+      </footer>
     </div>
-    <div id="mode-popover" class="toolbar-popover" hidden></div>
-    <div id="gear-popover" class="toolbar-popover gear-popover" hidden></div>
-    <div id="add-popover" class="toolbar-popover" hidden></div>
-    <div id="context-popover" class="toolbar-popover" hidden></div>
-    <div id="slash-popover" class="slash-popover" hidden></div>
-  </footer>
+  </div>
 
   <script nonce="${nonce}">
     // Configure MathJax before its bundle loads. We drive typesetting manually

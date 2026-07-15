@@ -111,7 +111,7 @@ export function makeImageChip(
   return {
     id: `image:${absPath}:${imageIndex}:${explicitChipCounter}`,
     path: absPath,
-    relPath: `Image #${imageIndex}`,
+    relPath: `图片 #${imageIndex}`,
     hidden: false,
     imageIndex,
     mimeType,

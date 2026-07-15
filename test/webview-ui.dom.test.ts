@@ -145,7 +145,7 @@ describe("session rows (regression: only the label was clickable)", () => {
     const rows = doc.querySelectorAll(".history-row");
     expect(rows).toHaveLength(2);
     expect(rows[0].querySelector(".history-row-name")!.textContent).toBe("Add subtract fn");
-    expect(rows[0].querySelector(".history-row-meta")!.textContent).toContain("4 msg");
+    expect(rows[0].querySelector(".history-row-meta")!.textContent).toContain("4 条消息");
   });
 
   it("resumes the session when the row's META area (not the label) is clicked", () => {
@@ -299,8 +299,10 @@ describe("session status dots (Agent Dashboard)", () => {
     return h;
   }
 
+  // Scope to the history popover: the left session rail also paints the same
+  // data-session-dot markers, and may re-render on sessionDot for sort order.
   const dotOf = (doc: Document, id: string) =>
-    doc.querySelector(`[data-session-dot="${id}"]`) as HTMLElement;
+    $(doc, "history-popover").querySelector(`[data-session-dot="${id}"]`) as HTMLElement;
 
   it("colors each row's dot from the dots map; rows with no entry render gray (dot-none)", () => {
     const { doc } = openWithDots({ s1: "working", s2: "unread" });
@@ -343,22 +345,23 @@ describe("session status dots (Agent Dashboard)", () => {
 
   it("keeps the dot's tooltip in sync with its state", () => {
     const { doc } = openWithDots({ s1: "working" });
-    expect(dotOf(doc, "s1").title).toBe("Working");
+    expect(dotOf(doc, "s1").title).toMatch(/运行中/);
+    expect(dotOf(doc, "s1").className).toContain("dot-working");
   });
 });
 
 describe("mode picker (the plan-gate entry path)", () => {
-  it("offers Agent / Plan / Auto accept and posts setMode with the chosen mode id", () => {
+  it("offers Agent / Plan / Auto accept modes and posts setMode with the chosen mode id", () => {
     const { window, posted, doc } = bootWebview();
     const pop = $(doc, "mode-popover");
 
     click(window, $(doc, "mode-btn"));
     expect((pop as any).hidden).toBe(false);
     const labels = [...pop.querySelectorAll(".mode-item-label")].map((l) => l.textContent);
-    expect(labels).toEqual(["Agent mode", "Plan mode", "Auto accept"]);
+    expect(labels).toEqual(["代理模式", "计划模式", "自动接受"]);
 
     const planItem = [...pop.querySelectorAll(".mode-popover-item")]
-      .find((el) => el.querySelector(".mode-item-label")!.textContent === "Plan mode") as HTMLElement;
+      .find((el) => el.querySelector(".mode-item-label")!.textContent === "计划模式") as HTMLElement;
     click(window, planItem);
 
     expect(posted).toContainEqual({ type: "setMode", modeId: "plan" });
@@ -456,72 +459,100 @@ describe("context donut (token usage)", () => {
   });
 });
 
-describe("gear settings lock (model + effort disabled while busy / priming)", () => {
+describe("model chip + effort card (always-on; locked while busy / priming)", () => {
   const models = [
     { modelId: "grok-build", name: "Grok Build" },
     { modelId: "grok-composer-2.5-fast", name: "Composer 2.5 Fast" },
   ];
-  function bootWithModels(busy?: { value: boolean; locked?: boolean }) {
+  function bootWithModels(busy?: { value: boolean; locked?: boolean }, effort = "") {
     const h = bootWebview();
+    dispatch(h.window, { type: "initialState", useCtrlEnter: false, effort, cwd: "/x", extVersion: "1.5.19" });
     dispatch(h.window, { type: "session", sessionId: "s1", models, currentModelId: "grok-build" });
     if (busy) dispatch(h.window, { type: "setBusy", ...busy });
     h.posted.length = 0;
     return h;
   }
-  const modelBtn = (doc: Document) => doc.querySelector(".model-name-btn") as HTMLButtonElement;
+  const chip = (doc: Document) => $(doc, "model-chip-btn") as HTMLButtonElement;
+  const card = (doc: Document) => $(doc, "model-effort-popover");
 
-  it("shows the user-facing model name on the gear button, not the raw id", () => {
-    const { window, doc } = bootWithModels();
-    click(window, $(doc, "gear-btn"));
-    expect(modelBtn(doc).textContent).toContain("Grok Build");
-    expect(modelBtn(doc).textContent).not.toContain("grok-build");
+  it("shows the user-facing model name on the chip, not the raw id", () => {
+    const { doc } = bootWithModels();
+    expect(chip(doc).textContent).toContain("Grok Build");
+    expect(chip(doc).textContent).not.toContain("grok-build");
   });
 
-  it("when idle, the model button opens the picker and a pick posts setModel", () => {
-    const { window, posted, doc } = bootWithModels();
-    click(window, $(doc, "gear-btn"));
-    expect(modelBtn(doc).disabled).toBe(false);
+  it("shows the short effort label on the chip from initialState", () => {
+    const { doc } = bootWithModels(undefined, "high");
+    expect($(doc, "model-chip-effort").textContent).toBe("高");
+  });
 
-    click(window, modelBtn(doc)); // opens the picker sub-view
-    const composer = [...doc.querySelectorAll("#gear-popover .toolbar-popover-item")]
+  it("when idle, the chip opens the card; expand 模型 and a pick posts setModel", () => {
+    const { window, posted, doc } = bootWithModels();
+    expect(chip(doc).disabled).toBe(false);
+
+    click(window, chip(doc));
+    expect((card(doc) as any).hidden).toBe(false);
+    // Model list is behind the "模型 ›" advanced row (collapsed by default).
+    const adv = doc.querySelector("#model-effort-popover .model-effort-advanced") as HTMLElement;
+    click(window, adv);
+    const composer = [...doc.querySelectorAll("#model-effort-popover .model-effort-model-item")]
       .find((el) => el.textContent!.includes("Composer 2.5 Fast")) as HTMLElement;
     click(window, composer);
 
     expect(posted).toContainEqual({ type: "setModel", modelId: "grok-composer-2.5-fast" });
   });
 
-  it("while priming, the model button is disabled and clicking it neither opens the picker nor posts", () => {
+  it("while priming, the chip is disabled and clicking it neither opens the card nor posts", () => {
     const { window, posted, doc } = bootWithModels({ value: true, locked: true });
-    click(window, $(doc, "gear-btn"));
 
-    expect(modelBtn(doc).disabled).toBe(true);
-    expect(modelBtn(doc).className).toContain("disabled");
+    expect(chip(doc).disabled).toBe(true);
+    expect(chip(doc).className).toContain("disabled");
 
-    click(window, modelBtn(doc));
-    // still on the main gear view (the picker's "← Model" back row never rendered)
-    expect(doc.querySelector("#gear-popover .popover-back")).toBeNull();
+    click(window, chip(doc));
+    expect((card(doc) as any).hidden).toBe(true);
     expect(types(posted)).not.toContain("setModel");
   });
 
-  it("while busy, clicking an effort dot does not post setEffort", () => {
-    const { window, posted, doc } = bootWithModels({ value: true });
-    click(window, $(doc, "gear-btn"));
-    const dot = doc.querySelector(".effort-dot") as HTMLElement;
+  it("while busy, interacting with the effort slider does not post setEffort", () => {
+    // Open the card while idle first, then flip busy so the slider re-renders locked.
+    const { window, posted, doc } = bootWithModels();
+    click(window, chip(doc));
+    dispatch(window, { type: "setBusy", value: true });
+    const slider = doc.querySelector("#model-effort-popover .effort-slider") as HTMLElement;
 
-    expect(dot.className).toContain("disabled");
-    click(window, dot);
+    expect(slider.className).toContain("disabled");
+    // pointerdown on a disabled slider should be a no-op (pointer-events: none).
+    slider.dispatchEvent(new (window as any).PointerEvent("pointerdown", {
+      bubbles: true, clientX: 100, pointerId: 1, button: 0,
+    }));
     expect(types(posted)).not.toContain("setEffort");
   });
 
-  it("re-renders an open gear to unlock the controls once busy clears", () => {
+  it("dragging the slider posts setEffort on pointerup with the snapped level", () => {
+    const { window, posted, doc } = bootWithModels(undefined, "none");
+    click(window, chip(doc));
+    const slider = doc.querySelector("#model-effort-popover .effort-slider") as HTMLElement;
+    // happy-dom may not layout; set a fixed width so index-from-x is deterministic.
+    Object.defineProperty(slider, "getBoundingClientRect", {
+      value: () => ({ left: 0, width: 220, top: 0, height: 32, right: 220, bottom: 32, x: 0, y: 0, toJSON: () => ({}) }),
+    });
+    // Near the right end → last level (xhigh). pad=10 → usable=200; x=210 → t=1.
+    slider.dispatchEvent(new (window as any).PointerEvent("pointerdown", {
+      bubbles: true, clientX: 210, pointerId: 1, button: 0,
+    }));
+    slider.dispatchEvent(new (window as any).PointerEvent("pointerup", {
+      bubbles: true, clientX: 210, pointerId: 1, button: 0,
+    }));
+    expect(posted.some((p) => p.type === "setEffort" && p.level === "xhigh")).toBe(true);
+  });
+
+  it("unlocks the chip once busy clears", () => {
     const { window, doc } = bootWithModels({ value: true, locked: true });
-    click(window, $(doc, "gear-btn"));
-    expect(modelBtn(doc).disabled).toBe(true);
+    expect(chip(doc).disabled).toBe(true);
 
     dispatch(window, { type: "setBusy", value: false });
 
-    expect(($(doc, "gear-popover") as any).hidden).toBe(false); // popover stays open
-    expect(modelBtn(doc).disabled).toBe(false); // now unlocked
+    expect(chip(doc).disabled).toBe(false);
   });
 });
 
@@ -840,7 +871,7 @@ describe("send button startup state (spinner by default until the session is rea
   });
 });
 
-describe("gear menu — Other group + About / Config & debug sub-views", () => {
+describe("settings page — Other group + About / Config & debug sub-views", () => {
   function boot() {
     const h = bootWebview();
     dispatch(h.window, { type: "initialState", useCtrlEnter: false, effort: "", cwd: "/x", extVersion: "1.4.0" });
@@ -849,30 +880,36 @@ describe("gear menu — Other group + About / Config & debug sub-views", () => {
     h.posted.length = 0;
     return h;
   }
-  const gear = (doc: Document) => $(doc, "gear-popover");
-  const items = (doc: Document) => [...doc.querySelectorAll("#gear-popover .toolbar-popover-item")] as HTMLElement[];
+  const page = (doc: Document) => $(doc, "settings-page");
+  const body = (doc: Document) => $(doc, "settings-page-body");
+  const items = (doc: Document) =>
+    [...doc.querySelectorAll("#settings-page-body .toolbar-popover-item")] as HTMLElement[];
   const itemByText = (doc: Document, text: string) =>
     items(doc).find((el) => el.textContent!.includes(text)) as HTMLElement;
 
-  it("replaces the flat Config/Account/Debug sections with an Other group", () => {
+  it("gear opens a full settings page (not a popover) with Other group", () => {
     const h = boot();
     click(h.window, $(h.doc, "gear-btn"));
+    expect((page(h.doc) as any).hidden).toBe(false);
+    expect(h.doc.body.classList.contains("settings-open")).toBe(true);
     const labels = items(h.doc).map((el) => el.textContent || "");
-    expect(labels.some((l) => l.includes("Version & about"))).toBe(true);
-    expect(labels.some((l) => l.includes("Config & debug"))).toBe(true);
-    expect(labels.some((l) => l.includes("Log out"))).toBe(true);
+    expect(labels.some((l) => l.includes("版本与关于"))).toBe(true);
+    expect(labels.some((l) => l.includes("配置与调试"))).toBe(true);
+    expect(labels.some((l) => l.includes("退出登录"))).toBe(true);
+    // model/effort live on the chip; compact lives on the context card
+    expect(body(h.doc).textContent).not.toContain("模型与推理强度");
+    expect(labels.some((l) => l.includes("压缩对话"))).toBe(false);
     // the old standalone items no longer live on the main view
-    expect(labels.some((l) => l.trim() === "Sign out")).toBe(false);
-    expect(labels.some((l) => l.includes("Show extension logs"))).toBe(false);
+    expect(labels.some((l) => l.includes("显示扩展日志"))).toBe(false);
   });
 
   it("About shows both versions and requests an update check", () => {
     const h = boot();
     click(h.window, $(h.doc, "gear-btn"));
-    click(h.window, itemByText(h.doc, "Version & about"));
+    click(h.window, itemByText(h.doc, "版本与关于"));
 
-    const text = gear(h.doc).textContent || "";
-    expect(text).toContain("This extension");
+    const text = body(h.doc).textContent || "";
+    expect(text).toContain("本扩展");
     expect(text).toContain("v1.4.0");
     expect(text).toContain("Grok Build CLI");
     expect(text).toContain("v0.2.33");
@@ -882,11 +919,11 @@ describe("gear menu — Other group + About / Config & debug sub-views", () => {
   it("enables Update Grok Build when an update is available and posts updateGrok", () => {
     const h = boot();
     click(h.window, $(h.doc, "gear-btn"));
-    click(h.window, itemByText(h.doc, "Version & about"));
+    click(h.window, itemByText(h.doc, "版本与关于"));
     dispatch(h.window, { type: "grokUpdateStatus", current: "0.2.3", latest: "0.2.33", updateAvailable: true });
 
-    expect(gear(h.doc).textContent).toContain("Update available");
-    const btn = itemByText(h.doc, "Update Grok Build");
+    expect(body(h.doc).textContent).toContain("有可用更新");
+    const btn = itemByText(h.doc, "更新 Grok Build CLI");
     expect(btn.className).not.toContain("disabled");
 
     h.posted.length = 0;
@@ -897,11 +934,11 @@ describe("gear menu — Other group + About / Config & debug sub-views", () => {
   it("shows a grayed up-to-date status and no update action when current", () => {
     const h = boot();
     click(h.window, $(h.doc, "gear-btn"));
-    click(h.window, itemByText(h.doc, "Version & about"));
+    click(h.window, itemByText(h.doc, "版本与关于"));
     dispatch(h.window, { type: "grokUpdateStatus", current: "0.2.33", latest: "0.2.33", updateAvailable: false });
 
-    expect(gear(h.doc).textContent).toContain("up to date");
-    expect(itemByText(h.doc, "Update Grok Build")).toBeUndefined();
+    expect(body(h.doc).textContent).toContain("已是最新");
+    expect(itemByText(h.doc, "更新 Grok Build CLI")).toBeUndefined();
   });
 
   it("falls back to the update check's version when the handshake gave none", () => {
@@ -910,46 +947,51 @@ describe("gear menu — Other group + About / Config & debug sub-views", () => {
     // No `initialized` version (native Windows build) — the panel starts at "—".
     dispatch(h.window, { type: "session", sessionId: "s1", models: [], currentModelId: "grok-build" });
     click(h.window, $(h.doc, "gear-btn"));
-    click(h.window, itemByText(h.doc, "Version & about"));
+    click(h.window, itemByText(h.doc, "版本与关于"));
     dispatch(h.window, { type: "grokUpdateStatus", current: "0.2.3", latest: "0.2.3", updateAvailable: false });
 
-    const text = gear(h.doc).textContent || "";
+    const text = body(h.doc).textContent || "";
     expect(text).toContain("Grok Build CLI");
     expect(text).toContain("v0.2.3");
-    expect(text).not.toContain("—");
+    // Version row must show the update-check version, not a bare "—" placeholder
+    // (fineprint may still use an em dash for punctuation — ignore that).
+    const cliRow = [...h.doc.querySelectorAll("#settings-page-body .popover-info")]
+      .find((el) => (el.textContent || "").includes("Grok Build CLI"));
+    expect(cliRow?.textContent).toContain("v0.2.3");
+    expect(cliRow?.textContent).not.toMatch(/CLI\s*—\s*$|—\s*$/);
   });
 
-  it("the About back row returns to the main menu", () => {
+  it("the About back row returns to the main settings menu", () => {
     const h = boot();
     click(h.window, $(h.doc, "gear-btn"));
-    click(h.window, itemByText(h.doc, "Version & about"));
-    click(h.window, itemByText(h.doc, "← Version & about"));
-    expect(items(h.doc).some((el) => (el.textContent || "").includes("Config & debug"))).toBe(true);
+    click(h.window, itemByText(h.doc, "版本与关于"));
+    click(h.window, itemByText(h.doc, "← 返回设置"));
+    expect(items(h.doc).some((el) => (el.textContent || "").includes("配置与调试"))).toBe(true);
   });
 
   it("Config & debug exposes the config + logs links and posts the right message", () => {
     const h = boot();
     click(h.window, $(h.doc, "gear-btn"));
-    click(h.window, itemByText(h.doc, "Config & debug"));
+    click(h.window, itemByText(h.doc, "配置与调试"));
 
     const labels = items(h.doc).map((el) => el.textContent || "");
-    expect(labels.some((l) => l.includes("Open global config"))).toBe(true);
-    expect(labels.some((l) => l.includes("Open project config"))).toBe(true);
-    expect(labels.some((l) => l.includes("MCP servers"))).toBe(true);
-    expect(labels.some((l) => l.includes("Show extension logs"))).toBe(true);
+    expect(labels.some((l) => l.includes("打开全局配置"))).toBe(true);
+    expect(labels.some((l) => l.includes("打开项目配置"))).toBe(true);
+    expect(labels.some((l) => l.includes("MCP 服务器"))).toBe(true);
+    expect(labels.some((l) => l.includes("显示扩展日志"))).toBe(true);
 
-    click(h.window, itemByText(h.doc, "Show extension logs"));
+    click(h.window, itemByText(h.doc, "显示扩展日志"));
     expect(types(h.posted)).toContain("showLogs");
   });
 });
 
 describe("Auto accept mode label (#25 rename)", () => {
-  it("labels the auto-approve mode 'Auto accept' and keeps YOLO only in the description", () => {
+  it("labels the auto-approve mode '自动接受' and keeps YOLO only in the description", () => {
     const { window, doc } = bootWebview();
     click(window, $(doc, "mode-btn"));
     const pop = $(doc, "mode-popover");
     const yolo = [...pop.querySelectorAll(".mode-popover-item")].find(
-      (el) => el.querySelector(".mode-item-label")?.textContent === "Auto accept",
+      (el) => el.querySelector(".mode-item-label")?.textContent === "自动接受",
     ) as HTMLElement;
     expect(yolo).toBeTruthy();
     expect(yolo.querySelector(".mode-item-desc")?.textContent).toContain("YOLO");
@@ -1004,12 +1046,12 @@ describe("thinking traces toggle (#26)", () => {
     dispatch(window, { type: "showThinking", value: false });
     expect(doc.body.classList.contains("thinking-hidden")).toBe(true);
     click(window, $(doc, "gear-btn"));
-    const cfg = [...doc.querySelectorAll("#gear-popover .toolbar-popover-item")].find(
-      (el) => el.textContent?.includes("Config & debug"),
+    const cfg = [...doc.querySelectorAll("#settings-page-body .toolbar-popover-item")].find(
+      (el) => el.textContent?.includes("配置与调试"),
     ) as HTMLElement;
     click(window, cfg);
-    const toggle = [...doc.querySelectorAll("#gear-popover .toolbar-popover-item")].find(
-      (el) => el.textContent?.includes("Show thinking traces"),
+    const toggle = [...doc.querySelectorAll("#settings-page-body .toolbar-popover-item")].find(
+      (el) => el.textContent?.includes("显示思考轨迹"),
     ) as HTMLElement;
     expect(toggle).toBeTruthy();
     expect(toggle.querySelector(".popover-switch")).not.toBeNull();
@@ -1498,28 +1540,28 @@ describe("composer input focus (caret ready on open)", () => {
   });
 });
 
-describe("gear entry: Move view (Config & debug)", () => {
+describe("settings entry: Move view (Config & debug)", () => {
   function openConfigDebug(window: Window, doc: Document) {
     click(window, $(doc, "gear-btn"));
-    const item = [...doc.querySelectorAll("#gear-popover .toolbar-popover-item")].find((el) =>
-      el.textContent!.includes("Config & debug"),
+    const item = [...doc.querySelectorAll("#settings-page-body .toolbar-popover-item")].find((el) =>
+      el.textContent!.includes("配置与调试"),
     ) as HTMLElement;
     click(window, item);
   }
   const itemByLabel = (doc: Document, label: string) =>
-    [...doc.querySelectorAll("#gear-popover .toolbar-popover-item")].find((el) =>
+    [...doc.querySelectorAll("#settings-page-body .toolbar-popover-item")].find((el) =>
       el.textContent!.includes(label),
     ) as HTMLElement | undefined;
 
   it("offers the three destinations, each posting moveView with its location", () => {
     const { window, posted, doc } = bootWebview();
     const destinations: Array<[string, string]> = [
-      ["To Secondary Side Bar", "auxiliarybar"],
-      ["To Primary Side Bar", "sidebar"],
-      ["To Panel", "panel"],
+      ["到辅助侧栏", "auxiliarybar"],
+      ["到主侧栏", "sidebar"],
+      ["到底部面板", "panel"],
     ];
     for (const [label, location] of destinations) {
-      openConfigDebug(window, doc); // clicking an item closes the popover — reopen each time
+      openConfigDebug(window, doc); // clicking an item closes settings — reopen each time
       const item = itemByLabel(doc, label);
       expect(item, label).toBeTruthy();
       click(window, item!);
@@ -1536,16 +1578,30 @@ describe("context popover (donut click, #39)", () => {
     click(window, $(doc, "donut"));
     const pop = $(doc, "context-popover");
     expect((pop as any).hidden).toBe(false);
-    expect(pop.textContent).toContain("Context used");
+    expect(pop.textContent).toContain("已用上下文");
+    expect(pop.textContent).toContain("压缩对话");
 
     click(window, $(doc, "messages"));
     expect((pop as any).hidden).toBe(true);
   });
 
-  it("shows only the context line — no action rows", () => {
-    const { window, doc } = bootWebview();
+  it("compact button posts /compact and closes the popover", () => {
+    const { window, posted, doc } = bootWebview();
     click(window, $(doc, "donut"));
-    expect($(doc, "context-popover").querySelector(".toolbar-popover-item")).toBeNull();
+    const btn = $(doc, "context-popover").querySelector(".context-compact-btn") as HTMLButtonElement;
+    expect(btn).toBeTruthy();
+    expect(btn.disabled).toBe(false);
+    click(window, btn);
+    expect(posted).toContainEqual({ type: "send", text: "/compact", bare: true });
+    expect(($(doc, "context-popover") as any).hidden).toBe(true);
+  });
+
+  it("disables compact while busy", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, { type: "setBusy", value: true });
+    click(window, $(doc, "donut"));
+    const btn = $(doc, "context-popover").querySelector(".context-compact-btn") as HTMLButtonElement;
+    expect(btn.disabled).toBe(true);
   });
 });
 

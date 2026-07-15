@@ -315,7 +315,7 @@ export function makeExitPlanResponse(
   }
   // Reject and Abandon must be sent as JSON-RPC errors — the CLI treats any
   // successful result as approval regardless of the outcome value.
-  const message = verdict === "rejected" ? "User rejected the plan" : "User abandoned the plan";
+  const message = verdict === "rejected" ? "用户拒绝了计划" : "用户取消了计划";
   return { jsonrpc: "2.0", id, error: { code: -32000, message } };
 }
 

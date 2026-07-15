@@ -41,10 +41,11 @@ describe("postEvent never throws (telemetry can't impact the user)", () => {
 });
 
 describe("prod vs dev app keys", () => {
-  it("are distinct EU projects (so probe traffic can't land in prod)", () => {
-    expect(APTABASE_APP_KEY_PROD).not.toBe(APTABASE_APP_KEY_DEV);
-    expect(aptabaseHost(APTABASE_APP_KEY_PROD)).toBe("https://eu.aptabase.com");
-    expect(aptabaseHost(APTABASE_APP_KEY_DEV)).toBe("https://eu.aptabase.com");
+  it("are empty by default (fork has no shipped Aptabase project; sending is a no-op)", () => {
+    expect(APTABASE_APP_KEY_PROD).toBe("");
+    expect(APTABASE_APP_KEY_DEV).toBe("");
+    expect(aptabaseHost(APTABASE_APP_KEY_PROD)).toBeUndefined();
+    expect(aptabaseHost(APTABASE_APP_KEY_DEV)).toBeUndefined();
   });
 });
 
@@ -95,7 +96,7 @@ describe("buildSessionStartEvent", () => {
   it("reports system props incl. a versioned sdk label", () => {
     expect(ev.systemProps.osName).toBe("macOS");
     expect(ev.systemProps.appVersion).toBe("1.4.24");
-    expect(ev.systemProps.sdkVersion).toBe("grok-vscode-phuryn@1.4.24");
+    expect(ev.systemProps.sdkVersion).toBe("grok-vscode-ziyuhaokun@1.4.24");
     expect(ev.systemProps.isDebug).toBe(false);
   });
 });

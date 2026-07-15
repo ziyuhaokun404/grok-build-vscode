@@ -203,16 +203,16 @@ export function parseSttResponse(json: any): SttResult {
 /** Map an STT HTTP failure to a message worth showing the user. */
 export function classifySttError(status: number, body?: string): string {
   if (status === 401 || status === 403) {
-    return "Voice transcription was rejected (401/403): the xAI API key is missing or invalid. Set grok.voiceApiKey, or GROK_VOICE_API_KEY / XAI_API_KEY in your workspace .env (get a key at console.x.ai).";
+    return "语音转写被拒绝（401/403）：xAI API 密钥缺失或无效。请设置 grok.voiceApiKey，或在工作区 .env 中设置 GROK_VOICE_API_KEY / XAI_API_KEY（密钥见 console.x.ai）。";
   }
-  if (status === 429) return "Voice transcription is rate-limited (429). Wait a moment and try again.";
-  if (status === 413) return "The recording is too large to transcribe (413). Record a shorter message.";
+  if (status === 429) return "语音转写触发限流（429）。请稍后再试。";
+  if (status === 413) return "录音过大，无法转写（413）。请录制更短的内容。";
   if (status === 400 || status === 422) {
-    return "The xAI Speech-to-Text service rejected the audio (400). The recording may be empty or in an unsupported format.";
+    return "xAI 语音转文字服务拒绝了音频（400）。录音可能为空或不支持的格式。";
   }
-  if (status >= 500) return `The xAI Speech-to-Text service errored (${status}). Try again shortly.`;
+  if (status >= 500) return `xAI 语音转文字服务出错（${status}）。请稍后重试。`;
   const tail = body ? ` ${body.slice(0, 200)}` : "";
-  return `Voice transcription failed (HTTP ${status}).${tail}`;
+  return `语音转写失败（HTTP ${status}）。${tail}`;
 }
 
 /** Normalize a transcript for dropping into the composer. */

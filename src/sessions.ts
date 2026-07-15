@@ -17,6 +17,10 @@ export interface SessionListEntry {
   createdAt: number;
   numMessages: number;
   modelId?: string;
+  /** Extension-owned pin time (ms). When set, session sorts above unpinned in UI. */
+  pinnedAt?: number;
+  /** Extension-owned archive time (ms). When set, session is hidden from the main rail by default. */
+  archivedAt?: number;
   /** grok's `session_kind` when it marks a non-user session — a `spawn_subagent`
    *  delegation persists its child as a top-level session dir with
    *  `session_kind: "subagent"`; the history list hides those. */
@@ -25,7 +29,10 @@ export interface SessionListEntry {
 
 export interface SessionMetaOverride {
   customName?: string;
+  /** When set, session is pinned in the left rail / history (ms epoch). */
   pinnedAt?: number;
+  /** When set, session is archived (ms epoch). Hidden from the main rail unless expanded. */
+  archivedAt?: number;
   /** Last verdict the user gave to an exit_plan_mode card in this session, for the restore-card label. */
   lastPlanVerdict?: "approved" | "rejected" | "abandoned";
   /** Every plan the user resolved in this session, in chronological order. grok's plan.md only
@@ -47,6 +54,25 @@ export interface SessionMetaOverride {
   unread?: boolean;
   /** The unread turn ended in an error (red dot instead of green). */
   unreadError?: boolean;
+  /**
+   * Per-turn latency/throughput metrics persisted by the extension (the CLI
+   * does not replay prompt `_meta` on session/load). `afterUserMessage` places
+   * each row on the agent footer for that user turn on restore.
+   */
+  turnMetrics?: {
+    afterUserMessage: number;
+    ttftMs?: number;
+    durationMs: number;
+    generationMs?: number;
+    tokensPerSec?: number;
+    inputTokens?: number;
+    outputTokens?: number;
+    reasoningTokens?: number;
+    cachedReadTokens?: number;
+    totalTokens?: number;
+    modelId?: string;
+    cancelled?: boolean;
+  }[];
 }
 export type SessionMetaOverrides = Record<string, SessionMetaOverride>;
 
@@ -103,13 +129,13 @@ export function fallbackName(summary: string, updatedAt: number): string {
   const s = (summary || "").trim();
   if (s) return s.length > 60 ? s.slice(0, 57) + "…" : s;
   const d = new Date(updatedAt || Date.now());
-  if (isNaN(d.getTime())) return "Untitled";
+  if (isNaN(d.getTime())) return "未命名";
   const yyyy = d.getFullYear();
   const mm = String(d.getMonth() + 1).padStart(2, "0");
   const dd = String(d.getDate()).padStart(2, "0");
   const hh = String(d.getHours()).padStart(2, "0");
   const mi = String(d.getMinutes()).padStart(2, "0");
-  return `Untitled (${yyyy}-${mm}-${dd} ${hh}:${mi})`;
+  return `未命名（${yyyy}-${mm}-${dd} ${hh}:${mi}）`;
 }
 
 function parseTimestamp(s: unknown, fallback: number): number {
@@ -137,7 +163,22 @@ function buildEntry(
   const customName = override?.customName?.trim() || undefined;
   const displayName = customName || fallbackName(rawSummary, updatedAt);
   const kind = raw?.session_kind === "subagent" ? ("subagent" as const) : undefined;
-  return { id, cwd: sessCwd, displayName, rawSummary, customName, updatedAt, createdAt, numMessages, modelId, kind };
+  const pinnedAt = typeof override?.pinnedAt === "number" && override.pinnedAt > 0 ? override.pinnedAt : undefined;
+  const archivedAt = typeof override?.archivedAt === "number" && override.archivedAt > 0 ? override.archivedAt : undefined;
+  return {
+    id,
+    cwd: sessCwd,
+    displayName,
+    rawSummary,
+    customName,
+    updatedAt,
+    createdAt,
+    numMessages,
+    modelId,
+    kind,
+    pinnedAt,
+    archivedAt,
+  };
 }
 
 export interface SessionIndexEntry {

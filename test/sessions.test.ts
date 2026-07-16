@@ -12,7 +12,9 @@ import {
   indexSessions,
   isEmptyPrimerSession,
   listSessions,
+  collectSkillListing,
   readContextUsage,
+  readSessionContextSources,
   readSessionEntries,
   sessionsDirFor,
 } from "../src/sessions";
@@ -602,7 +604,11 @@ describe("readContextUsage", () => {
 
   it("reads used + window from a real-shaped signals.json (post-compact value)", () => {
     const fs = buildFs({ [signalsPath("s1")]: { isDir: false, content: realSignals } });
-    expect(readContextUsage({ fs, grokHome, cwd, id: "s1" })).toEqual({ used: 29088, window: 200000 });
+    expect(readContextUsage({ fs, grokHome, cwd, id: "s1" })).toEqual({
+      used: 29088,
+      window: 200000,
+      turnCount: 19,
+    });
   });
 
   it("returns null when the file is missing", () => {
@@ -637,5 +643,81 @@ describe("readContextUsage", () => {
       const fs = buildFs({ [signalsPath("s1")]: { isDir: false, content } });
       expect(readContextUsage({ fs, grokHome, cwd, id: "s1" })).toEqual({ used: 1234, window: undefined });
     }
+  });
+});
+
+describe("readSessionContextSources", () => {
+  it("reads system_prompt.txt and agents_md_files content", () => {
+    const dir = path.join(sessionsDirFor(grokHome, cwd), "s1");
+    const fs = buildFs({
+      [path.join(dir, "system_prompt.txt")]: { isDir: false, content: "You are Grok." },
+      [path.join(dir, "prompt_context.json")]: {
+        isDir: false,
+        content: JSON.stringify({
+          agents_md_files: [
+            { file_name: "Agents.md", content: "# Rules\nDo not rewrite modules." },
+            { file_name: "empty.md", content: "  " },
+          ],
+        }),
+      },
+    });
+    const src = readSessionContextSources({ fs, grokHome, cwd, id: "s1" });
+    expect(src.systemPromptText).toBe("You are Grok.");
+    expect(src.agentsMdTexts).toEqual(["# Rules\nDo not rewrite modules."]);
+  });
+
+  it("returns empty when files are missing", () => {
+    const fs = buildFs({});
+    expect(readSessionContextSources({ fs, grokHome, cwd, id: "missing" })).toEqual({
+      systemPromptText: undefined,
+      agentsMdTexts: [],
+    });
+  });
+});
+
+describe("collectSkillListing", () => {
+  it("collects name+description from SKILL.md under user skills", () => {
+    const skillDir = path.join(grokHome, "skills", "commit");
+    const fs = buildFs({
+      [path.join(skillDir, "SKILL.md")]: {
+        isDir: false,
+        content: `---
+name: commit
+description: Make a git commit
+---
+
+# Commit skill
+`,
+      },
+      [path.join(grokHome, "skills")]: { isDir: true },
+      [skillDir]: { isDir: true },
+    });
+    // buildFs needs parent dirs as isDir for walk — readdir on skills
+    const listing = collectSkillListing({ fs, grokHome, cwd });
+    expect(listing.count).toBe(1);
+    expect(listing.skills[0]).toEqual({ name: "commit", description: "Make a git commit" });
+    expect(listing.text).toContain("commit");
+  });
+
+  it("dedupes by name preferring higher-priority roots (cwd over user)", () => {
+    const local = path.join(cwd, ".grok", "skills", "commit");
+    const user = path.join(grokHome, "skills", "commit");
+    const fs = buildFs({
+      [path.join(local, "SKILL.md")]: {
+        isDir: false,
+        content: "---\nname: commit\ndescription: Local override\n---\n",
+      },
+      [path.join(user, "SKILL.md")]: {
+        isDir: false,
+        content: "---\nname: commit\ndescription: User skill\n---\n",
+      },
+      [path.join(cwd, ".grok", "skills")]: { isDir: true },
+      [local]: { isDir: true },
+      [path.join(grokHome, "skills")]: { isDir: true },
+      [user]: { isDir: true },
+    });
+    const listing = collectSkillListing({ fs, grokHome, cwd });
+    expect(listing.count).toBe(1);
+    expect(listing.skills[0].description).toBe("Local override");
   });
 });

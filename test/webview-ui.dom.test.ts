@@ -554,6 +554,40 @@ describe("model chip + effort card (always-on; locked while busy / priming)", ()
 
     expect(chip(doc).disabled).toBe(false);
   });
+
+  // Live turns flip busy via agentStart/agentEnd (not host setBusy). Chip lock
+  // must track those paths via updateSendButton → updateModelChip.
+  it("disables the model chip on agentStart and re-enables on agentEnd", () => {
+    const { window, doc } = bootWithModels();
+    expect(chip(doc).disabled).toBe(false);
+
+    dispatch(window, { type: "agentStart" });
+    expect(chip(doc).disabled).toBe(true);
+    expect(chip(doc).className).toContain("disabled");
+
+    dispatch(window, { type: "agentEnd" });
+    expect(chip(doc).disabled).toBe(false);
+    expect(chip(doc).className).not.toContain("disabled");
+  });
+
+  it("adds model-chip-busy while setBusy(true) and removes it when idle", () => {
+    const { window, doc } = bootWithModels({ value: true, locked: true });
+    expect(chip(doc).className).toContain("model-chip-busy");
+
+    dispatch(window, { type: "setBusy", value: false });
+    expect(chip(doc).className).not.toContain("model-chip-busy");
+  });
+
+  it("toggles model-chip-busy across agentStart and agentEnd", () => {
+    const { window, doc } = bootWithModels();
+    expect(chip(doc).className).not.toContain("model-chip-busy");
+
+    dispatch(window, { type: "agentStart" });
+    expect(chip(doc).className).toContain("model-chip-busy");
+
+    dispatch(window, { type: "agentEnd" });
+    expect(chip(doc).className).not.toContain("model-chip-busy");
+  });
 });
 
 describe("reasoning trace (regression: thinking traces no longer expandable)", () => {

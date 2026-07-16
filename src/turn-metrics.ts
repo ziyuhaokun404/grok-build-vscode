@@ -225,6 +225,12 @@ export function formatTurnMetricsLine(m: TurnMetrics): string {
   if (m.ttftMs != null) parts.push(`首字 ${formatDurationMs(m.ttftMs)}`);
   parts.push(`耗时 ${formatDurationMs(m.durationMs)}`);
   if (m.tokensPerSec != null) parts.push(`${formatTokensPerSec(m.tokensPerSec)} tok/s`);
+  const up = fmtCount(m.inputTokens);
+  const down = fmtCount(m.outputTokens);
+  const cache = fmtCount(m.cachedReadTokens);
+  if (up != null) parts.push(`上传 ${up}`);
+  if (down != null) parts.push(`下载 ${down}`);
+  if (cache != null) parts.push(`缓存 ${cache}`);
   if (m.cancelled) parts.push("已取消");
   return parts.join(" · ");
 }
@@ -248,10 +254,10 @@ export function formatTurnMetricsTooltip(m: TurnMetrics): string {
   const reasonT = fmtCount(m.reasoningTokens);
   const cacheT = fmtCount(m.cachedReadTokens);
   const bits = [
-    inT != null ? `输入 ${inT}` : null,
-    outT != null ? `输出 ${outT}` : null,
+    inT != null ? `上传 ${inT}` : null,
+    outT != null ? `下载 ${outT}` : null,
     reasonT != null ? `思考 ${reasonT}` : null,
-    cacheT != null ? `缓存读 ${cacheT}` : null,
+    cacheT != null ? `缓存 ${cacheT}` : null,
   ].filter(Boolean);
   if (bits.length) lines.push(bits.join(" · "));
   if (m.totalTokens != null) lines.push(`上下文 ${fmtCount(m.totalTokens)}`);

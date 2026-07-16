@@ -80,6 +80,20 @@ export class Session {
   captureAgentText?: string;
 
   /**
+   * Fixed context overhead captured before real conversation growth (empty or
+   * primer-only session). Used by the experimental context-breakdown card to
+   * split "fixed" vs "messages". undefined on cold restores that already have
+   * history — we must not invent a baseline from a mid-session used count.
+   */
+  contextFixedBaseline?: number;
+
+  /**
+   * Cached skills-catalog listing for the context card (name+description only).
+   * Built once per live Session — skill dirs change rarely mid-turn.
+   */
+  contextSkillListing?: { text: string; count: number };
+
+  /**
    * Plan-reject specific suppression: drop streaming output (the false-approval
    * ramble) but let lifecycle events through so the webview clears `busy` and
    * re-enables the send button when the cancelled turn finally ends.

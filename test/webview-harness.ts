@@ -40,6 +40,18 @@ export const BODY = `
         <button id="new-btn"></button>
         <div id="history-popover" hidden></div>
       </header>
+      <section id="context-card" class="context-card" hidden>
+        <button type="button" id="context-card-toggle" class="context-card-toggle" aria-expanded="false" aria-controls="context-card-details">
+          <span class="context-card-summary">
+            <span class="context-card-label">上下文</span>
+            <span id="context-card-usage" class="context-card-usage"></span>
+            <span class="context-card-bar-wrap"><span id="context-card-bar" class="context-card-bar"></span></span>
+            <span id="context-card-pct" class="context-card-pct"></span>
+          </span>
+          <span class="context-card-chevron">▾</span>
+        </button>
+        <div id="context-card-details" class="context-card-details" role="region" hidden></div>
+      </section>
       <main id="messages" class="messages">
         <div class="welcome" id="welcome">
           <p id="welcome-version" class="loading-dots">Starting</p>
@@ -58,9 +70,7 @@ export const BODY = `
         <div class="composer-card">
           <div id="attachments"></div>
           <div class="composer-input-wrap">
-            <div id="input-highlight"></div>
             <textarea id="input"></textarea>
-            <button id="mic-btn"></button>
           </div>
           <button id="add-btn"></button>
           <button id="gear-btn"></button>

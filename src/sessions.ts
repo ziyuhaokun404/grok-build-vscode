@@ -264,6 +264,8 @@ export function readSessionEntries(deps: ReadEntriesDeps): SessionListEntry[] {
 export interface ContextUsage {
   used: number;
   window?: number;
+  /** From signals.json when present — helps decide whether a used count is still pre-history. */
+  turnCount?: number;
 }
 
 /** Read grok's persisted context usage from a session's `signals.json`
@@ -283,10 +285,186 @@ export function readContextUsage(deps: { fs: FsLike; grokHome: string; cwd: stri
     if (typeof used !== "number" || !Number.isFinite(used) || used <= 0) return null;
     const window = raw?.contextWindowTokens;
     const hasWindow = typeof window === "number" && Number.isFinite(window) && window > 0;
-    return { used, window: hasWindow ? window : undefined };
+    const turnCount = raw?.turnCount;
+    const hasTurn =
+      typeof turnCount === "number" && Number.isFinite(turnCount) && turnCount >= 0;
+    return {
+      used,
+      window: hasWindow ? window : undefined,
+      turnCount: hasTurn ? turnCount : undefined,
+    };
   } catch {
     return null;
   }
+}
+
+/** Disk sources for context-card category estimates (not tokenizer-exact). */
+export interface SessionContextSources {
+  systemPromptText?: string;
+  agentsMdTexts: string[];
+}
+
+/** Read `system_prompt.txt` + AGENTS content from `prompt_context.json` for a session. Pure. */
+export function readSessionContextSources(deps: {
+  fs: FsLike;
+  grokHome: string;
+  cwd: string;
+  id: string;
+}): SessionContextSources {
+  const { fs, grokHome, cwd, id } = deps;
+  const dir = path.join(sessionsDirFor(grokHome, cwd), id);
+  let systemPromptText: string | undefined;
+  const agentsMdTexts: string[] = [];
+  try {
+    const sp = path.join(dir, "system_prompt.txt");
+    if (fs.existsSync(sp)) {
+      const t = fs.readFileSync(sp, "utf8");
+      if (t.trim()) systemPromptText = t;
+    }
+  } catch { /* ignore */ }
+  try {
+    const pcPath = path.join(dir, "prompt_context.json");
+    if (fs.existsSync(pcPath)) {
+      const raw = JSON.parse(fs.readFileSync(pcPath, "utf8"));
+      const files = raw?.agents_md_files;
+      if (Array.isArray(files)) {
+        for (const f of files) {
+          if (typeof f?.content === "string" && f.content.trim()) agentsMdTexts.push(f.content);
+        }
+      }
+    }
+  } catch { /* ignore */ }
+  return { systemPromptText, agentsMdTexts };
+}
+
+export interface SkillListingResult {
+  text: string;
+  count: number;
+  skills: Array<{ name: string; description: string }>;
+}
+
+/**
+ * Collect skill *catalog* entries (name + description only) from the same
+ * roots the CLI scans. Used for the skills-listing estimate on the context card.
+ * Pure over `fs`. Dedupes by skill name (first wins — higher-priority roots first).
+ */
+export function collectSkillListing(deps: {
+  fs: FsLike;
+  grokHome: string;
+  cwd: string;
+  /** Optional extra skill roots (absolute paths). */
+  extraRoots?: string[];
+}): SkillListingResult {
+  // Lazy import keepers at call sites that need meta helpers — inline extract
+  // here would create a circular risk if sessions were imported by breakdown;
+  // extractSkillMeta lives in context-breakdown and is imported below only for
+  // the format step. To keep sessions free of that dep for listing, parse lightly
+  // here and let callers format via context-breakdown.
+  const { fs, grokHome, cwd } = deps;
+  const roots: string[] = [
+    path.join(cwd, ".grok", "skills"),
+    path.join(cwd, ".agents", "skills"),
+    path.join(cwd, ".claude", "skills"),
+    path.join(cwd, ".cursor", "skills"),
+    path.join(grokHome, "skills"),
+    path.join(grokHome, "bundled", "skills"),
+    ...(deps.extraRoots ?? []),
+  ];
+  const seen = new Set<string>();
+  const skills: Array<{ name: string; description: string }> = [];
+
+  const walk = (dir: string, depth: number) => {
+    if (depth > 6) return;
+    let entries: string[];
+    try {
+      if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) return;
+      entries = fs.readdirSync(dir);
+    } catch {
+      return;
+    }
+    for (const name of entries) {
+      if (name === "node_modules" || name === ".git") continue;
+      const full = path.join(dir, name);
+      let isDir = false;
+      try {
+        isDir = fs.statSync(full).isDirectory();
+      } catch {
+        continue;
+      }
+      if (isDir) {
+        // Prefer SKILL.md inside this directory
+        const skillMd = path.join(full, "SKILL.md");
+        try {
+          if (fs.existsSync(skillMd) && !fs.statSync(skillMd).isDirectory()) {
+            const md = fs.readFileSync(skillMd, "utf8");
+            const meta = parseSkillFrontmatterLite(md, name);
+            const key = meta.name.toLowerCase();
+            if (!seen.has(key)) {
+              seen.add(key);
+              skills.push(meta);
+            }
+            continue; // don't walk into skill package internals
+          }
+        } catch { /* fall through to recurse */ }
+        walk(full, depth + 1);
+      } else if (/^skill\.md$/i.test(name)) {
+        try {
+          const md = fs.readFileSync(full, "utf8");
+          const base = path.basename(dir);
+          const meta = parseSkillFrontmatterLite(md, base);
+          const key = meta.name.toLowerCase();
+          if (!seen.has(key)) {
+            seen.add(key);
+            skills.push(meta);
+          }
+        } catch { /* ignore */ }
+      }
+    }
+  };
+
+  for (const r of roots) walk(r, 0);
+
+  // Listing blob matches context-breakdown.formatSkillListing shape
+  const text = skills
+    .map((s) => `- ${s.name}: ${s.description || "(no description)"}`)
+    .join("\n");
+  return { text, count: skills.length, skills };
+}
+
+/** Minimal frontmatter parse (duplicated lightly so sessions.ts stays free of
+ *  context-breakdown for disk I/O tests). Keep in sync with extractSkillMeta. */
+function parseSkillFrontmatterLite(
+  md: string,
+  fallbackName: string,
+): { name: string; description: string } {
+  let name = fallbackName;
+  let description = "";
+  const fm = /^---\r?\n([\s\S]*?)\r?\n---/.exec(md ?? "");
+  if (fm) {
+    const block = fm[1];
+    const nameM = /^name:\s*(.+)$/m.exec(block);
+    if (nameM) {
+      let t = nameM[1].trim();
+      if ((t.startsWith('"') && t.endsWith('"')) || (t.startsWith("'") && t.endsWith("'"))) t = t.slice(1, -1);
+      name = t.trim() || fallbackName;
+    }
+    const descM = /^description:\s*(.+)$/m.exec(block);
+    if (descM) {
+      let t = descM[1].trim();
+      if ((t.startsWith('"') && t.endsWith('"')) || (t.startsWith("'") && t.endsWith("'"))) t = t.slice(1, -1);
+      description = t.trim();
+    }
+  }
+  if (!description) {
+    const body = fm ? (md ?? "").slice(fm[0].length) : (md ?? "");
+    const para = body
+      .trim()
+      .replace(/^#+\s.*$/m, "")
+      .trim()
+      .split(/\n\n/)[0];
+    description = (para || "").replace(/\s+/g, " ").trim().slice(0, 240);
+  }
+  return { name: name || fallbackName, description };
 }
 
 /** Full session list sorted by last activity. Equivalent to `indexSessions` + `readSessionEntries`

@@ -479,6 +479,158 @@ a:hover {
   position: relative;
 }
 
+/* ---- experimental context breakdown card (top of session) ---- */
+
+.context-card {
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--vscode-editorWidget-border);
+  background: var(--vscode-sideBar-background);
+  font-size: 11px;
+}
+.context-card-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  margin: 0;
+  padding: 5px 8px;
+  border: none;
+  background: transparent;
+  color: var(--vscode-foreground);
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+}
+.context-card-toggle:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+.context-card-toggle:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+.context-card-summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+.context-card-label {
+  font-weight: 600;
+  flex-shrink: 0;
+  opacity: 0.9;
+}
+.context-card-usage {
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+.context-card-bar-wrap {
+  flex: 1;
+  min-width: 24px;
+  max-width: 120px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--vscode-editorWidget-border);
+  overflow: hidden;
+}
+.context-card-bar {
+  display: block;
+  height: 100%;
+  width: 0;
+  border-radius: 2px;
+  transition: width 0.15s ease;
+}
+.context-card-pct {
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+  min-width: 2.5em;
+  text-align: right;
+}
+.context-card-chevron {
+  flex-shrink: 0;
+  opacity: 0.55;
+  font-size: 10px;
+  transition: transform 0.12s ease;
+}
+.context-card.expanded .context-card-chevron {
+  transform: rotate(180deg);
+}
+.context-card-details {
+  padding: 0 8px 8px;
+}
+.context-card-stack {
+  display: flex;
+  height: 6px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: var(--vscode-editorWidget-border);
+  margin-bottom: 6px;
+}
+.context-card-seg {
+  min-width: 0;
+  height: 100%;
+}
+.context-card-seg-system { background: var(--vscode-charts-blue, #569cd6); }
+.context-card-seg-agents { background: var(--vscode-charts-purple, #c586c0); }
+.context-card-seg-skills { background: var(--vscode-charts-orange, #ce9178); }
+.context-card-seg-other_fixed { background: var(--vscode-charts-yellow, #d7ba7d); }
+.context-card-seg-messages { background: var(--vscode-charts-green, #4ec9b0); }
+.context-card-seg-free { background: transparent; }
+.context-card-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.context-card-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  line-height: 1.35;
+}
+.context-card-row-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.context-card-row-val {
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+.context-card-note {
+  margin-top: 6px;
+  font-size: 10px;
+  line-height: 1.35;
+  opacity: 0.85;
+}
+
+/* Narrow secondary-side-bar: keep digits; drop the bar before labels. */
+.context-card-summary {
+  flex-wrap: wrap;
+  row-gap: 2px;
+}
+.context-card-bar-wrap {
+  flex: 1 1 32px;
+  min-width: 16px;
+}
+@media (max-width: 220px) {
+  .context-card-bar-wrap {
+    display: none;
+  }
+  .context-card-toggle {
+    padding: 4px 6px;
+  }
+  .context-card-row {
+    flex-wrap: wrap;
+    gap: 2px 8px;
+  }
+}
+
+/* Donut popover → top card jump (reuses compact-btn chrome). */
+.context-card-jump-btn {
+  margin-bottom: 4px;
+}
+
 /* ---- settings full page (gear → independent page, not a popover) ---- */
 
 .settings-page {
@@ -853,16 +1005,13 @@ body.settings-open .composer {
   margin-top: 4px;
   font-size: 11px;
   color: var(--vscode-descriptionForeground);
-  opacity: 0;
-  transition: opacity 0.12s;
+  /* Always visible — copy + timestamp are not hover-only. */
+  opacity: 1;
 }
 .msg.user .msg-actions {
   justify-content: flex-end;
   padding: 0 10px;
 }
-.msg.user:hover .msg-actions,
-.msg.agent:hover .msg-actions,
-.msg-actions:focus-within { opacity: 1; }
 /* Codex-style ghost action: 16px glyph centered in a 28px rounded-square hit
    target (glyph size and hit area are deliberately separate — a 28px glyph
    would look heavy). Same recipe as .icon-btn / .code-copy-btn. */
@@ -895,8 +1044,7 @@ body.settings-open .composer {
 .msg-action-glyph { display: inline-flex; align-items: center; }
 .msg-timestamp { font-size: 11px; }
 
-/* Per-turn metrics — always visible, but as a quiet meta line (not a heavy card).
-   Sibling of hover-only .msg-actions so it never inherits opacity:0. */
+/* Per-turn metrics — always visible quiet meta line under the agent turn. */
 .msg-turn-metrics-card {
   display: flex;
   flex-wrap: wrap;
@@ -1720,24 +1868,16 @@ body.vscode-light {
 .scroll-bottom-btn svg { display: block; }
 .scroll-bottom-label { white-space: nowrap; }
 
-/* The input is a textarea layered over a "backdrop" that highlights recognized
-   voice commands (e.g. "grok send"). Textareas can't style their own text, so
-   the backdrop renders a mirrored copy with the command wrapped in an accent
-   pill; the textarea sits on top with a transparent background so the pill shows
-   through behind the matching words. Border + fill + focus ring belong to the
-   enclosing .composer-card; the wrap stays position:relative because the mic
-   button and the highlight backdrop anchor to the textarea's box. */
 .composer-input-wrap {
   position: relative;
 }
-/* Shared text-box metrics — MUST match between the textarea and the backdrop so
-   the highlight aligns exactly. */
-textarea#input,
-.input-highlight {
+textarea#input {
+  display: block;
+  width: 100%;
   margin: 0;
-  /* extra right padding leaves room for the mic button in the top-right corner */
-  padding: 6px 34px 6px 8px;
+  padding: 6px 8px;
   border: 0;
+  resize: none;
   /* UI font, not the editor's monospace — typed text should look like the
      user message it becomes (textareas default to monospace otherwise). */
   font-family: var(--vscode-font-family);
@@ -1745,115 +1885,10 @@ textarea#input,
   line-height: 1.5;
   letter-spacing: normal;
   tab-size: 4;
-}
-textarea#input {
-  display: block;
-  width: 100%;
-  resize: none;
   background: transparent;
   color: var(--vscode-input-foreground);
   border-radius: var(--radius);
   outline: none;
-  position: relative;
-  z-index: 1;
-}
-.input-highlight {
-  position: absolute;
-  inset: 0;
-  z-index: 0;
-  color: transparent;
-  pointer-events: none;
-  overflow: hidden;
-  white-space: pre-wrap;
-  overflow-wrap: break-word;
-  word-break: break-word;
-}
-/* The recognized command, shown as a subtle accent pill behind the live text. */
-.input-highlight .cmd-token {
-  border-radius: 3px;
-  background: color-mix(in srgb, var(--vscode-charts-blue, #3794ff) 26%, transparent);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--vscode-charts-blue, #3794ff) 50%, transparent);
-}
-
-/* ---- mic / voice-input button (top-right corner of the textbox) ---- */
-
-.mic-btn {
-  /* Anchored inside .composer-input-wrap (position:relative) so it tracks the
-     textarea's top-right corner — not the composer, which grows when the
-     attachments row appears above the input (that made the mic "jump"). */
-  position: absolute;
-  top: 5px;
-  right: 6px;
-  /* Above the textarea (z-index:1) so its top-right padding doesn't swallow the
-     hover/click — the textarea was lifted for the highlight overlay. */
-  z-index: 2;
-  width: 24px;
-  height: 24px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-  border: none;
-  border-radius: 50%;
-  background: transparent;
-  color: var(--vscode-descriptionForeground, var(--vscode-foreground));
-  cursor: pointer;
-  opacity: 0.75;
-  transition: background 0.12s, color 0.12s, opacity 0.12s;
-}
-.mic-btn:hover { opacity: 1; background: var(--vscode-toolbar-hoverBackground); }
-.mic-btn:disabled { cursor: default; }
-/* Subtle "needs setup" dot when no voice API key is configured. */
-.mic-btn.needs-setup::after {
-  content: "";
-  position: absolute;
-  top: 1px;
-  right: 1px;
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--vscode-charts-blue, #3794ff);
-  border: 1px solid var(--vscode-editor-background, #1e1e1e);
-}
-/* Listening: blue, with an expanding "wave" ring pulsing outward. */
-.mic-btn.listening {
-  opacity: 1;
-  color: #fff;
-  background: var(--vscode-charts-blue, #3794ff);
-  animation: mic-pulse 1.5s ease-out infinite;
-}
-@keyframes mic-pulse {
-  0%   { box-shadow: 0 0 0 0 var(--vscode-charts-blue, rgba(55, 148, 255, 0.5)); }
-  70%  { box-shadow: 0 0 0 9px rgba(55, 148, 255, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(55, 148, 255, 0); }
-}
-.mic-btn.transcribing,
-.mic-btn.connecting {
-  opacity: 1;
-  color: var(--vscode-charts-blue, #3794ff);
-}
-.mic-btn.transcribing svg,
-.mic-btn.connecting svg { animation: send-spinner-rotate 0.9s linear infinite; }
-/* Animated equalizer bars shown while listening. */
-.mic-waves {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  height: 14px;
-}
-.mic-waves i {
-  width: 2px;
-  height: 4px;
-  background: currentColor;
-  border-radius: 1px;
-  animation: mic-bar 0.9s ease-in-out infinite;
-}
-.mic-waves i:nth-child(2) { animation-delay: 0.15s; }
-.mic-waves i:nth-child(3) { animation-delay: 0.3s; }
-.mic-waves i:nth-child(4) { animation-delay: 0.45s; }
-@keyframes mic-bar {
-  0%, 100% { height: 4px; }
-  50%      { height: 14px; }
 }
 
 /* ---- bottom toolbar ---- */
@@ -1945,9 +1980,15 @@ textarea#input {
 
 /* ---- model chip (composer bottom-right) + model/effort card ----
    Reference: pill chip ("Model Effort ▾") + floating card with
-   "Advanced ›" header and a blue segmented effort slider + white thumb. */
+   "Advanced ›" header and a blue segmented effort slider + white thumb.
+   While session busy: chasing-light (跑马灯) border via rotating conic ring. */
 
 .model-chip-btn {
+  --model-chip-face: color-mix(
+    in srgb,
+    var(--vscode-foreground) 7%,
+    var(--vscode-input-background, transparent)
+  );
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -1956,7 +1997,7 @@ textarea#input {
   padding: 0 8px 0 11px;
   border: 1px solid color-mix(in srgb, var(--vscode-foreground) 12%, transparent);
   border-radius: 999px;
-  background: color-mix(in srgb, var(--vscode-foreground) 7%, var(--vscode-input-background, transparent));
+  background: var(--model-chip-face);
   color: var(--vscode-foreground);
   font-family: inherit;
   font-size: 11.5px;
@@ -1965,10 +2006,23 @@ textarea#input {
   flex-shrink: 1;
   min-width: 0;
   white-space: nowrap;
+  /* Clip rotating conic marquee to the pill; stable layout idle + busy. */
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
   transition: background 0.12s, border-color 0.12s, color 0.12s;
 }
+.model-chip-btn > * {
+  position: relative;
+  z-index: 1; /* label / chevron above marquee pseudo-elements */
+}
 .model-chip-btn:hover {
-  background: color-mix(in srgb, var(--vscode-foreground) 11%, var(--vscode-input-background, transparent));
+  --model-chip-face: color-mix(
+    in srgb,
+    var(--vscode-foreground) 11%,
+    var(--vscode-input-background, transparent)
+  );
+  background: var(--model-chip-face);
   border-color: color-mix(in srgb, var(--vscode-foreground) 18%, transparent);
 }
 .model-chip-btn:focus-visible {
@@ -2012,6 +2066,68 @@ textarea#input {
   opacity: 0.45;
   cursor: not-allowed;
   pointer-events: none;
+}
+
+/* Busy marquee: full-opacity ring; mute label only (not the chasing light). */
+.model-chip-btn.disabled.model-chip-busy,
+.model-chip-btn:disabled.model-chip-busy {
+  opacity: 1;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+.model-chip-btn.model-chip-busy .model-chip-text {
+  opacity: 0.45;
+}
+.model-chip-btn.model-chip-busy {
+  --chip-marquee-a: #3b82f6;
+  --chip-marquee-b: #a78bfa;
+  border-color: transparent;
+}
+.model-chip-btn.model-chip-busy::before {
+  content: "";
+  position: absolute;
+  width: 200%;
+  height: 200%;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: conic-gradient(
+    from 0deg,
+    transparent 0deg 220deg,
+    color-mix(in srgb, var(--chip-marquee-a) 40%, transparent) 260deg,
+    var(--chip-marquee-a) 300deg,
+    var(--chip-marquee-b) 330deg,
+    color-mix(in srgb, var(--chip-marquee-b) 30%, transparent) 350deg,
+    transparent 360deg
+  );
+  animation: model-chip-marquee 1.35s linear infinite;
+  z-index: 0;
+  pointer-events: none;
+}
+.model-chip-btn.model-chip-busy::after {
+  content: "";
+  position: absolute;
+  inset: 1.5px;
+  border-radius: inherit;
+  background: var(--model-chip-face);
+  z-index: 0;
+  pointer-events: none;
+}
+@keyframes model-chip-marquee {
+  to { transform: translate(-50%, -50%) rotate(360deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .model-chip-btn.model-chip-busy::before {
+    animation: none;
+    transform: translate(-50%, -50%);
+    background: conic-gradient(
+      from 120deg,
+      transparent 0deg 240deg,
+      var(--chip-marquee-a) 280deg,
+      var(--chip-marquee-b) 320deg,
+      transparent 360deg
+    );
+  }
 }
 
 /* Floating card — Sol-style glass panel (no outer scrollbar; model list scrolls). */

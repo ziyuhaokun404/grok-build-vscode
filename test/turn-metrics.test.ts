@@ -110,10 +110,16 @@ describe("turn-metrics", () => {
       ttftMs: 800,
       durationMs: 12400,
       tokensPerSec: 36.2,
+      inputTokens: 1200,
+      outputTokens: 100,
+      cachedReadTokens: 40,
     });
     expect(line).toContain("首字");
     expect(line).toContain("耗时");
     expect(line).toContain("tok/s");
+    expect(line).toContain("上传");
+    expect(line).toContain("下载");
+    expect(line).toContain("缓存");
     const tip = formatTurnMetricsTooltip({
       ttftMs: 800,
       durationMs: 12400,
@@ -122,10 +128,13 @@ describe("turn-metrics", () => {
       inputTokens: 1200,
       outputTokens: 100,
       reasoningTokens: 50,
+      cachedReadTokens: 40,
     });
     expect(tip).toContain("生成窗口");
     expect(tip).toContain("本地处理");
-    expect(tip).toContain("输入");
+    expect(tip).toContain("上传");
+    expect(tip).toContain("下载");
+    expect(tip).toContain("缓存");
   });
 
   it("marks cancelled turns", () => {

@@ -1,5 +1,37 @@
 # 更新日志
 
+## 1.3.6 — 2026-07-16
+
+### 变更
+
+- **修复：`setShowContextCard` 写入失败** — 当扩展宿主尚未注册 `grok.showContextCard`（装完 VSIX 未重载、或仍跑旧版宿主）时，不再弹出「not a registered configuration」错误；回退到 `globalState` 持久化开关，并立即同步 webview。注册成功后仍写 User Settings。
+
+## 1.3.5 — 2026-07-16
+
+### 变更
+
+- **实验性：会话顶部上下文占用卡片**：在 top-bar 下显示粘性小卡片（默认折叠），展示已用/窗口与 System prompt、AGENTS.md、Skills 清单、其它固定、对话与剩余等分项。已用/窗口来自 CLI；分项为本地估算（chars÷4）。设置 `grok.showContextCard`（默认开）或齿轮 → **配置与调试 → 上下文占用卡片** 可关闭。甜甜圈弹层可跳转到分项；底部甜甜圈与压缩入口保留。证据：`research/context-breakdown.md`。
+- **发行打包**：版本升至 `1.3.5`。
+
+## 1.3.4 — 2026-07-16
+
+### 变更
+
+- **发行打包**：版本升至 `1.3.4`，包含当前工作区全部未发布改动。
+- **移除语音控制**：删除麦克风 / STT / voice 相关设置、源码与测试；描述文案同步去掉「语音控制」。
+- **回合指标**：设置说明与页脚指标补充 **上传 / 下载 / 缓存** token。
+- **会话运行中模型选择条跑马灯**（自 1.3.3）：composer 右下角 model chip 在 `state.busy` 时显示蓝紫追逐光边框；idle 立即停止。busy 时仍不可调模型/强度。
+- **Model chip 锁态同步**（自 1.3.3）：`updateSendButton` 路径统一刷新 chip 的 disabled / 跑马灯 class。
+- 尊重 `prefers-reduced-motion`（静态弧、不旋转）。
+
+## 1.3.3 — 2026-07-15
+
+### 变更
+
+- **会话运行中模型选择条跑马灯**：composer 右下角 model chip 在 `state.busy`（启动锁 / 回合中）时显示蓝紫追逐光边框；idle 立即停止。busy 时仍不可调模型/强度。
+- **Model chip 锁态同步**：`updateSendButton` 路径统一刷新 chip 的 disabled / 跑马灯 class，live turn 的 agentStart/End 不再只灰锁 Send。
+- 尊重 `prefers-reduced-motion`（静态弧、不旋转）。
+
 ## 1.3.2 — 2026-07-15
 
 ### 变更

@@ -5,8 +5,6 @@
   const messagesEl = $("messages");
   const input = $("input");
   const sendBtn = $("send-btn");
-  const micBtn = $("mic-btn");
-  const inputHighlight = $("input-highlight");
   const newBtn = $("new-btn");
   const historyBtn = $("history-btn");
   const modeBtn = $("mode-btn");
@@ -42,6 +40,12 @@
   const SESSION_RAIL_MIN_W = 120;
   const SESSION_RAIL_MAX_W = 420;
   const sessionTitleEl = $("session-title");
+  const contextCardEl = $("context-card");
+  const contextCardToggle = $("context-card-toggle");
+  const contextCardUsage = $("context-card-usage");
+  const contextCardBar = $("context-card-bar");
+  const contextCardPct = $("context-card-pct");
+  const contextCardDetails = $("context-card-details");
 
   // grok's accepted reasoning-effort values, lowest → highest (matches the CLI;
   // `max` is not a real grok level and is intentionally excluded — see #3/#4).
@@ -73,6 +77,10 @@
     xhigh: "极高",
   };
 
+  // Last busy flag applied to the model chip — re-lock an open effort card only
+  // on busy *edges* (declared early: updateSendButton may run on first paint).
+  let lastChipBusy = undefined;
+
   const state = {
     welcomeVisible: true,
     currentModelId: null,
@@ -89,19 +97,8 @@
     // (ready → startSession), so the send button shows the spinner from the
     // first paint until the host posts setBusy:false once the session is live.
     busy: true,
-    // Voice-input button: "idle" | "listening" | "transcribing" (see nextMicState).
-    mic: "idle",
-    // Whether the host found a voice API key. Optimistic until the host says
-    // otherwise; drives the mic button's "needs setup" hint.
-    voiceConfigured: true,
-    // Streaming dictation: text typed before the mic started ("base"), and
-    // whether live partials have begun replacing the tail.
-    voiceBase: "",
-    voiceLive: false,
-    // The configured send phrase (for highlighting it in the composer).
-    voiceSendPhrase: "grok send",
     // Render MIRROR of the focused session's host-owned send queue (#37) —
-    // messages typed/dictated while Grok was busy. All mutations route through
+    // messages typed while Grok was busy. All mutations route through
     // the host (queueSend/dequeueSend/clearQueuedSends) and come back as a
     // queuedSends snapshot, so the queue survives focus switches and the HOST
     // flushes it (one combined prompt) when the session's turn ends.
@@ -242,6 +239,12 @@
     showThinking: false,
     // grok.showTurnMetrics — per-turn 首字/耗时/tok/s on the agent footer.
     showTurnMetrics: true,
+    // grok.showContextCard — experimental top-of-session context breakdown card.
+    showContextCard: true,
+    // Latest structured breakdown from host (contextUsage.breakdown).
+    contextBreakdown: null,
+    // Card expands only for this webview session (not persisted).
+    contextCardExpanded: false,
     // Saved metrics for session/load restore (drained by afterUserMessage).
     turnMetricsQueue: [],
     thinkingIndicatorEl: null,
@@ -322,9 +325,7 @@
     pin: `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/></svg>`,
     pinFilled: `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/></svg>`,
     archive: `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="5" x="2" y="3" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/></svg>`,
-    mic: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg>`,
     // Animated equalizer bars shown while listening (CSS drives the bounce).
-    micWaves: `<span class="mic-waves" aria-hidden="true"><i></i><i></i><i></i><i></i></span>`,
   };
 
   const MODE_META = {
@@ -416,7 +417,7 @@
 
   // ---------- markdown ----------
 
-  const { looksLikeFileRef, formatRelativeTime, modelDisplayName, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, cleanSubagentOutput, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, commandProgramLabel, extractToolResultOutput, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, isKnownHostMessage } = globalThis.GrokWebviewHelpers;
+  const { looksLikeFileRef, formatRelativeTime, modelDisplayName, buildQuestionAnswers, isSubagentToolCall, subagentLabel, cleanSubagentOutput, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, commandProgramLabel, extractToolResultOutput, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, isKnownHostMessage } = globalThis.GrokWebviewHelpers;
 
   function escapeAttr(s) {
     return String(s == null ? "" : s)
@@ -1045,8 +1046,28 @@
 
     const fine = document.createElement("div");
     fine.className = "popover-fineprint";
-    fine.textContent = "由 CLI 在每轮结束时统计。";
+    fine.textContent = state.showContextCard
+      ? "精确总数由 CLI 统计。System / Skills 等分项见顶部「上下文」卡片（实验）。"
+      : "由 CLI 在每轮结束时统计。";
     contextPopover.appendChild(fine);
+
+    // Jump to the experimental top card breakdown when it is enabled.
+    if (state.showContextCard && contextCardEl && !contextCardEl.hidden) {
+      const detailBtn = document.createElement("button");
+      detailBtn.type = "button";
+      detailBtn.className = "context-compact-btn context-card-jump-btn";
+      detailBtn.innerHTML = `<span class="context-compact-label">查看分项详情</span>`;
+      detailBtn.onclick = (e) => {
+        e.stopPropagation();
+        state.contextCardExpanded = true;
+        renderContextCard();
+        closePopovers();
+        try {
+          contextCardEl.scrollIntoView({ block: "nearest" });
+        } catch { /* ignore */ }
+      };
+      contextPopover.appendChild(detailBtn);
+    }
 
     // Compact conversation — frees context by summarizing older turns.
     const compactBtn = document.createElement("button");
@@ -1317,6 +1338,15 @@
         renderConfigDebugPanel();
       },
     );
+    addGearItem(
+      `<span>上下文占用卡片 <span class="muted small">实验</span></span><span class="popover-switch${state.showContextCard ? " on" : ""}" role="switch" aria-checked="${state.showContextCard}"><span class="popover-switch-knob"></span></span>`,
+      () => {
+        state.showContextCard = !state.showContextCard;
+        applyContextCardVisibility();
+        vscode.postMessage({ type: "setShowContextCard", value: state.showContextCard });
+        renderConfigDebugPanel();
+      },
+    );
     // Expand tool details (#41/#45) — the persisted default: pre-open every tool
     // detail surface (a command's IN/OUT block, an edit's inline diff) + the
     // groups that hold one. Named to match the "Expand/Collapse All Tool Details"
@@ -1393,7 +1423,13 @@
 
   function updateModelChip() {
     if (!modelChipBtn || !modelChipName || !modelChipEffort) return;
-    const modelName = modelDisplayName(state.currentModelId, state.availableModels)
+    // Resolve via the helpers global (not the later-destructured const) so this
+    // is safe when updateSendButton runs on first paint — before the
+    // `const { modelDisplayName, ... } = GrokWebviewHelpers` line is evaluated.
+    const displayName = globalThis.GrokWebviewHelpers && globalThis.GrokWebviewHelpers.modelDisplayName;
+    const modelName = (displayName
+      ? displayName(state.currentModelId, state.availableModels)
+      : null)
       || state.currentModelId
       || "Grok Build";
     modelChipName.textContent = truncate(modelName, 14);
@@ -1403,12 +1439,24 @@
     const locked = state.busy;
     modelChipBtn.disabled = locked;
     modelChipBtn.classList.toggle("disabled", locked);
+    // Marquee / chasing-light border while the session owns the composer.
+    modelChipBtn.classList.toggle("model-chip-busy", locked);
     const effortTip = state.effort
       ? (EFFORT_TOOLTIPS[state.effort] || state.effort)
       : "未设置推理强度";
     modelChipBtn.title = locked
       ? `${modelName} ${effortTip} — 会话就绪后可调`
       : `${modelName} ${effortTip} — 点击调节`;
+    // If the effort card is open when busy flips (idle open → send), re-render
+    // so the slider shows locked. Must not run on every updateSendButton call —
+    // that path also fires on each keystroke while typing.
+    if (lastChipBusy !== locked) {
+      const prev = lastChipBusy;
+      lastChipBusy = locked;
+      if (prev !== undefined && modelEffortPopover && !modelEffortPopover.hidden) {
+        renderModelEffortCard();
+      }
+    }
   }
 
   function effortIndexFromState() {
@@ -2519,6 +2567,10 @@
     // snapshot, so its queued messages reappear when you swap back.
     state.sendQueue = [];
     state.queuedWrapEl = null;
+    state.contextBreakdown = null;
+    state.contextCardExpanded = false;
+    state.usedTokens = 0;
+    updateDonut(0);
     updateSendButton();
   }
 
@@ -2704,6 +2756,10 @@
     if (rate >= 100) return `${Math.round(rate)}`;
     return rate.toFixed(1);
   }
+  function formatTokenCount(n) {
+    if (n == null || !Number.isFinite(n)) return null;
+    return Math.round(n).toLocaleString("zh-CN");
+  }
   function formatTurnMetricsTooltip(m) {
     if (!m) return "";
     const lines = [];
@@ -2711,15 +2767,14 @@
     if (m.durationMs != null) lines.push(`对话耗时：${formatDurationMs(m.durationMs)}`);
     if (m.generationMs != null) lines.push(`生成窗口：${formatDurationMs(m.generationMs)}（已扣除工具/本地处理与等待）`);
     if (m.tokensPerSec != null) lines.push(`吞吐：${formatTokensPerSec(m.tokensPerSec)} tok/s`);
-    const fmt = (n) => (n != null && Number.isFinite(n) ? Math.round(n).toLocaleString("zh-CN") : null);
     const bits = [
-      fmt(m.inputTokens) != null ? `输入 ${fmt(m.inputTokens)}` : null,
-      fmt(m.outputTokens) != null ? `输出 ${fmt(m.outputTokens)}` : null,
-      fmt(m.reasoningTokens) != null ? `思考 ${fmt(m.reasoningTokens)}` : null,
-      fmt(m.cachedReadTokens) != null ? `缓存读 ${fmt(m.cachedReadTokens)}` : null,
+      formatTokenCount(m.inputTokens) != null ? `上传 ${formatTokenCount(m.inputTokens)}` : null,
+      formatTokenCount(m.outputTokens) != null ? `下载 ${formatTokenCount(m.outputTokens)}` : null,
+      formatTokenCount(m.reasoningTokens) != null ? `思考 ${formatTokenCount(m.reasoningTokens)}` : null,
+      formatTokenCount(m.cachedReadTokens) != null ? `缓存 ${formatTokenCount(m.cachedReadTokens)}` : null,
     ].filter(Boolean);
     if (bits.length) lines.push(bits.join(" · "));
-    if (m.totalTokens != null) lines.push(`上下文 ${fmt(m.totalTokens)}`);
+    if (m.totalTokens != null) lines.push(`上下文 ${formatTokenCount(m.totalTokens)}`);
     if (m.modelId) lines.push(`模型 ${m.modelId}`);
     if (m.cancelled) lines.push("本轮已取消");
     return lines.join("\n");
@@ -2777,6 +2832,13 @@
     if (metrics.tokensPerSec != null) {
       card.appendChild(metricItem("吞吐", `${formatTokensPerSec(metrics.tokensPerSec)} tok/s`));
     }
+    // Token counts sit to the right of timing/throughput (upload=input, download=output, cache=cached read).
+    const up = formatTokenCount(metrics.inputTokens);
+    const down = formatTokenCount(metrics.outputTokens);
+    const cache = formatTokenCount(metrics.cachedReadTokens);
+    if (up != null) card.appendChild(metricItem("上传", up));
+    if (down != null) card.appendChild(metricItem("下载", down));
+    if (cache != null) card.appendChild(metricItem("缓存", cache));
     if (metrics.cancelled) {
       card.appendChild(metricItem("状态", "已取消"));
     }
@@ -4858,7 +4920,114 @@
     }
   }
 
-  // ---------- donut ----------
+  // ---------- donut + context card ----------
+
+  function contextBarColor(pct) {
+    if (pct > 90) return "var(--vscode-charts-red, #f48771)";
+    if (pct > 70) return "var(--vscode-charts-yellow, #d7ba7d)";
+    return "var(--vscode-charts-green, #4ec9b0)";
+  }
+
+  function applyContextCardVisibility() {
+    if (!contextCardEl) return;
+    const hasData = (state.usedTokens || 0) > 0 || !!state.contextBreakdown;
+    contextCardEl.hidden = !state.showContextCard || !hasData;
+  }
+
+  function renderContextCard() {
+    if (!contextCardEl) return;
+    applyContextCardVisibility();
+    if (contextCardEl.hidden) return;
+
+    const used = state.usedTokens || 0;
+    const max = state.contextWindow || 1;
+    const pct = Math.min(100, Math.round((used / max) * 100));
+    if (contextCardUsage) {
+      contextCardUsage.textContent = `${toK(used)} / ${toK(max)}`;
+      contextCardUsage.title = `${used.toLocaleString()} / ${max.toLocaleString()} tokens`;
+    }
+    if (contextCardPct) contextCardPct.textContent = `${pct}%`;
+    if (contextCardBar) {
+      contextCardBar.style.width = `${pct}%`;
+      contextCardBar.style.background = contextBarColor(pct);
+    }
+
+    const expanded = !!state.contextCardExpanded;
+    if (contextCardToggle) {
+      contextCardToggle.setAttribute("aria-expanded", expanded ? "true" : "false");
+      contextCardToggle.title = expanded ? "折叠上下文占用详情" : "展开上下文占用详情";
+      contextCardEl.classList.toggle("expanded", expanded);
+    }
+    if (!contextCardDetails) return;
+    contextCardDetails.hidden = !expanded;
+    if (!expanded) return;
+
+    const bd = state.contextBreakdown;
+    contextCardDetails.innerHTML = "";
+    if (!bd || !Array.isArray(bd.buckets) || !bd.buckets.length) {
+      const empty = document.createElement("div");
+      empty.className = "context-card-note muted";
+      empty.textContent = "暂无分项数据。回合结束后将刷新。";
+      contextCardDetails.appendChild(empty);
+      return;
+    }
+
+    // Stacked bar of non-free buckets
+    const stack = document.createElement("div");
+    stack.className = "context-card-stack";
+    stack.setAttribute("aria-hidden", "true");
+    const win = bd.window || max || 1;
+    for (const b of bd.buckets) {
+      if (b.id === "free" || !(b.tokens > 0)) continue;
+      const seg = document.createElement("span");
+      seg.className = `context-card-seg context-card-seg-${b.id}`;
+      seg.style.flexGrow = String(b.tokens);
+      seg.title = `${b.label}: ${b.tokens.toLocaleString()}`;
+      stack.appendChild(seg);
+    }
+    const freeTok = Math.max(0, win - (bd.used || used));
+    if (freeTok > 0) {
+      const seg = document.createElement("span");
+      seg.className = "context-card-seg context-card-seg-free";
+      seg.style.flexGrow = String(freeTok);
+      stack.appendChild(seg);
+    }
+    contextCardDetails.appendChild(stack);
+
+    const list = document.createElement("div");
+    list.className = "context-card-rows";
+    for (const b of bd.buckets) {
+      const row = document.createElement("div");
+      row.className = "context-card-row";
+      const label = document.createElement("span");
+      label.className = "context-card-row-label";
+      const approx = b.source === "estimate" || b.source === "residual";
+      label.textContent = approx && b.id !== "free" && b.id !== "messages"
+        ? `约 ${b.label}`
+        : b.id === "messages" && b.source === "residual"
+          ? b.label
+          : b.source === "estimate"
+            ? `约 ${b.label}`
+            : b.label;
+      if (b.source === "estimate") label.title = "本地文本估算（chars÷4），非 CLI 精确 tokenizer";
+      else if (b.source === "residual") label.title = "由权威总数与其它行推算";
+      const val = document.createElement("span");
+      val.className = "context-card-row-val muted";
+      const bp = Math.min(100, Math.round((b.tokens / win) * 1000) / 10);
+      val.textContent = `${toK(b.tokens)} · ${bp}%`;
+      row.appendChild(label);
+      row.appendChild(val);
+      list.appendChild(row);
+    }
+    contextCardDetails.appendChild(list);
+
+    if (bd.note) {
+      const note = document.createElement("div");
+      note.className = "context-card-note muted";
+      note.textContent = bd.note;
+      contextCardDetails.appendChild(note);
+    }
+  }
 
   function updateDonut(used) {
     // Remember the last usage so a later redraw (e.g. the context window changing
@@ -4870,12 +5039,11 @@
     const circumference = 2 * Math.PI * 6; // must match the donut circles' r in getHtml
     const arc = (pct / 100) * circumference;
     donutArc.setAttribute("stroke-dasharray", `${arc} ${circumference}`);
-    let color = "var(--vscode-charts-green, #4ec9b0)";
-    if (pct > 90) color = "var(--vscode-charts-red, #f48771)";
-    else if (pct > 70) color = "var(--vscode-charts-yellow, #d7ba7d)";
+    let color = contextBarColor(pct);
     donutArc.setAttribute("stroke", color);
     donutLabel.textContent = `${toK(used)}/${toK(max)}`;
     donutLabel.title = `${used.toLocaleString()} / ${max.toLocaleString()} 个 token`;
+    renderContextCard();
   }
 
   // ---------- slash autocomplete ----------
@@ -4962,6 +5130,10 @@
       sendBtn.classList.add("stop");
       sendBtn.disabled = false;
     }
+    // Keep model chip lock + marquee class in sync on every busy path
+    // (send / agentStart / agentEnd / exit / reset all funnel here). Idempotent
+    // and cheap — also hit on each keystroke via renderInputHighlight.
+    updateModelChip();
   }
 
   // Queue whatever is typed for send-at-turn-end. Returns true if something was
@@ -5024,92 +5196,9 @@
     slashPopover.hidden = true;
   }
 
-  // ---------- voice control ----------
-
-  // The mic button records in the extension host (webviews can't reach the mic)
-  // and transcribes via xAI Speech-to-Text. We optimistically flip to
-  // "listening" on click for instant feedback; the host confirms or, on any
-  // setup failure (no API key, ffmpeg missing), sends "voiceError" to reset us.
-  function renderMic() {
-    if (!micBtn) return;
-    micBtn.classList.toggle("listening", state.mic === "listening");
-    micBtn.classList.toggle("transcribing", state.mic === "transcribing");
-    micBtn.classList.toggle("connecting", state.mic === "connecting");
-    if (state.mic === "listening") {
-      micBtn.innerHTML = ICON.micWaves;
-      micBtn.title = "正在聆听 — 说「grok send」提交，或点击停止";
-      micBtn.disabled = false;
-    } else if (state.mic === "connecting") {
-      micBtn.innerHTML = ICON.spinner;
-      micBtn.title = "正在启动麦克风… 出现波形后再说话";
-      micBtn.disabled = false; // clickable to cancel
-    } else if (state.mic === "transcribing") {
-      micBtn.innerHTML = ICON.spinner;
-      micBtn.title = "转写中…";
-      micBtn.disabled = true;
-    } else {
-      micBtn.innerHTML = ICON.mic;
-      micBtn.title = state.voiceConfigured
-        ? "语音控制"
-        : "语音控制 — 点击设置（需要 xAI API 密钥）";
-      micBtn.disabled = false;
-    }
-    // "needs setup" dot only when idle and no key is configured.
-    micBtn.classList.toggle("needs-setup", state.mic === "idle" && !state.voiceConfigured);
-  }
-
-  function setMic(event) {
-    state.mic = nextMicState(state.mic, event);
-    renderMic();
-  }
-
-  function toggleMic() {
-    if (state.mic === "idle") {
-      // Skip the optimistic "listening" flash when we know no key is set — the
-      // host will pop the setup guidance instead of recording. Still send
-      // voiceStart so the host (the authority on the key) makes the call.
-      if (state.voiceConfigured) {
-        // Remember what's already typed; live partials replace only the tail.
-        state.voiceBase = input.value;
-        state.voiceLive = false;
-        setMic("start");
-      }
-      vscode.postMessage({ type: "voiceStart" });
-    } else if (state.mic === "listening" || state.mic === "connecting") {
-      setMic("stop");
-      vscode.postMessage({ type: "voiceStop" });
-    }
-    // "transcribing": ignore clicks until the transcript or an error arrives.
-  }
-
-  // Append a transcript to whatever's typed (batch mode — one-shot result).
-  function insertTranscript(text) {
-    const t = (text || "").trim();
-    if (!t) return;
-    const cur = input.value;
-    const sep = cur && !/\s$/.test(cur) ? " " : "";
-    input.value = cur + sep + t;
-    input.focus();
-    updateSlash();
-    renderInputHighlight();
-  }
-
-  // base + live transcript, with a separating space unless base already ends in
-  // whitespace (or the tail is empty). Used for streaming partials/final.
-  function composeVoiceTail(base, text) {
-    const t = text || "";
-    if (!base) return t;
-    if (!t || /\s$/.test(base)) return base + t;
-    return base + " " + t;
-  }
-
-  // Mirror the composer text onto the backdrop, wrapping a trailing send command
-  // ("grok send") in an accent pill. Call whenever the input value changes.
   // Auto-grow the composer with its content: 2 lines at rest (Cursor-style,
   // matching the textarea's rows attribute), expanding to 5 as the user
-  // types, then scrolling. The .input-highlight overlay is inset:0 in the
-  // same wrap, so it tracks the height for free; its scrollTop is synced in
-  // renderInputHighlight.
+  // types, then scrolling.
   function autosizeInput() {
     const cs = window.getComputedStyle(input);
     const line = parseFloat(cs.lineHeight) || 20;
@@ -5122,30 +5211,14 @@
     input.style.overflowY = content > max ? "auto" : "hidden";
   }
 
+  // Refresh the send button + autosize whenever the composer value changes.
   function renderInputHighlight() {
-    // The busy button's face reads the composer too (text = queue-send arrow,
-    // empty = Stop) — refresh it on every input change; this function's call
-    // sites are exactly those.
     updateSendButton();
     autosizeInput();
-    if (!inputHighlight) return;
-    const text = input.value;
-    const range = trailingSendPhrase(text, state.voiceSendPhrase);
-    if (!range) {
-      inputHighlight.textContent = "";
-    } else {
-      const before = text.slice(0, range.index);
-      const cmd = text.slice(range.index, range.index + range.length);
-      inputHighlight.innerHTML = escapeHtml(before) + '<span class="cmd-token">' + escapeHtml(cmd) + "</span>";
-    }
-    inputHighlight.scrollTop = input.scrollTop;
-    inputHighlight.scrollLeft = input.scrollLeft;
   }
 
   // Submit a message with explicit text — the send half of sendOrStop without
-  // reading the composer. Used by the busy-queue flush and by continuous voice
-  // ("grok send"), whose composer is cleared separately so the mic can keep
-  // listening for the next utterance.
+  // reading the composer. Used by the busy-queue flush.
   function submitMessage(text) {
     const t = (text || "").trim();
     if (!t) return;
@@ -5254,6 +5327,10 @@
           state.showTurnMetrics = msg.showTurnMetrics;
           applyTurnMetricsVisibility();
         }
+        if (typeof msg.showContextCard === "boolean") {
+          state.showContextCard = msg.showContextCard;
+          applyContextCardVisibility();
+        }
         if (typeof msg.expandCommandOutputs === "boolean") state.expandCommandOutputs = msg.expandCommandOutputs;
         applyThinkingVisibility();
         updateModelChip();
@@ -5268,6 +5345,11 @@
       case "showTurnMetrics":
         state.showTurnMetrics = !!msg.value;
         applyTurnMetricsVisibility();
+        if (settingsOpen() && state.gearView === "config") renderConfigDebugPanel();
+        break;
+      case "showContextCard":
+        state.showContextCard = !!msg.value;
+        applyContextCardVisibility();
         if (settingsOpen() && state.gearView === "config") renderConfigDebugPanel();
         break;
       case "fontScale":
@@ -5345,67 +5427,6 @@
         break;
       case "openModePopover":
         openModePopover();
-        break;
-      case "voiceState":
-        // Host confirms a transition (e.g. recording actually started). Only
-        // accept the known states; ignore anything unexpected.
-        if (msg.status === "listening" || msg.status === "transcribing") {
-          state.mic = msg.status;
-          renderMic();
-        } else if (msg.status === "idle") {
-          // Hard reset — the host stopped voice (e.g. session switch). Clear the
-          // live flag and any queued messages too, not just the button.
-          state.mic = "idle";
-          state.voiceLive = false;
-          renderMic();
-        }
-        break;
-      case "voiceConfigured":
-        state.voiceConfigured = !!msg.value;
-        if (typeof msg.sendPhrase === "string") state.voiceSendPhrase = msg.sendPhrase;
-        renderMic();
-        renderInputHighlight();
-        break;
-      case "voicePartial":
-        // Live streaming update: replace the tail after the pre-dictation base.
-        state.voiceLive = true;
-        input.value = composeVoiceTail(state.voiceBase, msg.text || "");
-        renderInputHighlight();
-        break;
-      case "voiceSubmit": {
-        // Continuous "grok send": submit now (or queue if Grok is mid-response),
-        // clear the composer, and keep the mic listening for the next utterance.
-        const t = (msg.text || "").trim();
-        state.voiceBase = "";
-        state.voiceLive = false;
-        input.value = "";
-        renderInputHighlight();
-        if (t) {
-          if (state.busy) queueOutgoing(t);
-          else submitMessage(t);
-        }
-        break;
-      }
-      case "voiceTranscript":
-        // Final result. Streaming replaces the live tail; batch appends.
-        if (state.voiceLive) {
-          input.value = composeVoiceTail(state.voiceBase, (msg.text || "").trim());
-          input.focus();
-          updateSlash();
-          renderInputHighlight();
-        } else {
-          insertTranscript(msg.text);
-        }
-        state.voiceLive = false;
-        setMic("transcript");
-        // "grok send" detected: submit hands-free — but only when idle, so it
-        // never doubles as a "stop" on an in-flight turn.
-        if (msg.send && !state.busy) sendOrStop();
-        break;
-      case "voiceError":
-        // Setup/record/transcribe failed (the host already showed the reason).
-        state.voiceLive = false;
-        setMic("error");
         break;
       case "chips":
         state.chips = msg.chips;
@@ -5683,8 +5704,9 @@
         // the cases the turn meta can't cover: cold restore (donut would sit
         // at 0 until the first turn) and zero-reporting turns where signals
         // holds a fresher count than the last meta (e.g. /session-info right
-        // after a /compact).
+        // after a /compact). Optional breakdown powers the top context card.
         if (msg.window) state.contextWindow = msg.window;
+        if (msg.breakdown) state.contextBreakdown = msg.breakdown;
         updateDonut(msg.used);
         break;
       case "expandCommandOutputs":
@@ -5914,10 +5936,6 @@
 
   sendBtn.onclick = sendOrStop;
   updateSendButton();
-  if (micBtn) {
-    micBtn.onclick = (e) => { e.stopPropagation(); toggleMic(); };
-    renderMic();
-  }
   function startNewSession() {
     closeSettingsPage();
     resetForNewSession();
@@ -5970,6 +5988,13 @@
     e.stopPropagation();
     if (contextPopover.hidden) openContextPopover(); else closePopovers();
   };
+  if (contextCardToggle) {
+    contextCardToggle.onclick = (e) => {
+      e.stopPropagation();
+      state.contextCardExpanded = !state.contextCardExpanded;
+      renderContextCard();
+    };
+  }
   modePopover.addEventListener("click", (e) => e.stopPropagation());
   if (modelEffortPopover) modelEffortPopover.addEventListener("click", (e) => e.stopPropagation());
   contextPopover.addEventListener("click", (e) => e.stopPropagation());
@@ -6105,11 +6130,6 @@
   });
 
   input.addEventListener("input", () => { updateSlash(); renderInputHighlight(); });
-  input.addEventListener("scroll", () => {
-    if (!inputHighlight) return;
-    inputHighlight.scrollTop = input.scrollTop;
-    inputHighlight.scrollLeft = input.scrollLeft;
-  });
   renderInputHighlight();
   input.addEventListener("keydown", (e) => {
     // IME composition (#38): while a CJK IME is composing (preedit underline /

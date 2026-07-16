@@ -194,19 +194,6 @@ happy-dom test locking in the native-Windows regressions this build fixed (plus 
 - `parseFileRef` parses `path#L<n>` / `path#L<a>-<b>` open-file refs (single line + range), tolerating a bare path
 - `shouldReadFileInline` guards against inlining a too-large file, so a huge file is referenced by `@path` instead of pasted into the prompt
 
-### `test/voice.test.ts` — voice pure helpers (44 tests)
-
-- STT request/response/error shaping for the batch (REST) and streaming (WebSocket) endpoints
-- Per-platform `ffmpeg` arg construction (DirectShow/dshow on Windows, others elsewhere) + DirectShow device-list parsing
-- API-key resolution order (`grok.voiceApiKey` → `GROK_VOICE_API_KEY` → `XAI_API_KEY`)
-- `parseVoiceCommand` / trailing send-phrase detection — the two-word "grok send", tolerant of the "send"→"sent" mishearing, with trailing punctuation kept-not-doubled
-
-### `test/voice-ui.dom.test.ts` — mic button + composer in a real DOM (28 tests)
-
-- The mic-button state machine (idle → connecting → listening → stopped), animated waves, and the brief "connecting…" spinner
-- A live partial transcript accumulates into the composer; the trailing send-phrase is highlighted via the backdrop overlay
-- "grok send" submits and flushes messages dictated while Grok was responding (hands-free continuous listening)
-
 ### `test/grok-primer.test.ts` — primer replay detection (6 tests)
 
 - `isPrimerText` matches the marker at the **start** of a message for any primer version (v1, v2, …), tolerates leading whitespace, and rejects normal text / a marker pasted mid-message — used on restore to hide the lazily-sent primer and keep it out of the plan-position count

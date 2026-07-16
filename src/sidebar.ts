@@ -7,9 +7,6 @@ import { promisify } from "node:util";
 import { AcpClient, EffortLevel, ExitPlanRequest, PermissionRequest, QuestionRequest } from "./acp";
 import { Session, SessionStatus } from "./session";
 import { selectReapable, computeDot, Dot } from "./session-pool";
-import { resolveVoiceKey, parseVoiceCommand, DEFAULT_SEND_PHRASE } from "./voice";
-import { VoiceRecorder, transcribeAudio, resolveWindowsAudioDevice } from "./voice-recorder";
-import { VoiceStreamer } from "./voice-streamer";
 import { MediaRef, gateZeroTokenMeta, isIncompatibleAgentError, parseSessionInfoContext, permissionOutcomeFor, summarizeBackgroundCommand } from "./acp-dispatch";
 import { modeToRemember, startsInYolo } from "./mode-prefs";
 import { GROK_VIEW_ID, moveViewContainerFor } from "./view-move";
@@ -68,17 +65,20 @@ import {
   markFirstToken,
   type TurnMetrics,
 } from "./turn-metrics";
+import { buildBreakdown } from "./context-breakdown";
 import {
   SessionListEntry,
   SessionMetaOverrides,
   carrySessionName,
   clearSessions,
+  collectSkillListing,
   defaultFs,
   deleteSessionDir,
   fallbackName,
   indexSessions,
   isEmptyPrimerSession,
   readContextUsage,
+  readSessionContextSources,
   readSessionEntries,
   resolveGrokHome,
   sessionsDirFor,
@@ -91,6 +91,12 @@ import {
 const SESSION_META_KEY = "grok.sessionMeta";
 /** globalState key for the anonymous per-install telemetry GUID (survives updates). */
 const INSTALL_ID_KEY = "grok.installId";
+/**
+ * Fallback when `grok.showContextCard` is not yet registered (stale extension
+ * host / pre-reload after install). Settings write fails with
+ * "not a registered configuration" — we persist here instead.
+ */
+const SHOW_CONTEXT_CARD_GS_KEY = "grok.showContextCard";
 
 // History pagination: rows fetched per "page" (initial open + each load-more / search page).
 const SESSION_PAGE_SIZE = 100;
@@ -195,13 +201,6 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
   private readonly pendingAttach = new Set<Promise<void>>();
   private editorWatcher?: vscode.Disposable;
   private terminalManager = new TerminalManager();
-  private voiceRecorder = new VoiceRecorder();
-  private voiceTempPath?: string;
-  private voiceStreamer?: VoiceStreamer;
-  private voiceFinalizing = false;
-  // Stored so a "grok send" can transparently restart a fresh stream (each
-  // message = one clean utterance) without re-resolving the mic device.
-  private voiceStreamCtx?: { key: string; ffmpegPath: string; device?: string; phrase: string; keyterms: string[] };
   private configWatcher?: vscode.Disposable;
   private cliPath?: string;
   // Guards the silent grok-CLI auto-update so it runs at most once per activation.
@@ -267,17 +266,8 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
     if (!this.reaper) {
       this.reaper = setInterval(() => this.reapPool(), GrokSidebar.REAP_INTERVAL_MS);
     }
-    // Re-tell the webview whether voice is set up when the relevant settings
-    // change, so the mic button's "needs setup" hint updates without a reload.
     this.configWatcher?.dispose();
     this.configWatcher = vscode.workspace.onDidChangeConfiguration((e) => {
-      if (
-        e.affectsConfiguration("grok.voiceApiKey") ||
-        e.affectsConfiguration("grok.ffmpegPath") ||
-        e.affectsConfiguration("grok.voiceSendPhrase")
-      ) {
-        this.postVoiceConfigured();
-      }
       if (e.affectsConfiguration("grok.chatFontScale")) {
         this.postFontScale();
       }
@@ -288,6 +278,12 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
         this.post({
           type: "showTurnMetrics",
           value: vscode.workspace.getConfiguration("grok").get<boolean>("showTurnMetrics", true),
+        });
+      }
+      if (e.affectsConfiguration("grok.showContextCard")) {
+        this.post({
+          type: "showContextCard",
+          value: this.readShowContextCard(),
         });
       }
       if (e.affectsConfiguration("grok.expandCommandOutputs")) {
@@ -1092,9 +1088,6 @@ See design doc for the full state machine diagram.`;
     this.editorWatcher?.dispose();
     this.configWatcher?.dispose();
     this.terminalManager.disposeAll();
-    this.voiceRecorder.cancel();
-    this.voiceStreamer?.cancel();
-    try { if (this.voiceTempPath) fs.unlinkSync(this.voiceTempPath); } catch { /* best effort */ }
   }
 
   // ---------- internals ----------
@@ -1429,10 +1422,6 @@ See design doc for the full state machine diagram.`;
     const gen = ++session.gen;
     session.buffer = [];
     session.status = "idle";
-    // Stop any in-progress voice capture so listening never carries across a
-    // new/resumed/restarted session (covers New Session, history resume, and
-    // model/effort restarts — all of which route through here).
-    this.stopVoiceInput();
     session.client?.dispose();
     session.client = undefined;
     // A brand-new session starts in the remembered mode (#25) immediately, so the
@@ -1937,7 +1926,10 @@ See design doc for the full state machine diagram.`;
       // After the eager primer acks, fire anything type-ahead-queued during the
       // startup window (#37). ensurePrimed never throws.
       void this.ensurePrimed(client, session, gen).then(() => {
-        if (gen === session.gen) void this.maybeFlushQueuedSends(session);
+        if (gen !== session.gen) return;
+        void this.maybeFlushQueuedSends(session);
+        // Seed context card + donut after the silent primer (signals.json exists).
+        this.emitContextUsageSoon(session, gen);
       });
     } catch (err) {
       if (gen !== session.gen) { client.dispose(); return undefined; }
@@ -2224,6 +2216,9 @@ See design doc for the full state machine diagram.`;
           .getConfiguration("grok")
           .update("showTurnMetrics", !!msg.value, vscode.ConfigurationTarget.Global);
         break;
+      case "setShowContextCard":
+        await this.persistShowContextCard(!!msg.value);
+        break;
       case "setExpandCommandOutputs":
         await vscode.workspace
           .getConfiguration("grok")
@@ -2294,12 +2289,6 @@ See design doc for the full state machine diagram.`;
         break;
       case "pickFile":
         await this.trackAttach(this.pickFileFromComputer());
-        break;
-      case "voiceStart":
-        await this.handleVoiceStart();
-        break;
-      case "voiceStop":
-        await this.handleVoiceStop();
         break;
     }
 
@@ -2713,18 +2702,6 @@ See design doc for the full state machine diagram.`;
     this.revealAndFocusComposer();
   }
 
-  /** Resolve the xAI key for Speech-to-Text: the `grok.voiceApiKey` setting,
-   *  else `GROK_VOICE_API_KEY` / `XAI_API_KEY` from the workspace .env or the
-   *  host environment. Distinct from the CLI's login — STT is a separate xAI
-   *  product (api.x.ai/v1/stt) that wants a console.x.ai developer key. */
-  private resolveVoiceApiKey(cwd: string): string | undefined {
-    const setting = vscode.workspace.getConfiguration("grok").get<string>("voiceApiKey", "");
-    const env = { ...process.env, ...this.readDotEnv(cwd) } as Record<string, string | undefined>;
-    return resolveVoiceKey({ setting, env });
-  }
-
-  /** Tell the webview whether a voice API key is resolvable, so the mic button
-   *  can show a "needs setup" hint up front instead of only failing on click. */
   /** Chat-panel zoom factor (1.0 = 100%). Clamped to the declared 60–300% range. */
   private chatFontScale(): number {
     const pct = vscode.workspace.getConfiguration("grok").get<number>("chatFontScale", 100);
@@ -2807,248 +2784,6 @@ See design doc for the full state machine diagram.`;
       setImmediate(() => postEvent(APTABASE_APP_KEY_PROD, event));
     } catch {
       // Silent — a telemetry failure must never surface to or affect the user.
-    }
-  }
-
-  private postVoiceConfigured(): void {
-    const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
-    const cfg = vscode.workspace.getConfiguration("grok");
-    this.post({
-      type: "voiceConfigured",
-      value: !!this.resolveVoiceApiKey(cwd),
-      sendPhrase: cfg.get<string>("voiceSendPhrase", DEFAULT_SEND_PHRASE),
-    });
-  }
-
-  /** Show actionable guidance for setting up the voice API key. */
-  private async promptVoiceKeySetup(): Promise<void> {
-    const pick = await vscode.window.showErrorMessage(
-      "语音控制需要 xAI API 密钥（语音转文字）— 这是 console.x.ai 上的独立开发者密钥，不是 Grok CLI 登录。请设置 grok.voiceApiKey，或在工作区 .env 中设置 GROK_VOICE_API_KEY / XAI_API_KEY。",
-      "打开设置",
-      "获取密钥",
-    );
-    if (pick === "打开设置") {
-      await vscode.commands.executeCommand("workbench.action.openSettings", "grok.voiceApiKey");
-    } else if (pick === "获取密钥") {
-      await vscode.env.openExternal(vscode.Uri.parse("https://console.x.ai"));
-    }
-  }
-
-  /** Begin recording the microphone (in the extension host — the webview can't
-   *  reach the mic). The webview has already flipped its button to "listening";
-   *  on any setup failure we send `voiceError` to reset it. */
-  private async handleVoiceStart(): Promise<void> {
-    const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
-    const key = this.resolveVoiceApiKey(cwd);
-    if (!key) {
-      void this.promptVoiceKeySetup();
-      this.post({ type: "voiceError" });
-      return;
-    }
-    const cfg = vscode.workspace.getConfiguration("grok");
-    const ffmpegPath = cfg.get<string>("ffmpegPath", "") || "ffmpeg";
-    const device = cfg.get<string>("voiceInputDevice", "") || undefined;
-
-    // Streaming (default): live transcription over the STT WebSocket, so "grok
-    // send" can submit hands-free without a stop-click. Batch is the fallback.
-    if (cfg.get<boolean>("voiceStreaming", true)) {
-      await this.startVoiceStream(key, ffmpegPath, device, cfg);
-      return;
-    }
-
-    const tmp = path.join(os.tmpdir(), `grok-voice-${Date.now()}.wav`);
-    try {
-      await this.voiceRecorder.start({ ffmpegPath, outputPath: tmp, device, log: (m) => this.output.appendLine(m) });
-      this.voiceTempPath = tmp;
-      this.post({ type: "voiceState", status: "listening" });
-    } catch (e) {
-      const msg = (e as Error).message;
-      this.output.appendLine(`[voice] start failed: ${msg}`);
-      // ffmpeg-missing is the common, fixable case — offer a jump to its setting.
-      if (/ffmpeg/i.test(msg)) {
-        const pick = await vscode.window.showErrorMessage(msg, "打开设置");
-        if (pick === "打开设置") {
-          await vscode.commands.executeCommand("workbench.action.openSettings", "grok.ffmpegPath");
-        }
-      } else {
-        vscode.window.showErrorMessage(msg);
-      }
-      this.post({ type: "voiceError" });
-    }
-  }
-
-  /** Begin a hands-free streaming session. Resolves the mic device once, then
-   *  opens a stream; each "grok send" commits the message and restarts a fresh
-   *  stream so the mic keeps listening with zero clicks. */
-  private async startVoiceStream(
-    key: string,
-    ffmpegPath: string,
-    device: string | undefined,
-    cfg: vscode.WorkspaceConfiguration,
-  ): Promise<void> {
-    const phrase = cfg.get<string>("voiceSendPhrase", DEFAULT_SEND_PHRASE);
-    // Bias the model toward the send phrase + "Grok" so it spells them right
-    // (fixes the "grok send" → "gronsent" mishearing).
-    const keyterms = [...new Set([phrase, "Grok"].map((s) => (s || "").trim()).filter(Boolean))];
-    // Resolve the Windows mic once so per-message restarts don't re-enumerate.
-    let resolved = device;
-    if (process.platform === "win32" && !resolved) {
-      try { resolved = await resolveWindowsAudioDevice(ffmpegPath, (m) => this.output.appendLine(m)); } catch { /* streamer surfaces it */ }
-    }
-    this.voiceStreamCtx = { key, ffmpegPath, device: resolved, phrase, keyterms };
-    this.voiceFinalizing = false;
-    await this.openVoiceStream();
-  }
-
-  /** Open (or re-open after a "grok send") a streaming session from the stored
-   *  context. Late events from a superseded streamer are ignored via identity. */
-  private async openVoiceStream(): Promise<void> {
-    const ctx = this.voiceStreamCtx;
-    if (!ctx) return;
-    const streamer = new VoiceStreamer();
-    this.voiceStreamer = streamer;
-    const isCurrent = () => this.voiceStreamer === streamer;
-
-    streamer.on("partial", (ev: { text: string; speechFinal: boolean }) => {
-      if (!isCurrent()) return;
-      this.post({ type: "voicePartial", text: ev.text });
-      // A finished utterance ending in the send phrase → submit + keep listening.
-      if (ev.speechFinal && ctx.phrase) {
-        const parsed = parseVoiceCommand(ev.text, ctx.phrase);
-        if (parsed.send) this.commitVoiceStream(parsed.text);
-      }
-    });
-    streamer.on("ended", () => {
-      // Stream ended on its own (long silence hit the ffmpeg cap, or a device
-      // drop): finalize whatever we have and go idle. The user re-clicks to resume.
-      if (isCurrent()) void this.finalizeVoiceStream();
-    });
-    streamer.on("error", (e: Error) => {
-      if (!isCurrent()) return;
-      this.output.appendLine(`[voice] stream error: ${e.message}`);
-      if (!this.voiceFinalizing) {
-        vscode.window.showErrorMessage(`语音转写失败：${e.message}`);
-        this.post({ type: "voiceError" });
-      }
-      this.voiceStreamer = undefined;
-      this.voiceStreamCtx = undefined;
-    });
-
-    try {
-      await streamer.start({ ffmpegPath: ctx.ffmpegPath, apiKey: ctx.key, device: ctx.device, keyterms: ctx.keyterms, log: (m) => this.output.appendLine(m) });
-      if (!isCurrent()) { streamer.cancel(); return; }
-      this.post({ type: "voiceState", status: "listening" });
-    } catch (e) {
-      if (!isCurrent()) return;
-      this.voiceStreamer = undefined;
-      this.voiceStreamCtx = undefined;
-      const msg = (e as Error).message;
-      this.output.appendLine(`[voice] stream start failed: ${msg}`);
-      if (/ffmpeg/i.test(msg)) {
-        const pick = await vscode.window.showErrorMessage(msg, "打开设置");
-        if (pick === "打开设置") {
-          await vscode.commands.executeCommand("workbench.action.openSettings", "grok.ffmpegPath");
-        }
-      } else {
-        vscode.window.showErrorMessage(msg);
-      }
-      this.post({ type: "voiceError" });
-    }
-  }
-
-  /** "grok send": submit the message and KEEP listening by restarting a fresh
-   *  stream (each message = one clean utterance). No clicks needed. */
-  private commitVoiceStream(text: string): void {
-    const old = this.voiceStreamer;
-    this.voiceStreamer = undefined; // detach so late events are ignored
-    old?.cancel();
-    if (text.trim()) this.post({ type: "voiceSubmit", text: text.trim() });
-    void this.openVoiceStream(); // reuses cached device → fast restart
-  }
-
-  /** Stop streaming entirely (manual click, or a self-ended stream): finalize the
-   *  remaining transcript and return to idle. */
-  private async finalizeVoiceStream(): Promise<void> {
-    if (this.voiceFinalizing) return;
-    this.voiceFinalizing = true;
-    const streamer = this.voiceStreamer;
-    this.voiceStreamer = undefined;
-    this.voiceStreamCtx = undefined;
-    if (!streamer) { this.voiceFinalizing = false; return; }
-    this.post({ type: "voiceState", status: "transcribing" });
-    let finalText = "";
-    try { finalText = await streamer.stop(); } catch { finalText = streamer.transcript; }
-    const phrase = vscode.workspace.getConfiguration("grok").get<string>("voiceSendPhrase", DEFAULT_SEND_PHRASE);
-    const { text, send } = parseVoiceCommand(finalText, phrase);
-    this.voiceFinalizing = false;
-    if (!text && !send) {
-      this.post({ type: "voiceError" });
-      return;
-    }
-    this.post({ type: "voiceTranscript", text, send });
-  }
-
-  /** Hard-stop any voice capture (no transcript) and reset the mic to idle.
-   *  Called on session switch/restart so listening never bleeds across sessions. */
-  private stopVoiceInput(): void {
-    const wasActive = !!this.voiceStreamer || this.voiceRecorder.active;
-    this.voiceStreamer?.cancel();
-    this.voiceStreamer = undefined;
-    this.voiceStreamCtx = undefined;
-    this.voiceFinalizing = false;
-    this.voiceRecorder.cancel();
-    try { if (this.voiceTempPath) fs.unlinkSync(this.voiceTempPath); } catch { /* best effort */ }
-    this.voiceTempPath = undefined;
-    if (wasActive) this.post({ type: "voiceState", status: "idle" });
-  }
-
-  /** Stop recording, transcribe via xAI STT, and send the text to the composer. */
-  private async handleVoiceStop(): Promise<void> {
-    // Streaming path: finalize the live stream.
-    if (this.voiceStreamer) {
-      await this.finalizeVoiceStream();
-      return;
-    }
-    if (!this.voiceRecorder.active) {
-      this.post({ type: "voiceError" });
-      return;
-    }
-    const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
-    const key = this.resolveVoiceApiKey(cwd);
-    if (!key) {
-      this.voiceRecorder.cancel();
-      this.post({ type: "voiceError" });
-      return;
-    }
-    let wavPath: string;
-    try {
-      wavPath = await this.voiceRecorder.stop();
-    } catch (e) {
-      this.output.appendLine(`[voice] stop failed: ${(e as Error).message}`);
-      vscode.window.showErrorMessage(`语音录音失败：${(e as Error).message}`);
-      this.post({ type: "voiceError" });
-      return;
-    }
-    this.post({ type: "voiceState", status: "transcribing" });
-    try {
-      const raw = await transcribeAudio(wavPath, key, (m) => this.output.appendLine(m));
-      // Strip a trailing "grok send" (configurable) so dictation can submit
-      // hands-free. The webview inserts `text` and, if `send`, fires the send.
-      const sendPhrase = vscode.workspace.getConfiguration("grok").get<string>("voiceSendPhrase", DEFAULT_SEND_PHRASE);
-      const { text, send } = parseVoiceCommand(raw, sendPhrase);
-      if (!text && !send) {
-        vscode.window.showInformationMessage("语音控制：未识别到内容（是否静音？）。");
-        this.post({ type: "voiceError" });
-        return;
-      }
-      this.post({ type: "voiceTranscript", text, send });
-    } catch (e) {
-      this.output.appendLine(`[voice] transcription failed: ${(e as Error).message}`);
-      vscode.window.showErrorMessage((e as Error).message);
-      this.post({ type: "voiceError" });
-    } finally {
-      try { if (this.voiceTempPath) fs.unlinkSync(this.voiceTempPath); } catch { /* best effort */ }
-      this.voiceTempPath = undefined;
     }
   }
 
@@ -3450,6 +3185,9 @@ See design doc for the full state machine diagram.`;
       if (!session.afterTurn) {
         this.emit(session, { type: "agentEnd", meta });
         this.setStatus(session, "done");
+        // Refresh donut + context card from signals (breakdown estimates).
+        // Compact has its own path (session-info + re-prime); skip double-work here.
+        if (slashCommand !== "compact") this.emitContextUsageSoon(session, gen);
       }
       this.maybeGenerateTitle(session);
       if (slashCommand === "compact") {
@@ -3524,14 +3262,59 @@ See design doc for the full state machine diagram.`;
       showThinking: cfg.get("showThinking", false),
       expandCommandOutputs: cfg.get("expandCommandOutputs", false),
       showTurnMetrics: cfg.get("showTurnMetrics", true),
+      showContextCard: this.readShowContextCard(),
     });
     // Sync the active-editor context chip into the fresh webview (the config
     // gate + no-editor case live inside refreshImplicitChip).
     this.refreshImplicitChip(true);
-    this.postVoiceConfigured();
     // Sweep stale empty primer sessions once the first session is live (so the
     // newly-focused session is excluded from the sweep).
     void this.startSession().then(() => this.sweepEmptyPrimerSessions());
+  }
+
+  /**
+   * True when package.json contributes `grok.showContextCard` so settings
+   * update is allowed. Unregistered keys throw "not a registered configuration"
+   * on write (common right after VSIX install before Reload Window, or when an
+   * older host is still live next to 1.3.5+ on disk).
+   */
+  private isShowContextCardRegistered(): boolean {
+    const insp = vscode.workspace.getConfiguration("grok").inspect<boolean>("showContextCard");
+    return insp?.defaultValue !== undefined;
+  }
+
+  private readShowContextCard(): boolean {
+    if (this.isShowContextCardRegistered()) {
+      return vscode.workspace.getConfiguration("grok").get<boolean>("showContextCard", true) ?? true;
+    }
+    return this.context.globalState.get<boolean>(SHOW_CONTEXT_CARD_GS_KEY, true);
+  }
+
+  /** Persist the experimental context-card toggle; never throws to the webview. */
+  private async persistShowContextCard(value: boolean): Promise<void> {
+    if (this.isShowContextCardRegistered()) {
+      try {
+        await vscode.workspace
+          .getConfiguration("grok")
+          .update("showContextCard", value, vscode.ConfigurationTarget.Global);
+        // Clear any pre-registration fallback so the setting is sole source.
+        await this.context.globalState.update(SHOW_CONTEXT_CARD_GS_KEY, undefined);
+        // Config watcher usually re-posts; post anyway so the switch stays in sync
+        // if the change event is coalesced/dropped.
+        this.post({ type: "showContextCard", value });
+        return;
+      } catch (e) {
+        this.output.appendLine(
+          `[settings] showContextCard update failed, using globalState: ${(e as Error).message}`,
+        );
+      }
+    } else {
+      this.output.appendLine(
+        "[settings] grok.showContextCard not registered — persisting via globalState (Reload Window after installing 1.3.5+).",
+      );
+    }
+    await this.context.globalState.update(SHOW_CONTEXT_CARD_GS_KEY, value);
+    this.post({ type: "showContextCard", value });
   }
 
   private postChips(): void {
@@ -3806,14 +3589,60 @@ See design doc for the full state machine diagram.`;
    *  the source that has a real count when the ACP turn meta can't: a cold
    *  restore (no turn has run), the hidden post-/compact re-prime (its meta is
    *  suppressed), and zero-reporting turns like /session-info (stripped by
-   *  gateZeroTokenMeta). Best-effort: no readable count, no message (the
-   *  donut keeps whatever it has). */
-  private emitContextUsage(session: Session): void {
+   *  gateZeroTokenMeta). Also builds the experimental context-card breakdown
+   *  (system / AGENTS / skills estimates). Best-effort: no readable count, no
+   *  message (the donut keeps whatever it has).
+   *  @param override when set (post-/compact /session-info), prefer these
+   *  numbers over a possibly-stale signals.json read. */
+  private emitContextUsage(
+    session: Session,
+    override?: { used: number; window?: number },
+  ): void {
     const id = session.activeSessionId;
     if (!id) return;
     const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
-    const usage = readContextUsage({ fs: defaultFs, grokHome: resolveGrokHome(process.env), cwd, id });
-    if (usage) this.emit(session, { type: "contextUsage", used: usage.used, window: usage.window });
+    const grokHome = resolveGrokHome(process.env);
+    const disk = readContextUsage({ fs: defaultFs, grokHome, cwd, id });
+    const used = override?.used ?? disk?.used;
+    if (used == null || !(used > 0)) return;
+    const window = override?.window ?? disk?.window;
+
+    // Capture fixed overhead only before real conversation growth so we can
+    // later split messages = used − fixed. Mid-session restores must not invent
+    // a baseline from an already-inflated used count.
+    if (session.contextFixedBaseline == null && !session.hasHistory && used > 0) {
+      session.contextFixedBaseline = used;
+    }
+
+    const sources = readSessionContextSources({ fs: defaultFs, grokHome, cwd, id });
+    // Skills catalog is stable for a live process — scan once per Session.
+    if (!session.contextSkillListing) {
+      try {
+        const listing = collectSkillListing({ fs: defaultFs, grokHome, cwd });
+        session.contextSkillListing = { text: listing.text, count: listing.count };
+      } catch {
+        session.contextSkillListing = { text: "", count: 0 };
+      }
+    }
+    const skillListingText = session.contextSkillListing.text || undefined;
+    const skillsCount = session.contextSkillListing.count;
+
+    const breakdown = buildBreakdown({
+      used,
+      window: window && window > 0 ? window : 500_000,
+      fixed: session.contextFixedBaseline,
+      systemPromptText: sources.systemPromptText,
+      agentsMdTexts: sources.agentsMdTexts,
+      skillListingText,
+      skillsCount,
+    });
+
+    this.emit(session, {
+      type: "contextUsage",
+      used,
+      window,
+      breakdown,
+    });
   }
 
   /** emitContextUsage now + once more after the CLI's turn-end file flush has
@@ -3846,7 +3675,7 @@ See design doc for the full state machine diagram.`;
       // change means no donut update (it lags until the next turn), never an
       // error surfaced to the user.
       const parsed = parseSessionInfoContext(session.captureAgentText ?? "");
-      if (parsed) this.emit(session, { type: "contextUsage", used: parsed.used, window: parsed.window });
+      if (parsed) this.emitContextUsage(session, { used: parsed.used, window: parsed.window });
     } catch (e) {
       // Even a failed hidden turn stays silent — log-only, no error bubble.
       this.output.appendLine(`[compact] hidden /session-info failed: ${(e as Error).message}`);
@@ -3982,7 +3811,7 @@ See design doc for the full state machine diagram.`;
   }
 
   /** Parse the workspace `.env` into a plain map (no process.env merge). Used by
-   *  both the CLI env builder and the voice key resolver. */
+   *  the CLI env builder. */
   private readDotEnv(cwd: string): Record<string, string> {
     const dotEnv: Record<string, string> = {};
     try {
@@ -4065,6 +3894,21 @@ See design doc for the full state machine diagram.`;
         <div id="history-popover" class="toolbar-popover history-popover" hidden></div>
       </header>
 
+      <section id="context-card" class="context-card" hidden aria-label="上下文占用">
+        <button type="button" id="context-card-toggle" class="context-card-toggle" aria-expanded="false" aria-controls="context-card-details" title="展开上下文占用详情">
+          <span class="context-card-summary">
+            <span class="context-card-label">上下文</span>
+            <span id="context-card-usage" class="context-card-usage muted">—</span>
+            <span class="context-card-bar-wrap" aria-hidden="true">
+              <span id="context-card-bar" class="context-card-bar"></span>
+            </span>
+            <span id="context-card-pct" class="context-card-pct muted"></span>
+          </span>
+          <span class="context-card-chevron" aria-hidden="true">▾</span>
+        </button>
+        <div id="context-card-details" class="context-card-details" role="region" aria-label="上下文占用分项" hidden></div>
+      </section>
+
       <main id="messages" class="messages">
         <div class="welcome" id="welcome">
           <span class="welcome-mark" role="img" aria-label="Grok" style="--welcome-mark:url('${resourceUri("grok-icon.svg")}')"></span>
@@ -4088,9 +3932,7 @@ See design doc for the full state machine diagram.`;
         <div class="composer-card">
           <div id="attachments" class="attachments"></div>
           <div class="composer-input-wrap">
-            <div id="input-highlight" class="input-highlight" aria-hidden="true" dir="auto"></div>
             <textarea id="input" placeholder="向 Grok 提问…" rows="2" dir="auto"></textarea>
-            <button id="mic-btn" class="mic-btn" title="语音控制"></button>
           </div>
           <div class="composer-toolbar">
             <div class="toolbar-left">

@@ -5,7 +5,9 @@ import {
   filterCommands,
   getSlashQuery,
   HIDDEN_SLASH_COMMANDS,
+  localizeSlashCommands,
   matchSlashCommand,
+  SLASH_COMMAND_ZH,
 } from "../src/slash-filter";
 
 describe("getSlashQuery", () => {
@@ -143,5 +145,43 @@ describe("matchSlashCommand", () => {
   it("falls back to shape alone before available_commands arrives", () => {
     expect(matchSlashCommand("/compact", [])).toBe("compact");
     expect(matchSlashCommand("/tmp/foo is broken", [])).toBeNull();
+  });
+});
+
+describe("localizeSlashCommands", () => {
+  it("replaces description (and hint) for known built-ins", () => {
+    const out = localizeSlashCommands([
+      { name: "compact", description: "Compress conversation history" },
+      { name: "plan", description: "Enter plan mode", input: { hint: "desc" } },
+    ]);
+    expect(out[0].description).toBe(SLASH_COMMAND_ZH.compact.description);
+    expect(out[0].name).toBe("compact");
+    expect(out[1].description).toBe(SLASH_COMMAND_ZH.plan.description);
+    expect(out[1].input?.hint).toBe(SLASH_COMMAND_ZH.plan.hint);
+  });
+
+  it("leaves skill / unknown commands unchanged", () => {
+    const skill = {
+      name: "user:commit",
+      description: "Create a conventional commit",
+      input: { hint: "message" },
+    };
+    expect(localizeSlashCommands([skill])).toEqual([skill]);
+  });
+
+  it("covers the main session / model commands used in the sidebar", () => {
+    for (const name of [
+      "new",
+      "compact",
+      "session-info",
+      "model",
+      "effort",
+      "plan",
+      "imagine",
+      "settings",
+      "login",
+    ]) {
+      expect(SLASH_COMMAND_ZH[name]?.description).toBeTruthy();
+    }
   });
 });

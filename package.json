@@ -2,7 +2,7 @@
   "name": "grok-vscode-ziyuhaokun",
   "displayName": "Grok Build for VS Code（社区版）",
   "description": "Grok Build CLI 的图形界面（含 Grok 4.5）。支持多会话、图片与视频、Mermaid 与 LaTeX。支持 SuperGrok、X Premium+ 与 xAI API 密钥。MIT 开源，与 xAI 无隶属关系。由 ziyuhaokun 维护。",
-  "version": "1.3.6",
+  "version": "1.3.7",
   "publisher": "ziyuhaokun",
   "author": {
     "name": "ziyuhaokun"

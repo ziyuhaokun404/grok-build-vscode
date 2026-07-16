@@ -5068,7 +5068,10 @@
       if (i === state.slashActive) activeEl = el;
       const name = document.createElement("div");
       name.className = "slash-name";
-      name.textContent = `/${cmd.name}`;
+      // Show arg hint next to the command name when the host localized one
+      // (or the CLI advertised input.hint).
+      const hint = cmd.input && cmd.input.hint ? String(cmd.input.hint) : "";
+      name.textContent = hint ? `/${cmd.name} ${hint}` : `/${cmd.name}`;
       el.appendChild(name);
       if (cmd.description) {
         const d = document.createElement("div");

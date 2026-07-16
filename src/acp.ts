@@ -25,7 +25,7 @@ import {
   shouldBlockWrite,
 } from "./plan-gate";
 import { resolveGrokHome } from "./sessions";
-import { filterAdvertisedCommands } from "./slash-filter";
+import { filterAdvertisedCommands, localizeSlashCommands } from "./slash-filter";
 
 export type EffortLevel = "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
@@ -503,7 +503,8 @@ export class AcpClient extends EventEmitter {
     if (r.event === "commandsUpdate") {
       // Hide config-mutating no-op commands (`/always-approve`) from both the
       // autocomplete and the dispatch gate at the single ingestion point (#31).
-      this.availableCommands = filterAdvertisedCommands(r.commands);
+      // Localize descriptions for the Chinese UI (names stay English for dispatch).
+      this.availableCommands = localizeSlashCommands(filterAdvertisedCommands(r.commands));
       this.emit("commandsUpdate", this.availableCommands);
       return;
     }
